@@ -67,11 +67,13 @@ print(X_forecast.shape, Z_forecast.shape)       # (6, 4) series, (6, state dim)
 ```
 
 `DDFM` (`from dfm_python import DDFM, DDFMDataset`) and `iVDFM`
-(`from dfm_python.models.ivdfm import iVDFM`) follow the same
-dataset-then-model pattern. Hydra YAML configurations for each model are in
+(`from dfm_python import iVDFM, iVDFMDataset`) follow the same
+dataset-then-model pattern; every model and config class is importable from
+`dfm_python`. Hydra YAML configurations for each model are in
 [`config/`](https://github.com/minkeymouse/dfm-python/tree/main/config) and
 end-to-end scripts in
-[`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial).
+[`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial)
+(install the `examples` extra to run them).
 
 ## AFM
 
@@ -125,10 +127,18 @@ src/dfm_python/
   numeric/, layer/, utils/, logger/   shared numerics, network layers, helpers
 src/test/      pytest suite
 config/        example Hydra YAML configurations
+data/          example datasets used by the tutorials
 tutorial/      end-to-end scripts per model and dataset
 ```
 
-Tests, from a clone: `uv sync --group dev && uv run pytest src/test -q`.
+Development, from a clone (the `dev` extra holds pytest, ruff and the build
+tools):
+
+```bash
+uv sync --group dev
+uv run pytest            # test suite (src/test)
+uv run ruff check        # lint; also run by pre-commit and CI
+```
 
 The paper repository [minkeymouse/nfe](https://github.com/minkeymouse/nfe) uses
 AFM as a baseline.
