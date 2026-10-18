@@ -1,143 +1,75 @@
-"""Dynamic Factor Model (DFM) package for Python.
+"""Dynamic factor models in Python.
 
-This package implements a comprehensive Dynamic Factor Model framework with support for:
-- Mixed-frequency time series data (monthly, quarterly, semi-annual, annual)
-- Clock-based synchronization of latent factors
-- Tent kernel aggregation for low-to-high frequency mapping
-- Expectation-Maximization (EM) algorithm for parameter estimation
-- Kalman filtering and smoothing for factor extraction
-- Deep Dynamic Factor Models (DDFM) with nonlinear encoders (requires PyTorch)
+Models
+------
+- ``DFM``: linear, mixed-frequency dynamic factor model estimated by EM with
+  Kalman filtering and smoothing. Latent factors evolve at a common clock
+  frequency; lower-frequency series load on them through tent kernels.
+- ``DDFM``: deep dynamic factor model with a nonlinear (PyTorch) encoder.
+- ``iVDFM``: identifiable variational dynamic factor model.
+- ``AFM``: attention factor model for cross-sectional returns.
 
-The package implements a clock-based approach to mixed-frequency DFMs, where all latent 
-factors (global and block-level) are synchronized to a common "clock" frequency, typically 
-monthly. Lower-frequency observed variables are mapped to higher-frequency latent states 
-using deterministic tent kernels in the observation equation.
+Each model is built from a dataset and a config, then fitted::
 
-Note: Higher frequencies (daily, weekly) than the clock are not supported. If any series
-has a frequency faster than the clock, a ValueError will be raised.
+    >>> from dfm_python import DFM, DFMDataset, DFMConfig
+    >>> config = DFMConfig(
+    ...     blocks={"global": {"num_factors": 1, "series": cols}},
+    ...     frequency={c: "m" for c in cols},
+    ...     clock="m",
+    ... )
+    >>> dataset = DFMDataset(config=config, data=df, time_index="date")
+    >>> model = DFM(dataset=dataset, config=config)
+    >>> model.fit()
+    >>> X_forecast, Z_forecast = model.predict(horizon=6)
 
-Key Features:
-    - Hydra-based configuration (YAML files) - primary configuration method
-    - Expects preprocessed data from users - users handle all preprocessing, package extracts statistics from pipeline
-    - Flexible block structure for factor modeling
-    - Robust handling of missing data (internal spline interpolation)
-    - Automatic standardization and data clipping
-
-Example:
-    >>> from dfm_python import DFM, DFMDataset
-    >>> import pandas as pd
-    >>> 
-    >>> # Step 1: Load and preprocess data
-    >>> df = pd.read_csv('data/your_data.csv')
-    >>> df_processed = df[[col for col in df.columns if col != 'date']]
-    >>> 
-    >>> # Step 2: Create Dataset
-    >>> from dfm_python.config import DFMConfig
-    >>> config = DFMConfig.from_yaml('config/default.yaml')
-    >>> dataset = DFMDataset(config=config, data=df_processed)
-    >>> 
-    >>> # Step 3: Create model and load config
-    >>> model = DFM()
-    >>> model.load_config('config/default.yaml')
-    >>> 
-    >>> # Step 4: Fit model
-    >>> model.fit(X=dataset.get_processed_data(), dataset=dataset)
-    >>> 
-    >>> # Step 5: Predict
-    >>> Xf, Zf = model.predict(horizon=6)
-    >>> 
-    >>> # Or use DDFM
-    >>> from dfm_python import DDFM, DDFMDataset
-    >>> 
-    >>> dataset_ddfm = DDFMDataset(config_path='config/default.yaml', data=df_processed)
-    >>> 
-    >>> ddfm_model = DDFM(encoder_layers=[64, 32], num_factors=2)
-    >>> ddfm_model.load_config('config/default.yaml')
-    >>> 
-    >>> ddfm_model.train(dataset=dataset_ddfm)
-    >>> Xf, Zf = ddfm_model.predict(horizon=6)
-    
-Note: DFMConfig uses frequency dict to specify series (column names -> frequencies).
-    Users should use Hydra YAML configuration files instead.
-
-For detailed documentation, see the README.md file and the tutorial notebooks/scripts.
+See README.md for complete examples of every model.
 """
 
-__version__ = "0.7.0"
+from importlib.metadata import PackageNotFoundError, version as _version
 
-# ============================================================================
-# PUBLIC API DEFINITION
-# ============================================================================
-# This __init__.py is the single source of truth for the public API.
-# All symbols exported here are considered stable public API.
-# Internal reorganization should not break these imports.
-#
-# Public API categories:
-# 1. Configuration: DFMConfig, config sources
-# 2. High-level API: DFM, DDFM, module-level convenience functions
-# 3. Core utilities: TimeIndex, diagnostics
-# 4. Models: BaseFactorModel, DDFM (low-level)
-# 5. Data & Results: DFMResult
-# ============================================================================
+try:
+    __version__ = _version("dfm-python")
+except PackageNotFoundError:  # running from a source tree that is not installed
+    __version__ = "0+unknown"
 
-# Configuration (from config/ subpackage)
+del PackageNotFoundError, _version
+
+# Configuration
 from .config import (
     ConfigSource, YamlSource,
     make_config_source,
 )
-# Internal imports (internal use only)
-from .config import DFMConfig
+from .config import DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig
 
 # Results
 from .config import DFMResult, DDFMResult, BaseResult
 
-# Utilities (from utils/ subpackage)
+# Utilities
 from .utils.metric import calculate_rmse
 
-# Dataset classes
-# Users can import these directly from dfm_python
+# Datasets
 from .dataset.dfm_dataset import DFMDataset
 from .dataset.ddfm_dataset import DDFMDataset
+from .dataset.ivdfm_dataset import iVDFMDataset
 from .dataset.afm_dataset import AFMDataset
 
-# Model implementations
+# Models
 from .models.base import BaseFactorModel
 from .models.dfm import DFM
-
-# DDFM high-level API (PyTorch is mandatory)
-try:
-    from .models.ddfm.ddfm import DDFM
-except ImportError:
-    DDFM = None
-
-# AFM high-level API (Attention Factor Model; PyTorch is mandatory)
-try:
-    from .models.afm.afm import AFM
-except ImportError:
-    AFM = None
+from .models.ddfm.ddfm import DDFM
+from .models.ivdfm.ivdfm import iVDFM
+from .models.afm.afm import AFM
 
 __all__ = [
-    # Core classes
-    'DFM',
-    # Model base and implementations
+    # Models
     'BaseFactorModel',
+    'DFM', 'DDFM', 'iVDFM', 'AFM',
+    # Configs
+    'DFMConfig', 'DDFMConfig', 'iVDFMConfig', 'AFMConfig',
     # Config sources
-    'ConfigSource', 'YamlSource',
-    'make_config_source',
-    # Low-level API (functional interface - advanced usage)
+    'ConfigSource', 'YamlSource', 'make_config_source',
+    # Datasets
+    'DFMDataset', 'DDFMDataset', 'iVDFMDataset', 'AFMDataset',
+    # Results and metrics
     'BaseResult', 'DFMResult', 'DDFMResult', 'calculate_rmse',
 ]
-
-# DDFM / AFM high-level API (PyTorch is mandatory)
-__all__.extend([
-    'DDFM',  # High-level API class
-    'AFM',   # Attention Factor Model
-])
-
-# Dataset classes
-__all__.extend([
-    'DFMDataset',  # DFM Dataset class
-    'DDFMDataset',  # DDFM Dataset class
-    'AFMDataset',  # AFM Dataset class
-])
-

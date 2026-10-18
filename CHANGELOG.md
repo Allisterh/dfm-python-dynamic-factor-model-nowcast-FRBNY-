@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- Runtime dependencies reduced to numpy, pandas, scipy, scikit-learn, torch,
+  pykalman and einops. pytorch-lightning, pyarrow and matplotlib were never
+  imported and are dropped; optuna, omegaconf, sktime, polars and hydra-core
+  moved to the `tune`, `yaml`, `metrics`, `polars` and `examples` extras
+  (`all` installs every extra). The unused `db`, `deep`, `transform`,
+  `forecasting` and `hydra` extras are removed.
+- `iVDFM`, `iVDFMDataset` and the four config classes (`DFMConfig`,
+  `DDFMConfig`, `iVDFMConfig`, `AFMConfig`) are exported from `dfm_python`.
+- `__version__` is read from the installed package metadata.
+- The package ships a `py.typed` marker.
+
 ## 0.7.0
 
 - The Attention Factor Model (`dfm_python.models.afm`: `AFM`, attention and PCA
