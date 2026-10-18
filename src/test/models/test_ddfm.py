@@ -342,7 +342,6 @@ class TestDDFM:
     
     def test_ddfm_variance_diagnostics_shape_validation(self):
         """Test DDFM variance diagnostics shape validation handles edge cases."""
-        import warnings
         
         np.random.seed(42)
         dataset = self._create_test_dataset(num_series=5, time_steps=50)

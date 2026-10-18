@@ -7,7 +7,7 @@ The last `horizon` steps are held out for the forecasting objective (sMSE or sMA
 
 from __future__ import annotations
 
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -16,6 +16,9 @@ import torch
 from ...dataset.ivdfm_dataset import iVDFMDataset
 from ...logger import get_logger
 from ..ivdfm import iVDFM
+
+if TYPE_CHECKING:
+    import optuna
 
 _logger = get_logger(__name__)
 
@@ -194,7 +197,7 @@ _STRUCTURAL_PARAMS = frozenset({
 
 
 def suggest_ivdfm_hyperparameters_causal(
-    trial: "optuna.Trial",
+    trial: optuna.Trial,
     fixed: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """Suggest only non-structural iVDFM hyperparameters for causal / IRF experiments.
@@ -248,7 +251,7 @@ def suggest_ivdfm_hyperparameters_causal(
 
 
 def suggest_ivdfm_hyperparameters(
-    trial: "optuna.Trial",
+    trial: optuna.Trial,
     max_window: int,
     min_window: int = 500,
     max_regimes: int = 7,
@@ -408,10 +411,10 @@ def create_objective(
     subset_max_steps: Optional[int] = None,
     max_hidden_dim: Optional[int] = None,
     search_scope: Optional[str] = None,
-) -> Callable[["optuna.Trial"], float]:
+) -> Callable[[optuna.Trial], float]:
     """Build an Optuna objective: suggest params, subset data, train iVDFM, predict, return metric."""
 
-    def objective(trial: "optuna.Trial") -> float:
+    def objective(trial: optuna.Trial) -> float:
         optuna = _require_optuna()
 
         try:
@@ -538,7 +541,7 @@ def run_hyperparameter_optimization(
     initial_params: Optional[Dict[str, Any]] = None,
     max_hidden_dim: Optional[int] = None,
     search_scope: Optional[str] = None,
-) -> Tuple[Dict[str, Any], "optuna.Study"]:
+) -> Tuple[Dict[str, Any], optuna.Study]:
     """Run Optuna study to minimize forecast metric (sMSE or sMAE) on a subset of latest windows.
 
     Parameters

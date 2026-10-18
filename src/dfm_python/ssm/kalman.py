@@ -12,7 +12,7 @@ from pykalman.standard import _filter, _smooth, _smooth_pair
 from ..logger import get_logger
 from ..utils.errors import ModelNotInitializedError, NumericalError
 from ..config.types import FloatArray
-from ..numeric.stability import ensure_symmetric, cap_max_eigenval
+from ..numeric.stability import ensure_symmetric, cap_max_eigenval, create_scaled_identity
 from ..config.constants import (
     MAX_CONDITION_NUMBER_SMOOTHER,
     MAX_CONDITION_NUMBER_INIT,
@@ -214,7 +214,7 @@ class DFMKalmanFilter:
             except (np.linalg.LinAlgError, ValueError):
                 # Eigenvalue capping failed - use fallback
                 _logger.warning(
-                    f"V_0 eigenvalue capping failed in update_parameters. Using scaled identity fallback."
+                    "V_0 eigenvalue capping failed in update_parameters. Using scaled identity fallback."
                 )
                 initial_state_covariance = create_scaled_identity(m_init, MAX_EIGENVALUE, dtype=initial_state_covariance.dtype)
         
@@ -845,7 +845,7 @@ class DFMKalmanFilter:
         _logger.info(f"    Smooth: Completed in {smooth_time:.2f}s ({smooth_time/T*1000:.2f}ms/timestep)")
         
         # Compute lag-1 cross-covariances (needed for M-step)
-        _logger.info(f"    Smooth-pair: Computing cross-covariances...")
+        _logger.info("    Smooth-pair: Computing cross-covariances...")
         smooth_pair_start = time_module.time()
         
         # Bug fix 1.4: _smooth_pair uses mismatched covariance lineage
@@ -871,7 +871,7 @@ class DFMKalmanFilter:
         
         # Compute log-likelihood (optional, expensive operation)
         if compute_loglik:
-            _logger.info(f"    Log-likelihood: Computing...")
+            _logger.info("    Log-likelihood: Computing...")
             loglik_start = time_module.time()
             try:
                 # CRITICAL: pykalman.loglikelihood() doesn't handle masked arrays correctly
@@ -906,7 +906,7 @@ class DFMKalmanFilter:
                 # Removed incorrect warning about zero log-likelihood
             except (ValueError, RuntimeError, AttributeError) as e:
                 _logger.error(f"DFMKalmanFilter: Failed to compute log-likelihood: {e}. Using -inf (will break convergence checks).")
-                _logger.debug(f"DFMKalmanFilter: Full exception traceback for loglikelihood computation failure:", exc_info=True)
+                _logger.debug("DFMKalmanFilter: Full exception traceback for loglikelihood computation failure:", exc_info=True)
                 loglik = float('-inf')  # Use -inf instead of 0.0 (0.0 would break convergence checks)
             loglik_time = time_module.time() - loglik_start
             _logger.info(f"    Log-likelihood: Completed in {loglik_time:.2f}s, value={loglik:.2e}")

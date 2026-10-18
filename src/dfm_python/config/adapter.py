@@ -472,7 +472,7 @@ def make_config_source(
         )
     
     # If already a ConfigSource, return as-is
-    if hasattr(source, 'load') and callable(getattr(source, 'load')):
+    if hasattr(source, 'load') and callable(source.load):
         return source  # type: ignore
     
     # Infer type from source

@@ -1034,7 +1034,7 @@ class DDFM(BaseFactorModel, nn.Module):
             dataset.data[target_cols] = target_vals
             if hasattr(dataset, 'y') and dataset.y is not None:
                 dataset.y = new_data_df[target_cols].values
-                _logger.debug(f"DDFM._refit_scalers_with_new_data(): Updated dataset.y with re-scaled target values")
+                _logger.debug("DDFM._refit_scalers_with_new_data(): Updated dataset.y with re-scaled target values")
         
         return new_data_df
     

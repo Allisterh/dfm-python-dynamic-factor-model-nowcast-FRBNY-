@@ -458,7 +458,7 @@ class DFM(BaseFactorModel):
             )
         except Exception as e:
             _logger.error(f"EM algorithm failed: {e}", exc_info=True)
-            _logger.error(f"  Initialization parameters:")
+            _logger.error("  Initialization parameters:")
             _logger.error(f"    A shape: {self.A.shape}, C shape: {self.C.shape}")
             _logger.error(f"    Q shape: {self.Q.shape}, R shape: {self.R.shape}")
             _logger.error(f"    Z_0 shape: {self.Z_0.shape}, V_0 shape: {self.V_0.shape}")
@@ -1081,7 +1081,7 @@ class DFM(BaseFactorModel):
         # Get model state
         model_state = checkpoint.get('model_state')
         if model_state is None:
-            raise RuntimeError(f"Checkpoint missing 'model_state'. Invalid checkpoint format.")
+            raise RuntimeError("Checkpoint missing 'model_state'. Invalid checkpoint format.")
         
         if isinstance(model_state, dict):
             model_state = DFMModelState(**{k: v for k, v in model_state.items() if v is not None})

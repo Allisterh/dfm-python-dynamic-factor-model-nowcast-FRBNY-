@@ -50,7 +50,7 @@ from ..utils.helper import handle_linear_algebra_error
 from ..utils.misc import get_config_attr
 from ..config.constants import DEFAULT_DTYPE
 from .validator import validate_ndarray_ndim, validate_no_nan_inf
-from ..utils.errors import DataValidationError, NumericalError
+from ..utils.errors import NumericalError
 
 _logger = get_logger(__name__)
 
@@ -550,7 +550,7 @@ def estimate_idio_dynamics(
 # Unified Estimation Functions (work with raw data or smoothed expectations)
 # ============================================================================
 
-def estimate_var(
+def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, which is unused
     y: np.ndarray,
     x: np.ndarray,
     V_smooth: Optional[np.ndarray] = None,

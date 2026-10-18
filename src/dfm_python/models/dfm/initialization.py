@@ -224,7 +224,8 @@ def impute_for_init(data: np.ndarray) -> np.ndarray:
         # Fill remaining with mean
         mask = np.isnan(data_imputed)
         if mask.any():
-            mean_val = np.nanmean(data_imputed)
+            # Guard the all-NaN case explicitly instead of letting nanmean warn
+            mean_val = 0.0 if mask.all() else np.nanmean(data_imputed)
             if np.isnan(mean_val):
                 mean_val = 0.0  # Fallback if all NaN
             data_imputed[mask] = mean_val

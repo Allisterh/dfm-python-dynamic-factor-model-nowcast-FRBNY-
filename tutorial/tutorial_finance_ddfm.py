@@ -158,7 +158,7 @@ def main(cfg: DictConfig) -> None:
             print(f"   Forecast shape: {X_forecast.shape}")
             
             if np.any(np.isnan(X_forecast)) or np.any(np.isinf(X_forecast)):
-                print(f"   WARNING: Forecast contains NaN or Inf!")
+                print("   WARNING: Forecast contains NaN or Inf!")
 
             # Simple prediction quality check on the last 6 time steps (scaled targets)
             try:

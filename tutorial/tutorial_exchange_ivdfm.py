@@ -91,7 +91,7 @@ def main(cfg: DictConfig) -> None:
             print(f"   Forecast shape: {forecast.shape}")
             
             if np.any(np.isnan(forecast)) or np.any(np.isinf(forecast)):
-                print(f"   WARNING: Forecast contains NaN or Inf!")
+                print("   WARNING: Forecast contains NaN or Inf!")
         except Exception as e:
             print("\n[FAILURE] Step 4: Making predictions")
             traceback.print_exc()

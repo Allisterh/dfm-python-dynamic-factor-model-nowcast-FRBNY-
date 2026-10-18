@@ -280,9 +280,9 @@ class BaseTrainLogger(ABC):
             _logger.info("")
             _logger.info(f"{'='*70}")
             if success:
-                _logger.info(f"Training completed successfully")
+                _logger.info("Training completed successfully")
             else:
-                _logger.error(f"Training failed")
+                _logger.error("Training failed")
             
             _logger.info(f"  Duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
             

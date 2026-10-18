@@ -476,14 +476,14 @@ def build_ddfm_state_space(
     # Check for non-finite values
     if not np.all(np.isfinite(factors)):
         _logger.warning(
-            f"build_ddfm_state_space: Factors contain non-finite values. "
+            "build_ddfm_state_space: Factors contain non-finite values. "
             "Replacing with zeros to allow state space construction."
         )
         factors = np.nan_to_num(factors, nan=0.0, posinf=0.0, neginf=0.0)
     
     if not np.all(np.isfinite(eps)):
         _logger.warning(
-            f"build_ddfm_state_space: Residuals contain non-finite values. "
+            "build_ddfm_state_space: Residuals contain non-finite values. "
             "Replacing with zeros to allow state space construction."
         )
         eps = np.nan_to_num(eps, nan=0.0, posinf=0.0, neginf=0.0)

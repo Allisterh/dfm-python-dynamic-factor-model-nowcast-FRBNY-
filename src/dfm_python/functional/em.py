@@ -1227,7 +1227,7 @@ def em_step(
         N = X.shape[1]
         ops_estimate = T * (m ** 3) / 1e9  # Billion operations estimate
         _logger.info(f"    E-step: Running Kalman filter + smoother (T={T}, N={N}, m={m}, ~{ops_estimate:.1f}B ops)...")
-        _logger.info(f"    E-step: Using filter_and_smooth() with automatic stabilization (complexity: O(T × m³))")
+        _logger.info("    E-step: Using filter_and_smooth() with automatic stabilization (complexity: O(T × m³))")
     
     try:
         EZ, V_smooth, VVsmooth, loglik = kalman_filter.filter_and_smooth(X_masked)
@@ -1276,12 +1276,12 @@ def em_step(
         if block_structure is not None and block_structure.is_valid():
             _logger.info(f"    M-step: Updating parameters (block structure: {n_blocks} blocks)...")
         else:
-            _logger.info(f"    M-step: Updating parameters (unconstrained)...")
+            _logger.info("    M-step: Updating parameters (unconstrained)...")
     
     if block_structure is not None and block_structure.is_valid():
         
         if verbose_iterations:
-            _logger.info(f"      → Updating transition matrix A and process noise Q...")
+            _logger.info("      → Updating transition matrix A and process noise Q...")
         state = _update_transition_matrix_blocked(EZ, V_smooth, VVsmooth, state, config)
 
         # Option B: Bound transition matrix A (critical for pykalman numerical stability).
@@ -1296,11 +1296,11 @@ def em_step(
         state = replace(state, Q=Q_new, V_0=V_0_new)
         
         if verbose_iterations:
-            _logger.info(f"      → Updating observation matrix C...")
+            _logger.info("      → Updating observation matrix C...")
         state = _update_observation_matrix_blocked(X, EZ, V_smooth, state, config, block_structure=block_structure)
         
         if verbose_iterations:
-            _logger.info(f"      → Updating observation noise R...")
+            _logger.info("      → Updating observation noise R...")
         state = _update_observation_noise_blocked(X, EZ, V_smooth, state, config)
     else:
         EZZ = V_smooth + np.einsum('ti,tj->tij', EZ, EZ)

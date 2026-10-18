@@ -198,6 +198,7 @@ def get_array_shape(arr: ArrayLike) -> Shape:
     elif is_torch_tensor(arr):
         return tuple(arr.shape)
     else:
+        from ..utils.errors import DataValidationError
         raise DataValidationError(
             f"Expected numpy array or torch tensor, got {type(arr)}",
             details=f"Input type: {type(arr).__name__}, value shape: {getattr(arr, 'shape', 'N/A')}"

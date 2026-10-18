@@ -130,7 +130,7 @@ def main(cfg: DictConfig) -> None:
             print(f"   Forecast shape: {X_forecast.shape}")
             
             if np.any(np.isnan(X_forecast)) or np.any(np.isinf(X_forecast)):
-                print(f"   WARNING: Forecast contains NaN or Inf!")
+                print("   WARNING: Forecast contains NaN or Inf!")
         except Exception as e:
             context = {
                 "result_converged": result.converged if 'result' in locals() else None,

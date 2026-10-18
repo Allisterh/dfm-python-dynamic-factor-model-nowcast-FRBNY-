@@ -157,7 +157,7 @@ class AFM(BaseFactorModel, nn.Module):
         self.to(self.device)
         self._built = True
 
-    def set_dataset(self, dataset: Any) -> "AFM":
+    def set_dataset(self, dataset: Any) -> AFM:
         """Attach a dataset and (re)build components (iVDFM pattern)."""
         self._dataset = dataset
         self._infer_dims(dataset, getattr(self, "n_char", None))
@@ -375,7 +375,7 @@ class AFM(BaseFactorModel, nn.Module):
         }, Path(path))
 
     @classmethod
-    def load(cls, path: Union[str, Path], *args: Any, **kwargs: Any) -> "AFM":
+    def load(cls, path: Union[str, Path], *args: Any, **kwargs: Any) -> AFM:
         ckpt = torch.load(Path(path), weights_only=False)
         model = cls(**ckpt["arch"])
         if not model._built:

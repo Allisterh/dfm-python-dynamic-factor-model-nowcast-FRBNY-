@@ -10,7 +10,6 @@ class TestEstimator:
     
     def test_estimate_ar1_basic(self):
         """Test estimate_ar1 with basic input."""
-        import numpy as np
         from dfm_python.numeric.estimator import estimate_ar1
         
         T = 100
@@ -29,7 +28,6 @@ class TestEstimator:
     
     def test_estimate_var_basic(self):
         """Test estimate_var with basic input."""
-        import numpy as np
         from dfm_python.numeric.estimator import estimate_var
         
         T = 100
@@ -49,7 +47,6 @@ class TestEstimator:
     
     def test_estimate_variance_basic(self):
         """Test estimate_variance with basic input."""
-        import numpy as np
         from dfm_python.numeric.estimator import estimate_variance
         
         T = 100

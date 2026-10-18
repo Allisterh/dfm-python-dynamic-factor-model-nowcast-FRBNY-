@@ -138,7 +138,7 @@ def interpolate_dataframe(
         except (ValueError, Exception):
             # Fall back to linear if spline fails (e.g., not enough points)
             _logger.warning(
-                f"Spline interpolation failed (possibly not enough points), falling back to linear"
+                "Spline interpolation failed (possibly not enough points), falling back to linear"
             )
             df_interpolated = df_interpolated.interpolate(
                 method='linear',

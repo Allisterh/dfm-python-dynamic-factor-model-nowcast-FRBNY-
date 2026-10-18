@@ -32,6 +32,7 @@ except ImportError:
     from typing_extensions import Protocol
 
 if TYPE_CHECKING:
+    from ...functional.em import EMConfig
     try:
         from sklearn.preprocessing import StandardScaler, RobustScaler
         ScalerType = Union[StandardScaler, RobustScaler, Any]
@@ -343,7 +344,6 @@ class DFMConfig(BaseModelConfig):
         super().__post_init__()
         
         from ...config.adapter import _raise_config_error
-        from ..constants import FREQUENCY_HIERARCHY, DEFAULT_HIERARCHY_VALUE
         
         if not self.blocks:
             _raise_config_error("DFM configuration must contain at least one block.")
@@ -407,7 +407,6 @@ class DFMConfig(BaseModelConfig):
     
     def _update_idio_flags_from_frequencies(self, frequencies: List[str]) -> None:
         """Update augment_idio flags based on detected frequencies (called when data is loaded)."""
-        from ..constants import FREQUENCY_HIERARCHY, DEFAULT_HIERARCHY_VALUE
         clock_hierarchy = FREQUENCY_HIERARCHY.get(self.clock, DEFAULT_HIERARCHY_VALUE)
         is_mixed_freq = any(
             FREQUENCY_HIERARCHY.get(freq, DEFAULT_HIERARCHY_VALUE) != clock_hierarchy
@@ -858,8 +857,6 @@ class iVDFMConfig(BaseModelConfig):
     def _extract_ivdfm(cls, data: Dict[str, Any]) -> Dict[str, Any]:
         """Extract iVDFM-specific parameters from config dict."""
         from ..constants import (
-            DEFAULT_IVDFM_LATENT_DIM,
-            DEFAULT_IVDFM_AUX_DIM,
             DEFAULT_IVDFM_ENCODER_HIDDEN_DIM,
             DEFAULT_IVDFM_ENCODER_N_HIDDEN_LAYERS,
             DEFAULT_IVDFM_NUM_REGIMES,
@@ -877,7 +874,6 @@ class iVDFMConfig(BaseModelConfig):
             DEFAULT_IVDFM_SLOPE,
             DEFAULT_IVDFM_BATCH_SIZE,
             DEFAULT_IVDFM_MAX_EPOCHS,
-            DEFAULT_IVDFM_AUX_VARIABLE_TYPE,
             DEFAULT_IVDFM_OPTIMIZER_WEIGHT_DECAY,
             DEFAULT_IVDFM_OPTIMIZER_MOMENTUM,
             DEFAULT_IVDFM_SCHEDULER_TYPE,

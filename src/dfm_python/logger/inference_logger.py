@@ -167,9 +167,9 @@ class BaseInferenceLogger(ABC):
             _logger.info("")
             _logger.info(f"{'='*70}")
             if success:
-                _logger.info(f"Inference completed successfully")
+                _logger.info("Inference completed successfully")
             else:
-                _logger.error(f"Inference failed")
+                _logger.error("Inference failed")
             
             _logger.info(f"  Duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
             _logger.info(f"  Predictions generated: {self.num_predictions}")
