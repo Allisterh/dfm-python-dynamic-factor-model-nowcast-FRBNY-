@@ -97,3 +97,47 @@ Homepage = "https://github.com/minkeymouse/dfm-python"
 Documentation = "https://github.com/minkeymouse/dfm-python#readme"
 Repository = "https://github.com/minkeymouse/dfm-python"
 Issues = "https://github.com/minkeymouse/dfm-python/issues"
+
+[tool.ruff]
+# Most of the codebase fits in 120 columns; this keeps the formatter's churn smallest.
+line-length = 120
+target-version = "py310"
+extend-exclude = ["data", "outputs"]
+
+[tool.ruff.lint]
+# Lenient starter set. The ignores below silence rules that fire hundreds of
+# times on existing code; they will be tightened step by step later.
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = [
+    "I001",   # unsorted-imports: re-sorting breaks circular imports between subpackages
+    "E402",   # module-import-not-at-top-of-file (deliberate lazy/conditional imports)
+    "E501",   # line-too-long (left to the formatter)
+    "E701",   # multiple-statements-on-one-line-colon
+    "E702",   # multiple-statements-on-one-line-semicolon
+    "E722",   # bare-except
+    "E731",   # lambda-assignment
+    "E741",   # ambiguous-variable-name (math notation such as `l`, `I`)
+    "W291",   # trailing-whitespace (mostly inside docstrings)
+    "W293",   # blank-line-with-whitespace (mostly inside docstrings)
+    "UP006",  # non-pep585-annotation (typing.List -> list)
+    "UP007",  # non-pep604-annotation-union (Union[X, Y] -> X | Y)
+    "UP035",  # deprecated-import (typing.List etc.)
+    "UP045",  # non-pep604-annotation-optional (Optional[X] -> X | None)
+    "F401",   # unused-import
+    "F841",   # unused-variable
+    "B007",   # unused-loop-control-variable
+    "B023",   # function-uses-loop-variable
+    "B024",   # abstract-base-class-without-abstract-method
+    "B027",   # empty-method-without-abstract-decorator
+    "B904",   # raise-without-from-inside-except
+    "B905",   # zip-without-explicit-strict
+]
+
+[tool.pytest.ini_options]
+testpaths = ["src/test"]
+filterwarnings = [
+    # pykalman's filter assigns a shape-(1,) array into a scalar slot on every
+    # time step (pykalman/standard.py); NumPy >= 1.25 deprecates this. Nothing
+    # in dfm_python triggers it differently, so silence it until pykalman fixes it.
+    "ignore:Conversion of an array with ndim > 0 to a scalar is deprecated:DeprecationWarning:pykalman.standard",
+]

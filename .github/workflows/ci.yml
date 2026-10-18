@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          enable-cache: true
+      # Installs the locked dependency set (default PyPI torch wheel) plus every
+      # optional extra, since some tests import optuna, omegaconf, sktime, polars.
+      - name: Install dependencies
+        run: uv sync --locked --group dev --all-extras
+      - name: Run tests
+        run: uv run --no-sync pytest src/test -q
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      # Same ruff version as uv.lock and .pre-commit-config.yaml.
+      - name: ruff check
+        run: uvx ruff@0.17.1 check .
+      # The codebase has not been run through the formatter yet, so this step
+      # reports but does not fail the build. Make it blocking once formatted.
+      - name: ruff format --check (non-blocking)
+        continue-on-error: true
+        run: uvx ruff@0.17.1 format --check .
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+      - name: Build sdist and wheel
+        run: uv build
+      - name: Check distribution metadata
+        run: uvx twine check dist/*

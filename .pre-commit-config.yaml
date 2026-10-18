@@ -1,0 +1,17 @@
+# Install the git hook with: uvx pre-commit install
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.17.1  # keep in step with the ruff version in uv.lock and CI
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      # Most files are not formatted yet; running this hook reformats every file
+      # you touch. Run `pre-commit run ruff-format --all-files` to format everything.
+      - id: ruff-format
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-added-large-files
