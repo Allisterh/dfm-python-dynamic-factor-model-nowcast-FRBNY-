@@ -43,9 +43,10 @@ yaml = [
 metrics = [
     "sktime>=0.40.1",
 ]
-# Passing polars DataFrames to the dataset classes
+# Passing polars DataFrames to the dataset classes (conversion to pandas needs pyarrow)
 polars = [
     "polars>=1.0.0",
+    "pyarrow>=22.0.0",
 ]
 # Running the scripts in tutorial/ (Hydra entry points)
 examples = [
@@ -55,12 +56,17 @@ examples = [
 all = [
     "dfm-python[tune,yaml,metrics,polars,examples]",
 ]
+# Keep in sync with [dependency-groups].dev below.
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
     "ruff>=0.6.0",
     "build>=1.4.0",
     "twine>=6.2.0",
+    # imported directly by the test suite
+    "omegaconf>=2.3.0",
+    "pyyaml>=6.0",
+    "optuna>=4.7.0",
 ]
 
 [build-system]
@@ -86,10 +92,20 @@ exclude = [
 ]
 
 [dependency-groups]
-# Development tooling for uv (`uv sync` installs this group by default).
-# The package list lives in the `dev` extra above; this group points at it.
+# Development tooling (`uv sync` installs this group by default; pip >= 25.1
+# installs it with `pip install --group dev`). Listed literally rather than as
+# "dfm-python[dev]", because pip would resolve that name from PyPI instead of
+# the local tree. Keep in sync with the `dev` extra above.
 dev = [
-    "dfm-python[dev]",
+    "pytest>=7.0.0",
+    "pytest-cov>=4.0.0",
+    "ruff>=0.6.0",
+    "build>=1.4.0",
+    "twine>=6.2.0",
+    # imported directly by the test suite
+    "omegaconf>=2.3.0",
+    "pyyaml>=6.0",
+    "optuna>=4.7.0",
 ]
 
 [project.urls]

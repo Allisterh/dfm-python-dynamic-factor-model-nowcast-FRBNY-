@@ -30,7 +30,7 @@ Optional extras:
 | `yaml`     | omegaconf   | loading configs from YAML (`YamlSource`)                |
 | `tune`     | optuna      | iVDFM hyperparameter search                             |
 | `metrics`  | sktime      | `calculate_rmse`, `calculate_mae`                       |
-| `polars`   | polars      | passing polars DataFrames to the dataset classes        |
+| `polars`   | polars, pyarrow | passing polars DataFrames to the dataset classes    |
 | `examples` | hydra-core  | running the scripts in `tutorial/`                      |
 | `all`      | all of the above |                                                    |
 
@@ -131,14 +131,17 @@ data/          example datasets used by the tutorials
 tutorial/      end-to-end scripts per model and dataset
 ```
 
-Development, from a clone (the `dev` extra holds pytest, ruff and the build
-tools):
+Development, from a clone (the `dev` dependency group holds pytest, ruff, the
+build tools and the optional packages the tests import):
 
 ```bash
-uv sync --group dev
+uv sync --group dev      # or: pip install -e . --group dev
 uv run pytest            # test suite (src/test)
 uv run ruff check        # lint; also run by pre-commit and CI
 ```
+
+Add `--all-extras` to the sync to also run the tests that skip without
+sktime (as CI does).
 
 The paper repository [minkeymouse/nfe](https://github.com/minkeymouse/nfe) uses
 AFM as a baseline.
