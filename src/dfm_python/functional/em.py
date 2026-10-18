@@ -1564,13 +1564,17 @@ def run_em_algorithm(
             _logger.error(f"  Data shape: {X.shape}, Block structure: {block_structure is not None}")
             raise RuntimeError(f"EM algorithm failed at iteration {num_iter + 1}: {e}") from e
         
-        if not all(np.isfinite(p).all() if isinstance(p, np.ndarray) else np.isfinite(p)
-                   for p in [state.A, state.C, state.Q, state.R, state.Z_0, state.V_0, loglik]):
+        params_finite = all(np.isfinite(p).all() if isinstance(p, np.ndarray) else np.isfinite(p)
+                            for p in [state.A, state.C, state.Q, state.R, state.Z_0, state.V_0])
+        if not (params_finite and np.isfinite(loglik)):
             _logger.error(f"EM: NaN/Inf detected at iteration {num_iter + 1}, stopping")
             _logger.error(f"  Parameter shapes - A: {state.A.shape if state.A is not None else None}, C: {state.C.shape if state.C is not None else None}, Q: {state.Q.shape if state.Q is not None else None}, R: {state.R.shape if state.R is not None else None}")
             _logger.error(f"  Loglik: {loglik}, isfinite: {np.isfinite(loglik) if isinstance(loglik, (int, float, np.number)) else 'N/A'}")
-            _logger.error("  Keeping parameters from the last finite iteration.")
-            state = last_finite_state
+            if not params_finite:
+                # Only revert when the parameters themselves diverged; a non-finite
+                # loglik with finite parameters keeps the M-step update.
+                _logger.error("  Keeping parameters from the last finite iteration.")
+                state = last_finite_state
             break
         
         if num_iter == 0 and loglik < -1e10:

@@ -300,7 +300,8 @@ def select_columns_by_prefix(df: pd.DataFrame, prefixes: List[str], count_per_pr
 def get_target_scaler(dataset: Optional[Any] = None, model: Optional[Any] = None) -> Optional[Any]:
     """Get scaler from dataset or model.
     
-    Returns the object's 'scaler' attribute (used by DFM and DDFM datasets and models).
+    Checks 'scaler' attribute first, then falls back to 'target_scaler' for backward compatibility.
+    Both DFM and DDFM now use 'scaler' attribute.
     
     Parameters
     ----------
@@ -315,9 +316,11 @@ def get_target_scaler(dataset: Optional[Any] = None, model: Optional[Any] = None
         Scaler from dataset or model, or None if not available
     """
     if dataset is not None:
-        return getattr(dataset, 'scaler', None)
+        # Check 'scaler' first, then 'target_scaler' for backward compatibility
+        return getattr(dataset, 'scaler', None) or getattr(dataset, 'target_scaler', None)
     if model is not None:
-        return getattr(model, 'scaler', None)
+        # Check 'scaler' first, then 'target_scaler' for backward compatibility
+        return getattr(model, 'scaler', None) or getattr(model, 'target_scaler', None)
     return None
 
 # Metric functions, re-exported from metric.py for existing imports
