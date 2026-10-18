@@ -1,7 +1,7 @@
 """Model validation utilities for comprehensive error checking.
 
 This module provides validation utilities for model components, ensuring
-consistent error handling and validation across all models (KDFM, DFM, DDFM).
+consistent error handling and validation across all models (DFM, DDFM, iVDFM, AFM).
 
 Common validation patterns:
 - Model initialization checks

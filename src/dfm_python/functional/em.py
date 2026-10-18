@@ -254,7 +254,7 @@ def _compute_and_cache_block_indices(block_structure: BlockStructure, N: int) ->
     Computes unique block patterns, factor indices (bl_idxM, bl_idxQ), constraint matrices,
     and idiosyncratic component indices. Results are cached in block_structure.
     """
-    # Bug fix 3.1: Validate cache is still valid (not just existence check)
+    # Validate cache is still valid (not just existence check)
     # Cache validity depends on: N, blocks, r, p, p_plus_one, idio_indicator, R_mat, q, n_clock_freq
     if block_structure.has_cached_indices():
         # Check if cached N matches current N
@@ -385,7 +385,7 @@ def _update_transition_matrix(EZ: np.ndarray, state: DFMModelState, config: EMCo
         return state
     
     A = state.A
-    # Bug fix 2.2: Unblocked version ignores V_smooth/VVsmooth - this is quasi-EM, not full EM
+    # Unblocked version ignores V_smooth/VVsmooth - this is quasi-EM, not full EM
     # Documented limitation: this uses OLS on smoothed means rather than EM moments
     def _compute_A() -> np.ndarray:
         Y = EZ[1:, :]  # (T-1, m)
@@ -431,7 +431,7 @@ def _update_transition_matrix_blocked(
     
     for i in range(n_blocks):
         r_i = int(r[i])  # Number of factors in block i
-        # Bug fix 1.1: State dimension for VAR(p) in companion form is r_i * (p+1), not r_i * p
+        # State dimension for VAR(p) in companion form is r_i * (p+1), not r_i * p
         # Companion form includes current state + p lags = p+1 states per factor
         rp = r_i * p_plus_one  # State dimension for block i (factors * (p+1) for companion form)
         rp1 = int(np.sum(r[:i]) * p_plus_one)  # Cumulative state dimension before block i
@@ -514,7 +514,7 @@ def _update_transition_matrix_blocked(
             expected_Q_shape = (r_i, r_i)
             expected_V0_shape = (rp, rp)
             
-            # Bug fix 2.1: Shape coercion masks real estimation failures
+            # Do not coerce shapes: coercion masks real estimation failures
             # If shapes mismatch, that iteration should fail fast, not patch.
             # Shape mismatches indicate bugs in estimate_var or state structure, not data issues.
             # Patching allows garbage to propagate and EM to "converge" to nonsense.
@@ -934,7 +934,7 @@ def _update_observation_matrix_blocked(
             
             for j in idx_iQ:
                 idx_jQ = j - n_clock_freq
-                # Bug fix 1.2: Slower-frequency idiosyncratic indexing assumes perfect contiguous ordering
+                # Slower-frequency idiosyncratic indexing assumes perfect contiguous ordering
                 # This assumes: slower idio chains are packed after clock idios, chain length = tent_kernel_size
                 # Add validation to detect violations
                 i_idio_jQ = np.arange(
@@ -1131,7 +1131,7 @@ def _update_observation_noise_blocked(
         nan_mask_all = ~nanY[valid_times, :]
         
         CZ_all = np.einsum('ij,tj->ti', C_new, Z_all)
-        # Bug fix 1.3: Correct residual computation with missing data
+        # Residual computation with missing data
         # Residuals should be: nan_mask * (X - CZ), not (X - nan_mask * CZ)
         # The latter leaves raw X when missing, injecting spurious variance
         residuals = nan_mask_all * (X_all - CZ_all)
@@ -1231,7 +1231,7 @@ def em_step(
     
     try:
         EZ, V_smooth, VVsmooth, loglik = kalman_filter.filter_and_smooth(X_masked)
-        # Bug fix 1.4: Cache smoothed factors, but they may become stale after damping
+        # Cache smoothed factors, but they may become stale after damping
         # Cache is invalidated after damping to prevent returning stale factors
         kalman_filter._cached_smoothed_factors = EZ.copy()
     except Exception as e:
@@ -1247,7 +1247,7 @@ def em_step(
     e_step_time = time_module.time() - e_step_start
     
     # GUARDRAIL: Time budget check for E-step
-    # Principle 1: Time-budget invariants (non-negotiable)
+    # Time-budget invariants (non-negotiable)
     # Single constraint: 10 minutes for all datasets
     max_e_step_time = MAX_FIRST_ITERATION_SECONDS if num_iter == 0 else MAX_ESTEP_SECONDS
     
@@ -1474,7 +1474,7 @@ def run_em_algorithm(
     loglik = float('-inf')
     change = DEFAULT_ZERO_VALUE
     
-    # CRITICAL: Track damping state for proper convergence checking
+    # Track damping state for proper convergence checking
     damping_applied = False
     loglik_undamped = float('-inf')
     
@@ -1508,7 +1508,7 @@ def run_em_algorithm(
                 block_structure=block_structure, num_iter=num_iter
             )
             
-            # CRITICAL: Track undamped loglik for convergence checks
+            # Track undamped loglik for convergence checks
             # Damping breaks EM monotonicity, so we need separate tracking
             loglik_undamped = loglik
             damping_applied = False
@@ -1524,7 +1524,7 @@ def run_em_algorithm(
                 state = replace(state, A=A_damped, C=C_damped, Q=Q_damped, R=R_damped, Z_0=Z_0_damped, V_0=V_0_damped)
                 damping_applied = True
                 
-                # CRITICAL: Damping breaks EM monotonicity
+                # Damping breaks EM monotonicity
                 # After damping, loglik is for damped parameters, not M-step optimum
                 # We cannot use damped loglik for convergence - it's not a Lyapunov function
                 # Recompute loglik with damped parameters for tracking, but don't use for convergence
@@ -1544,7 +1544,7 @@ def run_em_algorithm(
                     _logger.warning(f"Failed to recompute loglik after damping: {e}. Using undamped loglik.")
                     loglik = loglik_undamped
                 
-                # Bug fix 1.4 & 3.3: Invalidate cached smoothed factors after damping
+                # Invalidate cached smoothed factors after damping
                 # Damping changes parameters, so cached factors are no longer valid
                 if kalman_filter is not None and hasattr(kalman_filter, '_cached_smoothed_factors'):
                     kalman_filter._cached_smoothed_factors = None
@@ -1579,7 +1579,7 @@ def run_em_algorithm(
         
         kalman_filter.update_parameters(state.A, state.C, state.Q, state.R, state.Z_0, state.V_0)
         
-        # Bug fix 1.2: Never propagate cached factors across EM steps
+        # Never propagate cached factors across EM steps
         # Cache should be per-parameter snapshot only, not shared across iterations
         # Damping and parameter updates invalidate caches, so propagating stale cache
         # would reintroduce incorrect state silently
@@ -1588,11 +1588,11 @@ def run_em_algorithm(
         
         min_iterations = get_config_attr(config, 'min_iterations_for_convergence_check', 1)
         
-        # CRITICAL: Use undamped loglik for convergence checks
+        # Use undamped loglik for convergence checks
         # Damping breaks monotonicity, so damped loglik is not a valid convergence metric
         loglik_for_convergence = loglik_undamped if damping_applied else loglik
         
-        # Bug fix 3.2: More robust convergence criterion that handles zero/near-zero loglik
+        # Convergence criterion that handles zero/near-zero loglik
         if num_iter >= min_iterations:
             # Use absolute change if loglik is near zero to avoid division issues
             if (previous_loglik != float('-inf') and np.isfinite(previous_loglik) and 
@@ -1680,7 +1680,7 @@ def run_em_algorithm(
         model_type="dfm"
     )
     
-    # Bug fix 1.4: Only return cached factors if they're still valid (not invalidated by damping)
+    # Only return cached factors if they're still valid (not invalidated by damping)
     # If cache was invalidated, recompute with final parameters
     if kalman_filter._cached_smoothed_factors is None:
         X_masked = np.ma.masked_invalid(X)

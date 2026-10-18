@@ -119,7 +119,7 @@ def get_logger(name: str) -> logging.Logger:
     # Configure package logger if not already configured
     # Use a flag to avoid re-configuring if already done
     if not hasattr(package_logger, '_dfm_configured'):
-        # CRITICAL: Check if handlers already exist to prevent duplicates
+        # Check if handlers already exist to prevent duplicates
         # This can happen if configure_logging() was called before get_logger()
         if not package_logger.handlers:
             # Configure handler for dfm_python package logger
@@ -133,7 +133,7 @@ def get_logger(name: str) -> logging.Logger:
             package_logger.addHandler(handler)
         
         package_logger.setLevel(logging.INFO)
-        # CRITICAL: Disable propagation to root logger to prevent duplicate messages
+        # Disable propagation to root logger to prevent duplicate messages
         # Root logger may have handlers from other code (e.g., basicConfig)
         # By setting propagate=False, we ensure messages only go through our handler
         package_logger.propagate = False
@@ -211,7 +211,7 @@ def configure_logging(
     if hasattr(logger, '_dfm_configured'):
         delattr(logger, '_dfm_configured')
     
-    # CRITICAL: Disable propagation to root logger to prevent duplicate messages
+    # Disable propagation to root logger to prevent duplicate messages
     # If root logger also has handlers, messages would be logged twice
     logger.propagate = False
     

@@ -4,13 +4,13 @@ This module provides model-specific configuration dataclasses:
 - BaseModelConfig: Base class with shared model structure (series, clock, data handling)
 - DFMConfig(BaseModelConfig): Linear DFM with EM algorithm parameters and block structure
 - DDFMConfig(BaseModelConfig): Deep DFM with neural network training parameters (no blocks)
-- KDFMConfig(BaseModelConfig): Kernelized DFM with VARMA parameters
+- iVDFMConfig(BaseModelConfig): Identifiable variational DFM parameters (no blocks)
+- AFMConfig(BaseModelConfig): Attention factor model parameters (no blocks)
 
 The configuration hierarchy:
 - BaseModelConfig: Model structure (series, clock, data handling) - NO blocks
 - DFMConfig: Adds blocks structure and EM algorithm parameters (max_iter, threshold, regularization)
 - DDFMConfig: Adds neural network parameters (epochs, learning_rate, encoder_layers) - NO blocks
-- KDFMConfig: Adds VARMA parameters (ar_order, ma_order, structural_method) - NO blocks
 
 Note: Series are specified via frequency dict mapping column names to frequencies. Result classes are in schema/results.py
 
@@ -76,8 +76,6 @@ from ..constants import (
     MAX_EIGENVALUE,
     MIN_DIAGONAL_VARIANCE,
     DEFAULT_CLOCK_FREQUENCY,
-    DEFAULT_KDFM_AR_ORDER,
-    DEFAULT_KDFM_MA_ORDER,
     DEFAULT_AFM_NUM_FACTORS,
     DEFAULT_AFM_FACTOR_MODEL,
     DEFAULT_AFM_TRADING,
@@ -127,7 +125,7 @@ class BaseModelConfig:
     """Base configuration class with shared model structure.
     
     This base class contains the model structure that is common to all
-    factor models (DFM, DDFM, KDFM):
+    factor models (DFM, DDFM, iVDFM, AFM):
     - Series definitions (via frequency dict mapping column names to frequencies)
     - Clock frequency (required, base frequency for latent factors)
     - Data preprocessing (missing data handling)
@@ -141,9 +139,9 @@ class BaseModelConfig:
     - When data is loaded, missing columns in `frequency` dict are automatically added with `clock` frequency
     
     Note: Blocks are DFM-specific and are NOT included in BaseModelConfig.
-    DFMConfig adds block structure, while DDFMConfig and KDFMConfig do not use blocks.
+    DFMConfig adds block structure; the other model configs do not use blocks.
     
-    Subclasses (DFMConfig, DDFMConfig, KDFMConfig) add model-specific training parameters.
+    Subclasses (DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig) add model-specific training parameters.
     
     Examples
     --------

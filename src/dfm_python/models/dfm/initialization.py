@@ -256,7 +256,7 @@ def initialize_clock_freq_idio(
         default_noise = _DEFAULT_EM_CONFIG.default_process_noise
         
         for i, idx in enumerate(idio_indices):
-            # Bug fix 1.1: Use same array for mask computation and slicing
+            # Use same array for mask computation and slicing
             # Compute mask from res (data_for_extraction) to match the array we'll slice
             res_i = res[:, idx]
             non_nan_mask = ~np.isnan(res_i)
@@ -295,7 +295,7 @@ def initialize_clock_freq_idio(
                 SM[i, i] = default_noise
         
         # Initial covariance for clock frequency idio
-        # Bug fix 1.2: Correct AR(1) initial variance formula: Var(u) = σ²/(1-ρ²)
+        # AR(1) stationary initial variance: Var(u) = σ²/(1-ρ²)
         # For diagonal case: initViM[i,i] = SM[i,i] / (1 - BM[i,i]²)
         def _compute_initViM() -> np.ndarray:
             initViM = np.zeros_like(SM)
@@ -587,7 +587,7 @@ def initialize_block_transition(
     A_i = np.zeros((block_size, block_size), dtype=dtype)
     
     # Extract current and lagged states
-    # Bug fix 1.3: Correct VAR(p) regressor construction
+    # VAR(p) regressor construction
     # For VAR(p): y_t = A_1*y_{t-1} + ... + A_p*y_{t-p} + e_t
     # lag_matrix structure: [lag_0, lag_1, ..., lag_{num_lags-1}]
     # where each lag_i occupies columns [i*num_factors : (i+1)*num_factors]
@@ -795,7 +795,7 @@ def initialize_block_factors(
             # After Block 1: data_for_extraction becomes residuals (original_data - Block1_contribution)
             # After Block 2: data_for_extraction becomes residuals (original_data - Block1 - Block2)
             # 
-            # CRITICAL TIME-ALIGNMENT ASSERTION:
+            # Time-alignment assertion:
             # With tent kernels, factor_t contributes to y_{t+k} (not y_t directly).
             # However, for block residualization, we assume factor_t contributes to y_t.
             # This is valid because:
@@ -815,7 +815,7 @@ def initialize_block_factors(
                 slower_freq_factors = slower_freq_factors[:data_for_extraction.shape[0], :]
             
             # Assert: factors and data are time-aligned (same T dimension)
-            # CRITICAL: With tent kernels, factor_t contributes to y_{t+k}, but for block residualization
+            # With tent kernels, factor_t contributes to y_{t+k}, but for block residualization
             # we assume factor_t contributes to y_t. This is valid because factors are extracted at
             # clock frequency and are already time-aligned with clock-freq data.
             if data_for_extraction.shape[0] != slower_freq_factors.shape[0]:

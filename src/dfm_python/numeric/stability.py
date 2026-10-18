@@ -139,7 +139,7 @@ def cap_max_eigenval(
     if M.size == 0 or M.shape[0] == 0:
         return M
     
-    # CRITICAL: Validate matrix is square BEFORE attempting eigenvalue computation
+    # Validate matrix is square BEFORE attempting eigenvalue computation
     # This prevents expensive exception handling in hot loops
     if M.ndim != 2:
         raise ValueError(
@@ -761,7 +761,7 @@ def stabilize_em_process_noise(
     
     Q_stable = ensure_process_noise_stable(Q, min_eigenval=min_eigenval, max_eigenval=max_eigenval, warn=warn, dtype=dtype)
     
-    # CRITICAL: Ensure Q is finite after stabilization (fallback if still problematic)
+    # Ensure Q is finite after stabilization (fallback if still problematic)
     if np.any(~np.isfinite(Q_stable)):
         _logger.error(
             f"Q is non-finite after ensure_process_noise_stable. "

@@ -33,7 +33,7 @@ class DFMDataset:
     """Dataset for DFM training.
     
     This dataset handles data loading and basic data preparation for DFM models.
-    Unlike DDFM and KDFM, DFM doesn't use PyTorch Dataset for training
+    Unlike the torch-based models, DFM doesn't use PyTorch Dataset for training
     (it uses NumPy arrays), but this class provides the same interface for consistency.
     
     Parameters

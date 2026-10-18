@@ -177,7 +177,7 @@ class TestDDFM:
         model = DDFM(dataset=dataset, encoder_size=tuple(DEFAULT_ENCODER_LAYERS))
         with pytest.raises(ModelNotTrainedError):
             model.get_result()
-        # DDFM uses get_result() method (not result property like DFM/KDFM)
+        # DDFM uses get_result() method (not a result property like DFM)
         # Verify _result attribute is None for untrained model
         assert getattr(model, '_result', None) is None
     

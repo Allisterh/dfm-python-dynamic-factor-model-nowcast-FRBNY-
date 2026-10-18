@@ -257,7 +257,7 @@ class YamlSource:
         """Load configuration from YAML file.
         
         This method loads a configuration from a YAML file, automatically detecting
-        the config type (DFM, DDFM, or KDFM) based on the presence of model-specific
+        the config type (DFM or DDFM) based on the presence of model-specific
         parameters.
         
         Returns
@@ -511,7 +511,6 @@ def make_config_source(
 # ============================================================================
 
 # Model type constants (exported for use in schema/model.py)
-# NOTE: KDFM is legacy and has been removed from this codebase.
 MODEL_TYPE_DDFM = 'ddfm'
 MODEL_TYPE_DFM = 'dfm'
 

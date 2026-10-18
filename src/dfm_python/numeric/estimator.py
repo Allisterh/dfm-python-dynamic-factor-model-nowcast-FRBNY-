@@ -601,11 +601,11 @@ def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, whic
         m = y.shape[1]
         p = x.shape[1]
         
-        # CRITICAL FIX: Cap V_smooth eigenvalues before computing EZZ to prevent explosion
+        # Cap V_smooth eigenvalues before computing EZZ to prevent explosion
         # This addresses root cause of Q explosions: V_smooth explosion → EZZ explosion → Q explosion
         # 
         if V_smooth.ndim == 3:
-            # PERFORMANCE FIX: Validate shapes BEFORE the loop to avoid exceptions in hot path
+            # Validate shapes BEFORE the loop to avoid exceptions in hot path
             # V_smooth should be (T, m, m) where each V_smooth[t] is square
             T_v, m_v, n_v = V_smooth.shape
             if m_v != n_v:
@@ -614,11 +614,11 @@ def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, whic
                     f"This indicates a bug in state structure or slicing."
                 )
             
-            # CRITICAL FIX: Sum in float64 first to prevent overflow, then cap, then cast
+            # Sum in float64 first to prevent overflow, then cap, then cast
             # The sum of 2538 large covariance matrices can exceed float32 max (~3.4e38)
             # Sum in higher precision, cap eigenvalues, then cast to target dtype
             V_smooth_sum = np.sum(V_smooth.astype(np.float64), axis=0)
-            # CRITICAL: Cap the sum after accumulation to prevent explosion
+            # Cap the sum after accumulation to prevent explosion
             V_smooth_sum = cap_max_eigenval(
                 V_smooth_sum,
                 max_eigenval=MAX_EIGENVALUE,
@@ -648,7 +648,7 @@ def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, whic
         if V_smooth_lag is not None:
             # Use explicitly provided lagged state covariance
             if V_smooth_lag.ndim == 3:
-                # PERFORMANCE FIX: Validate shapes BEFORE processing
+                # Validate shapes BEFORE processing
                 T_lag, m_lag, n_lag = V_smooth_lag.shape
                 if m_lag != n_lag:
                     raise ValueError(
@@ -656,7 +656,7 @@ def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, whic
                         f"This indicates a bug in state structure or slicing."
                     )
                 
-                # CRITICAL FIX: Sum in float64 first to prevent overflow, then cap, then cast
+                # Sum in float64 first to prevent overflow, then cap, then cast
                 V_smooth_lag_sum = np.sum(V_smooth_lag.astype(np.float64), axis=0)
                 V_smooth_lag_sum = cap_max_eigenval(
                     V_smooth_lag_sum,
@@ -679,7 +679,7 @@ def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, whic
             if V_smooth.ndim == 3:
                 # Use original V_smooth, not V_smooth_capped (which no longer exists after optimization)
                 V_smooth_lag_derived = V_smooth[:-1] if V_smooth.shape[0] == T + 1 else V_smooth
-                # CRITICAL FIX: Sum in float64 first to prevent overflow, then cap, then cast
+                # Sum in float64 first to prevent overflow, then cap, then cast
                 V_smooth_lag_sum = np.sum(V_smooth_lag_derived.astype(np.float64), axis=0)
                 # Validate shape matches x dimension
                 if V_smooth_lag_sum.shape[0] != p or V_smooth_lag_sum.shape[1] != p:
@@ -708,10 +708,10 @@ def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, whic
         x = cap_smoothed_states(x, max_eigenval=MAX_EIGENVALUE, warn=True)
         
         EZZ_FB = y[1:].T @ x if y.shape[0] > x.shape[0] else y.T @ x
-        # CRITICAL FIX: Cap VVsmooth eigenvalues as well to prevent explosion
+        # Cap VVsmooth eigenvalues as well to prevent explosion
         if VVsmooth is not None:
             if VVsmooth.ndim == 3:
-                # PERFORMANCE FIX: Validate shapes BEFORE processing
+                # Validate shapes BEFORE processing
                 T_vv, m_vv, n_vv = VVsmooth.shape
                 # NOTE: VVsmooth can be rectangular (m_vv × n_vv) when used in block updates
                 # For VAR(p) estimation, VVsmooth_block has shape (T-1, r_i, rp) where:
@@ -725,14 +725,14 @@ def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, whic
                         f"Both m_vv={m_vv} and n_vv={n_vv} must be positive."
                     )
                 
-                # CRITICAL FIX: Sum in float64 first to prevent overflow, then cap/clip, then cast
+                # Sum in float64 first to prevent overflow, then cap/clip, then cast
                 # VVsmooth is cross-covariance, so we sum over time axis
                 # NOTE: VVsmooth can be rectangular (m_vv × n_vv) for block updates
                 # For VAR(p): VVsmooth_block is (T-1, r_i, rp) where r_i < rp
                 # This is cross-covariance between current state (r_i) and lagged state (rp)
                 VVsmooth_to_sum = VVsmooth[1:] if VVsmooth.shape[0] == T + 1 else VVsmooth
                 VVsmooth_sum = np.sum(VVsmooth_to_sum.astype(np.float64), axis=0)
-                # CRITICAL: Cap the sum after accumulation
+                # Cap the sum after accumulation
                 # For rectangular matrices, only cap if square (symmetric case)
                 # For rectangular cross-covariance, just add directly (no eigenvalue capping)
                 if m_vv == n_vv:
@@ -805,7 +805,7 @@ def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, whic
             
             
             # Q = (EZZ - A @ EZZ_FB') / T
-            # CRITICAL: Check EZZ and EZZ_FB for non-finite values before computation
+            # Check EZZ and EZZ_FB for non-finite values before computation
             if np.any(~np.isfinite(EZZ)) or np.any(~np.isfinite(EZZ_FB)) or np.any(~np.isfinite(A)):
                 _logger.error(
                     f"EZZ, EZZ_FB, or A contains non-finite values before Q computation. "

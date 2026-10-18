@@ -4,7 +4,7 @@ from typing import Tuple, Optional
 import time as time_module
 import numpy as np
 from pykalman import KalmanFilter as PyKalmanFilter
-# Bug fix 3.1: Using private pykalman APIs is risky but documented
+# Using private pykalman APIs is risky but documented
 # These are private, undocumented functions that may change across versions
 # Consider migrating to public API if pykalman provides it
 from pykalman.standard import _filter, _smooth, _smooth_pair
@@ -39,7 +39,7 @@ class DFMKalmanFilter:
     ) -> None:
         self._pykalman = None
         # Cache for smoothed factors from last EM iteration (avoids recomputation during save())
-        # Bug fix 3.2: Cache is unsafe if parameters change after E-step (damping, clipping)
+        # Cache is unsafe if parameters change after E-step (damping, clipping)
         # Cache should be invalidated when parameters are updated
         self._cached_smoothed_factors: Optional[np.ndarray] = None
         # IMPORTANT:
@@ -98,7 +98,7 @@ class DFMKalmanFilter:
         initial_state_mean = np.asarray(initial_state_mean, dtype=np.float64)
         initial_state_covariance = np.asarray(initial_state_covariance, dtype=np.float64)
 
-        # CRITICAL: Stabilization biases E-step moments
+        # Stabilization biases E-step moments
         # When apply_stabilization=True, we compute p(z_t | y_{1:T}, P_t + εI) instead of p(z_t | y_{1:T}, P_t)
         # This means E-step moments are biased, and M-step optimizes a regularized surrogate Q-function
         # This is acceptable for practical EM but breaks strict EM theory
@@ -125,7 +125,7 @@ class DFMKalmanFilter:
             # This is for strict EM where numerical issues should be handled through priors
             pass
         else:
-            # Bug fix 1.1: Conditional stabilization - only apply if PSD check fails
+            # Conditional stabilization - only apply if PSD check fails
             # Unconditional diagonal loading violates Kalman consistency and breaks EM
             # Stabilization should be minimal and only when necessary
             # NOTE: PSD check is expensive (O(m³)), so we use a fast heuristic for large matrices
@@ -201,7 +201,7 @@ class DFMKalmanFilter:
                         details=f"Stabilization applied to initial_state_covariance: {self._stabilization_amount:.2e}"
                     )
             
-            # Option 4: Cap V_0 maximum eigenvalue to prevent overflow in prediction step
+            # Cap V_0 maximum eigenvalue to prevent overflow in prediction step
             # V_0 is used to compute P_pred = A @ V_0 @ A.T + Q, which can overflow if V_0 is too large
             # This matches the stabilization we do in the EM step
             try:
@@ -235,7 +235,7 @@ class DFMKalmanFilter:
             self._pykalman.initial_state_mean = initial_state_mean
             self._pykalman.initial_state_covariance = initial_state_covariance
             
-            # Bug fix 3.2: Invalidate cached smoothed factors when parameters change
+            # Invalidate cached smoothed factors when parameters change
             # Parameters have changed, so cached factors are no longer valid
             self._cached_smoothed_factors = None
     
@@ -456,7 +456,7 @@ class DFMKalmanFilter:
         
         def run_filter():
             # Use internal functions for standard KalmanFilter (more efficient, gets predicted states)
-            # Bug fix 1.3: Ensure offsets have correct shapes
+            # Ensure offsets have correct shapes
             # transition_offsets: (m,) - state dimension
             # observation_offsets: (N,) - observation dimension
             m = self._pykalman.transition_matrices.shape[0]
@@ -535,7 +535,7 @@ class DFMKalmanFilter:
                 if Z_0 is not None and not np.isfinite(Z_0).all():
                     Z_0 = np.where(np.isfinite(Z_0), Z_0, 0.0)
             
-            # Option 4: Try filter with current parameters, retry with more aggressive stabilization if overflow
+            # Try filter with current parameters, retry with more aggressive stabilization if overflow
             try:
                 return _filter(
                     A,
@@ -627,7 +627,7 @@ class DFMKalmanFilter:
         # Run filter
         predicted_state_means, predicted_state_covariances, _, filtered_state_means, filtered_state_covariances = run_filter()
         
-        # Option 4: Stabilize filtered and predicted state covariances to prevent overflow
+        # Stabilize filtered and predicted state covariances to prevent overflow
         # The overflow occurs because P_filtered grows unbounded during filtering, causing
         # A @ P_filtered @ A.T + Q to overflow in the NEXT timestep's prediction step.
         # By capping maximum eigenvalues of both filtered and predicted covariances,
@@ -639,7 +639,7 @@ class DFMKalmanFilter:
         n_predicted_recovered = 0
         
         # Stabilize filtered covariances (used in next timestep's prediction: A @ P_filtered @ A.T + Q)
-        # CRITICAL: This prevents overflow in the NEXT filter run's prediction step
+        # This prevents overflow in the NEXT filter run's prediction step
         for t in range(len(filtered_state_covariances)):
             P_filtered_t = filtered_state_covariances[t]
             # Check for non-finite values (shouldn't happen, but handle gracefully)
@@ -662,7 +662,7 @@ class DFMKalmanFilter:
                 filtered_state_covariances[t] = P_filtered_t_stab
         
         # Stabilize predicted covariances (used in correction step, can overflow if too large)
-        # CRITICAL: Overflow may have already occurred inside _filter, so we need to recover
+        # Overflow may have already occurred inside _filter, so we need to recover
         from ..numeric.stability import create_scaled_identity
         for t in range(len(predicted_state_covariances)):
             P_pred_t = predicted_state_covariances[t]
@@ -713,7 +713,7 @@ class DFMKalmanFilter:
                 f"(capped max eigenvalue to {MAX_EIGENVALUE:.2e}). This prevents overflow in prediction/correction steps."
             )
         
-        # Bug fix 1.1 & 1.2: We'll create stabilized copies inside run_smooth() and save them
+        # We'll create stabilized copies inside run_smooth() and save them
         # for use in _smooth_pair. The stabilized versions must be used consistently.
 
         filter_time = time_module.time() - filter_start
@@ -731,7 +731,7 @@ class DFMKalmanFilter:
             from ..config.constants import MIN_EIGENVALUE
             base_regularization = max(1e-6, MIN_EIGENVALUE * 100)  # 1e-4 for stability
             
-            # Bug fix 2.2: Use filtered covariance condition number, not predicted
+            # Use filtered covariance condition number, not predicted
             # Predicted covariance includes dynamics (A P A' + Q) which can legitimately have high condition
             # Filtered covariance reflects actual uncertainty and is better indicator of numerical issues
             # Adaptive regularization: check condition numbers and increase if needed
@@ -739,7 +739,7 @@ class DFMKalmanFilter:
             # Production has m=135 and conditioning ~131k
             # If condition number is very high (>1e5), increase regularization
             # GUARDRAIL: Numerical health check before expensive smoothing operation
-            # Principle 2: Refuse to smooth if state is already toxic
+            # Refuse to smooth if state is already toxic
             try:
                 # Sample a few covariance matrices to check condition
                 # Use filtered covariances (not predicted) as they better reflect numerical issues
@@ -747,7 +747,7 @@ class DFMKalmanFilter:
                 sample_indices = [i for i in sample_indices if i < len(filtered_state_covariances)]
                 max_cond = max([np.linalg.cond(filtered_state_covariances[i]) for i in sample_indices])
                 
-                # CRITICAL: Fail fast if condition number is too large
+                # Fail fast if condition number is too large
                 # Use more lenient threshold (MAX_CONDITION_NUMBER_INIT) and warn if exceeded
                 # Only error if it exceeds the stricter threshold (MAX_CONDITION_NUMBER_SMOOTHER)
                 if max_cond > MAX_CONDITION_NUMBER_SMOOTHER:
@@ -797,7 +797,7 @@ class DFMKalmanFilter:
             _logger.info(f"    Smooth: Stabilizing {len(predicted_state_covariances)} covariance matrices "
                         f"(regularization={regularization:.2e})")
             
-            # CRITICAL: Stabilization before smoothing biases E-step moments
+            # Stabilization before smoothing biases E-step moments
             # We compute p(z_t | y_{1:T}, P_t + εI) instead of p(z_t | y_{1:T}, P_t)
             # This means E-step is optimizing a regularized surrogate, not the true Q-function
             # Store stabilization amount for documentation/debugging
@@ -805,7 +805,7 @@ class DFMKalmanFilter:
             self._stabilization_applied = True
             self._stabilization_amount = max(self._stabilization_amount, regularization)
             
-            # Bug fix 1.2 & 2.3: Copy before modifying to avoid mutating pykalman's internal arrays
+            # Copy before modifying to avoid mutating pykalman's internal arrays
             # In-place mutation breaks Kalman algebra and cross-covariance identities
             # Create copies to preserve original pykalman arrays
             predicted_state_covariances_stab = predicted_state_covariances.copy()
@@ -848,7 +848,7 @@ class DFMKalmanFilter:
         _logger.info("    Smooth-pair: Computing cross-covariances...")
         smooth_pair_start = time_module.time()
         
-        # Bug fix 1.4: _smooth_pair uses mismatched covariance lineage
+        # Caveat: _smooth_pair can see mismatched covariance lineage
         # _smooth_pair signature is (smoothed_state_covariances, kalman_smoothing_gain)
         # It uses exact Kalman identities that assume consistent covariance lineage.
         # However, if smoothing used stabilized filtered/predicted covariances (apply_stabilization=True),
@@ -874,14 +874,14 @@ class DFMKalmanFilter:
             _logger.info("    Log-likelihood: Computing...")
             loglik_start = time_module.time()
             try:
-                # CRITICAL: pykalman.loglikelihood() doesn't handle masked arrays correctly
+                # pykalman.loglikelihood() doesn't handle masked arrays correctly
                 # Convert masked array to regular array with NaNs (pykalman handles NaNs for missing data)
                 if isinstance(observations, np.ma.MaskedArray):
                     observations_for_loglik = np.asarray(observations.filled(np.nan))
                 else:
                     observations_for_loglik = observations
                 
-                # Bug fix 1.3: Log-likelihood uses unstabilized pykalman internal covariances
+                # Log-likelihood uses unstabilized pykalman internal covariances
                 # but smoothing used stabilized covariances. This creates model inconsistency:
                 # - E-step moments: computed with stabilized covariances
                 # - Log-likelihood: computed with unstabilized covariances
@@ -896,7 +896,7 @@ class DFMKalmanFilter:
                     )
                 
                 loglik = self._pykalman.loglikelihood(observations_for_loglik)
-                # Bug fix 3.3: Zero log-likelihood is not inherently pathological
+                # Zero log-likelihood is not inherently pathological
                 # It depends on scaling, normalization, and constant offsets
                 # Only treat non-finite as an error
                 if not np.isfinite(loglik):

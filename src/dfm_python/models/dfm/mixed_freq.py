@@ -50,7 +50,7 @@ def find_slower_frequency(
     ConfigurationError
         If multiple slower frequencies are found in tent_weights_dict
     """
-    # Bug fix 1.1: Validate that only one slower frequency exists in tent_weights_dict
+    # Validate that only one slower frequency exists in tent_weights_dict
     # Try tent_weights_dict first
     if tent_weights_dict:
         slower_freqs_in_dict = [freq for freq in tent_weights_dict.keys() if freq != clock]
@@ -125,7 +125,7 @@ def setup_mixed_frequency_params(
     else:
         frequencies_list = []
     
-    # Bug fix 2.1: Validate frequencies_list length matches N
+    # Validate frequencies_list length matches N
     if frequencies_list and len(frequencies_list) != N:
         raise DataValidationError(
             f"Frequency list length ({len(frequencies_list)}) does not match number of series (N={N}). "
@@ -201,7 +201,7 @@ def setup_mixed_frequency_params(
     
     n_clock_freq = N - n_slower_freq
     
-    # Bug fix 2.3: Warn about column ordering assumption
+    # Warn about column ordering assumption
     # The code assumes slower-frequency series are at the end: [clock series | slower series]
     # This is a design assumption that should be validated if possible
     if frequencies_list and n_slower_freq > 0:
@@ -217,7 +217,7 @@ def setup_mixed_frequency_params(
         # Check if last n_slower_freq entries are all slower frequency
         last_n_freqs = frequencies_list[-n_slower_freq:] if len(frequencies_list) >= n_slower_freq else []
         if last_n_freqs != slower_freqs_in_list:
-            # CRITICAL: Column ordering assumption violation
+            # Column ordering assumption violation
             # The model assumes [clock series | slower series] ordering for:
             # - Block residualization (timing alignment)
             # - Tent kernel constraint application
@@ -256,7 +256,7 @@ def setup_mixed_frequency_params(
     idio_indicator = np.ones(N, dtype=np.int32)
     
     # Determine tent kernel size and validate
-    # Bug fix 2.5: Validate consistency between R_mat and tent_weights_dict
+    # Validate consistency between R_mat and tent_weights_dict
     try:
         if R_mat is not None:
             tent_kernel_size = R_mat.shape[1]
@@ -361,7 +361,7 @@ def build_slower_freq_idiosyncratic_chain(
     temp = np.zeros((chain_size, chain_size), dtype=dtype)
     temp[0, 0] = 1.0
     
-    # CRITICAL MODELING ASSUMPTION: Slower-frequency idiosyncratic variance
+    # Modeling assumption: slower-frequency idiosyncratic variance
     # ======================================================================
     # We compute innovation variance as: innovation_var = (1 - ρ²) * sig_e
     # where sig_e is observation noise variance from R matrix.

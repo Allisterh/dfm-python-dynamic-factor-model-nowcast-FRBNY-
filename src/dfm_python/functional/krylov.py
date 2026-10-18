@@ -78,20 +78,11 @@ def krylov(L, A, b, c=None, return_power=False):
             _x = x[..., :L-l]
         else: _x = x
 
-        try:
-            _x = A_ @ _x
-        except Exception as e:
-            print(e)
-            breakpoint()
+        _x = A_ @ _x
         x = torch.cat([x, _x], dim=-1) # there might be a more efficient way of ordering axes
         if not done: A_ = A_ @ A_
 
-    try:
-        assert x.shape[-1] == L
-    except:
-        print('x.shape', x.shape)
-        print('L', L)
-        breakpoint()
+    assert x.shape[-1] == L, f"krylov: expected last dim {L}, got x.shape={tuple(x.shape)}"
 
     if c is not None:
         x = torch.einsum('...nl, ...n -> ...l', x, c)

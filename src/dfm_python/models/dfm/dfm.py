@@ -308,7 +308,7 @@ class DFM(BaseFactorModel):
             Complete model state including structure, mixed-frequency parameters, and fitted state-space parameters
         """
 
-        # Bug fix 1.3: Clear cached smoothed factors on retrain
+        # Clear cached smoothed factors on retrain
         self._cached_smoothed_factors = None
         self._result = None  # Also clear result cache
         
@@ -316,7 +316,7 @@ class DFM(BaseFactorModel):
         if self._config is not None and hasattr(self._config, '_cached_blocks'):
             self._config._cached_blocks = None
         
-        # Bug fix 1.1: Use X parameter if provided, otherwise extract from dataset
+        # Use X parameter if provided, otherwise extract from dataset
         # Extract data from DFMDataset (variables and time_index are extracted at initialization)
         # Dataset provides: variables (DataFrame) and time_index (TimeIndex)
         dataset = self._dataset
@@ -350,11 +350,11 @@ class DFM(BaseFactorModel):
         # Get clock frequency from config
         clock = getattr(self._config, 'clock', DEFAULT_CLOCK_FREQUENCY)
         
-        # Bug fix 2.2: Store column names for validation (column order validation happens after standardization)
+        # Store column names for validation (column order validation happens after standardization)
         # Store column names for later validation in update()
         self._training_columns = columns
         
-        # Bug fix 1.2: Check if scaler is already fitted before fit_transform
+        # Check if scaler is already fitted before fit_transform
         # Standardize data if scaler is available
         if self.scaler is not None:
             # Check if scaler is already fitted (has mean_ or scale_ attributes)
@@ -369,7 +369,7 @@ class DFM(BaseFactorModel):
             X_np_std = X_np
         
         # GUARDRAIL: Validate data scaling after preprocessing
-        # Principle 4: Make preprocessing a contract, not a suggestion
+        # Make preprocessing a contract, not a suggestion
         # Unscaled data (e.g., raw FX levels) causes numerical instability and slow runs
         # Check AFTER scaler is applied (if provided) to catch cases where scaler wasn't applied
         data_std = np.nanstd(X_np_std, axis=0)
@@ -394,7 +394,7 @@ class DFM(BaseFactorModel):
         # Setup mixed-frequency parameters
         mf_params = setup_mixed_frequency_params(self._config, clock, columns, N_actual)
         
-        # CRITICAL: Column ordering validation is now enforced in setup_mixed_frequency_params()
+        # Column ordering validation is enforced in setup_mixed_frequency_params()
         # It will raise DataValidationError if [clock series | slower series] ordering is violated
         # This is a hard requirement for correct mixed-frequency handling
 
@@ -722,7 +722,7 @@ class DFM(BaseFactorModel):
             self._training_num_iter = training_metadata['num_iter']
             self._training_converged = training_metadata['converged']
             
-            # CRITICAL: Invalidate cached smoothed factors on retrain
+            # Invalidate cached smoothed factors on retrain
             # Cached factors become stale after parameter updates
             self._result = None
             self._cached_smoothed_factors = None
@@ -734,7 +734,7 @@ class DFM(BaseFactorModel):
             # Get last smoothed state as initial state for new data
             Z_last = self._get_last_state(result)
             
-            # Bug fix 1.4: Use last filtered covariance, not initial covariance V_0
+            # Use last filtered covariance, not initial covariance V_0
             # V_0 is initial state covariance, not the covariance of the last filtered state
             # We need to run filter once to get the last filtered covariance
             kalman_temp = self._create_kalman_filter()
@@ -781,7 +781,7 @@ class DFM(BaseFactorModel):
             self.data_processed = np.vstack([self.data_processed, data_new])
             result.x_sm = result.Z @ result.C.T
             
-            # CRITICAL: Invalidate cached smoothed factors after update
+            # Invalidate cached smoothed factors after update
             # Cached factors are now stale because result.Z was mutated
             self._cached_smoothed_factors = None
             self._result = result  # Update cached result with new Z

@@ -68,7 +68,7 @@ def generate_tent_weights(n_periods: int, tent_type: str = 'symmetric') -> np.nd
             details=f"Invalid tent_type: {tent_type}"
         )
     
-    # Bug fix 1.1: Don't truncate non-integer weights (exponential, linear)
+    # Don't truncate non-integer weights (exponential, linear)
     # Only convert to int if all values are already integers (symmetric case)
     # For exponential/linear, preserve float precision
     if tent_type in ('exponential', 'linear'):
@@ -113,7 +113,7 @@ def generate_R_mat(tent_weights: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     q : np.ndarray
         Constraint vector of zeros, shape (n-1,)
     """
-    # Bug fix 4.4: Validate tent weights
+    # Validate tent weights
     if len(tent_weights) == 0:
         raise DataValidationError(
             "Tent weights array is empty",
@@ -218,7 +218,7 @@ def get_agg_structure(
     
     # Get frequencies from config (new API: frequency dict)
     frequencies_list = config.get_frequencies()
-    # Bug fix 4.1: Preserve frequency counts, don't use set() which loses multiplicity
+    # Preserve frequency counts, don't use set() which loses multiplicity
     # We still need unique frequencies for iteration, but we'll track counts separately
     frequencies = set(frequencies_list) if frequencies_list else set()
     # Track frequency counts for validation
@@ -237,7 +237,7 @@ def get_agg_structure(
     
     if config_tent_weights is None:
         # No tent weights in config - check if any slower frequencies exist
-        # Bug fix 4.3: Use DEFAULT_HIERARCHY_VALUE consistently instead of hardcoded 999
+        # Unknown frequencies fall back to DEFAULT_HIERARCHY_VALUE
         clock_hierarchy = FREQUENCY_HIERARCHY.get(clock, DEFAULT_HIERARCHY_VALUE)
         slower_freqs = [freq for freq in frequencies 
                        if FREQUENCY_HIERARCHY.get(freq, DEFAULT_HIERARCHY_VALUE) > clock_hierarchy]
@@ -249,7 +249,6 @@ def get_agg_structure(
                 details=f"Slower frequencies detected: {slower_freqs}, clock: {clock}"
             )
     
-    # Bug fix 4.3: Use DEFAULT_HIERARCHY_VALUE consistently
     clock_hierarchy_val = FREQUENCY_HIERARCHY.get(clock, DEFAULT_HIERARCHY_VALUE)
     for freq in frequencies:
         freq_hierarchy_val = FREQUENCY_HIERARCHY.get(freq, DEFAULT_HIERARCHY_VALUE)
@@ -284,7 +283,7 @@ def get_agg_structure(
                 if not isinstance(tent_w, np.ndarray):
                     tent_w = np.array(tent_w)
                 
-                # Bug fix 4.2: Warn/raise when tent size exceeds MAX_TENT_SIZE
+                # Warn/raise when tent size exceeds MAX_TENT_SIZE
                 if len(tent_w) > MAX_TENT_SIZE:
                     raise DataValidationError(
                         f"Tent kernel size {len(tent_w)} exceeds maximum allowed size {MAX_TENT_SIZE} "
@@ -357,7 +356,7 @@ def group_by_freq(
     
     
     for idx in idx_i:
-        # Bug fix 5.1: Raise error instead of silently skipping out-of-bounds indices
+        # Raise error instead of silently skipping out-of-bounds indices
         if idx >= len(frequencies):
             raise DataValidationError(
                 f"Index {idx} is out of bounds for frequencies array (length {len(frequencies)}). "

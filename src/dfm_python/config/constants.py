@@ -69,7 +69,6 @@ DEFAULT_CLEAN_INF = MAX_EIGENVALUE  # Default value for Inf replacement in clean
 # Identity matrix defaults
 DEFAULT_IDENTITY_SCALE = 1.0  # Default scale for create_scaled_identity(n, 1.0)
 DEFAULT_ZERO_VALUE = 0.0  # Default zero value for explicit zero assignments
-DEFAULT_INF_VALUE = float('inf')  # Default infinity value for loss/scale comparisons
 DEFAULT_XAVIER_GAIN = 1.0  # Default gain for Xavier initialization (matches TensorFlow GlorotNormal)
 DEFAULT_OUTPUT_LAYER_GAIN = 1.0  # Default gain for output layer Xavier initialization (matches original TensorFlow DDFM GlorotNormal for all layers)
 # NOTE: Original TensorFlow DDFM uses GlorotNormal (gain=1.0) for all layers including output layer.
@@ -155,9 +154,6 @@ DEFAULT_PLACEHOLDER_SEED = 42  # Seed for placeholder random state (common test 
 DEFAULT_NUM_WORKERS = 0  # Default number of workers for DataLoader (0 = single-threaded)
 DEFAULT_CUDA_DEVICE_INDEX = 0  # Default CUDA device index for GPU operations (0 = first GPU)
 
-# Initialization sample size defaults
-DEFAULT_KDFM_INIT_SAMPLE_SIZE = 100  # Default sample size for KDFM initialization (first N rows used for initialize_from_data)
-
 # Learning rate defaults
 DEFAULT_LEARNING_RATE = 0.001  # Default learning rate
 DEFAULT_DDFM_LEARNING_RATE = 0.005  # Default learning rate for DDFM
@@ -211,7 +207,7 @@ DEFAULT_SEED = 3  # Default random seed for reproducibility
 # Structural identification defaults
 DEFAULT_STRUCTURAL_REG_WEIGHT = 0.1  # Default weight for structural regularization loss
 DEFAULT_STRUCTURAL_INIT_SCALE = 0.1  # Default initialization scale for structural matrices
-DEFAULT_STRUCTURAL_DIAG_SCALE = 1.0  # Default diagonal scale for structural matrices (FIXED Iteration 7: was 0.1, caused near-singular S)
+DEFAULT_STRUCTURAL_DIAG_SCALE = 1.0  # Default diagonal scale for structural matrices (0.1 caused near-singular S)
 DEFAULT_CHOLESKY_EPS = 1e-6  # Default epsilon for Cholesky decomposition stability
 CHOLESKY_LOG_DET_FACTOR = 2.0  # Factor for log determinant computation from Cholesky decomposition (log det = 2.0 * sum(log(diag(L))))
 
@@ -336,13 +332,6 @@ DEFAULT_FORECAST_HORIZON = 6  # Default horizon for forecast computation
 # Common exception types for computation error handling
 # Used to consolidate duplicate exception handling patterns across models
 COMPUTATION_ERROR_TYPES = (RuntimeError, ValueError, TypeError, AttributeError, KeyError)
-
-# ============================================================================
-# KDFM Defaults
-# ============================================================================
-
-DEFAULT_KDFM_AR_ORDER = 1  # Default AR order (VAR lag order p) for KDFM
-DEFAULT_KDFM_MA_ORDER = 0  # Default MA order (MA lag order q) for KDFM (0 = pure VAR)
 
 # ============================================================================
 # iVDFM Defaults
@@ -545,7 +534,6 @@ __all__ = [
     'DEFAULT_PLACEHOLDER_SEED',  # Placeholder random seed default (42)
     'DEFAULT_NUM_WORKERS',  # DataLoader num_workers default (0)
     'DEFAULT_CUDA_DEVICE_INDEX',  # CUDA device index default (0 = first GPU)
-    'DEFAULT_KDFM_INIT_SAMPLE_SIZE',  # KDFM initialization sample size default (100)
     'DEFAULT_LEARNING_RATE',
     'DEFAULT_DDFM_LEARNING_RATE',
     'DEFAULT_AUTOENCODER_FIT_EPOCHS',
@@ -631,9 +619,6 @@ __all__ = [
     'DEFAULT_FORECAST_HORIZON',
     # Error handling
     'COMPUTATION_ERROR_TYPES',
-    # KDFM defaults
-    'DEFAULT_KDFM_AR_ORDER',
-    'DEFAULT_KDFM_MA_ORDER',
     # iVDFM defaults
     'DEFAULT_IVDFM_LATENT_DIM',
     'DEFAULT_IVDFM_AUX_DIM',

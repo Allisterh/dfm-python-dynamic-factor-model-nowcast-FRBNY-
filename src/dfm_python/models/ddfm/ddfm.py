@@ -40,7 +40,6 @@ from ...config.constants import (
     DEFAULT_DISP,
     DEFAULT_SEED,
     DEFAULT_FACTOR_ORDER,
-    DEFAULT_INF_VALUE,
     DEFAULT_ENCODER_LAYERS,
     DEFAULT_LR_DECAY_RATE,
     DEFAULT_MULT_EPOCH_PRETRAIN,
@@ -905,7 +904,7 @@ class DDFM(BaseFactorModel, nn.Module):
             target_scaler=self.scaler,  # Store scaler in target_scaler field (DFMResult API)
             converged=getattr(self, '_converged', False),
             num_iter=getattr(self, '_num_iter', self.max_iter),  # Use actual iteration count if available
-            loglik=-DEFAULT_INF_VALUE  # DDFM doesn't compute log-likelihood
+            loglik=-float('inf')  # DDFM doesn't compute log-likelihood
         )
 
     def update(self, data: Union[np.ndarray, Any], *args, **kwargs) -> None:
@@ -1060,7 +1059,7 @@ class DDFM(BaseFactorModel, nn.Module):
         
         # Validate dataset has same number of features and column order
         # DDFMDataset has self.data (DataFrame), not data_processed attribute
-        # CRITICAL: Column order must match training data exactly for correct scaling
+        # Column order must match training data exactly for correct scaling
         new_data_df = dataset.data.copy()
         training_data_df = self.data.copy()
         

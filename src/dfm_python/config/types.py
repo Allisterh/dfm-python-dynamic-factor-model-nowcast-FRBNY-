@@ -59,8 +59,6 @@ CoefficientMatrix = np.ndarray
 CovarianceMatrix = np.ndarray
 """Covariance matrix (e.g., Q, R). Shape: (K, K) or (m, m)."""
 
-# IRFArray and CompanionMatrix removed - these were KDFM-specific types
-
 # ============================================================================
 # Configuration Types
 # ============================================================================
@@ -103,8 +101,6 @@ ForecastDict = Dict[str, Union[float, np.ndarray, Dict[str, Any]]]
 
 MetricsDict = Dict[str, float]
 """Metrics dictionary (RMSE, MAE, R², etc.)."""
-
-# IRFResultDict removed - this was KDFM-specific type
 
 CheckpointDict = Dict[str, Any]
 """Model checkpoint dictionary."""
