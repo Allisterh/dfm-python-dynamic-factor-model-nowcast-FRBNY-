@@ -591,27 +591,27 @@ def compute_cov_safe(
             # Ensure minimum variance
             np.fill_diagonal(cov, np.maximum(np.diag(cov), MIN_VARIANCE_COVARIANCE))
         else:
-            # Standard covariance (listwise deletion)
+            # Standard covariance (listwise deletion over observations).
+            # rowvar=True: data is (N, T), observations are columns.
+            # rowvar=False: data is (T, N), observations are rows.
             if rowvar:
-                complete_rows = np.all(np.isfinite(data), axis=1)
-                if np.sum(complete_rows) < 2:
-                    raise DataError(
-                        "Insufficient complete observations for covariance",
-                        details=f"Only {np.sum(complete_rows)} complete rows available, need at least 2 for covariance computation"
-                    )
-                data_clean = data[complete_rows, :]
-                data_for_cov = data_clean.T  # (N, T)
-                cov = np.cov(data_for_cov, rowvar=True)  # Returns (N, N)
-            else:
                 complete_cols = np.all(np.isfinite(data), axis=0)
                 if np.sum(complete_cols) < 2:
                     raise DataError(
                         "Insufficient complete observations for covariance",
                         details=f"Only {np.sum(complete_cols)} complete columns available, need at least 2 for covariance computation"
                     )
-                data_clean = data[:, complete_cols]
-                data_for_cov = data_clean.T  # (T, N)
-                cov = np.cov(data_for_cov, rowvar=False)  # Returns (N, N)
+                data_clean = data[:, complete_cols]  # (N, T)
+                cov = np.cov(data_clean, rowvar=True)  # Returns (N, N)
+            else:
+                complete_rows = np.all(np.isfinite(data), axis=1)
+                if np.sum(complete_rows) < 2:
+                    raise DataError(
+                        "Insufficient complete observations for covariance",
+                        details=f"Only {np.sum(complete_rows)} complete rows available, need at least 2 for covariance computation"
+                    )
+                data_clean = data[complete_rows, :]  # (T, N)
+                cov = np.cov(data_clean, rowvar=False)  # Returns (N, N)
             
             # np.cov can sometimes return unexpected shapes, so verify
             if cov.ndim == 0:

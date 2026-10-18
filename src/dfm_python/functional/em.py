@@ -1498,6 +1498,10 @@ def run_em_algorithm(
         if num_iter < 3:
             _logger.info(f"Starting iteration {num_iter + 1}/{max_iter}...")
         
+        # Parameters from the last iteration that passed the finiteness check.
+        # Returned instead of the non-finite update if this iteration diverges.
+        last_finite_state = state
+        
         try:
             state, loglik, kalman_filter_updated = em_step(
                 X, state, kalman_filter=kalman_filter, config=config,
@@ -1565,6 +1569,8 @@ def run_em_algorithm(
             _logger.error(f"EM: NaN/Inf detected at iteration {num_iter + 1}, stopping")
             _logger.error(f"  Parameter shapes - A: {state.A.shape if state.A is not None else None}, C: {state.C.shape if state.C is not None else None}, Q: {state.Q.shape if state.Q is not None else None}, R: {state.R.shape if state.R is not None else None}")
             _logger.error(f"  Loglik: {loglik}, isfinite: {np.isfinite(loglik) if isinstance(loglik, (int, float, np.number)) else 'N/A'}")
+            _logger.error("  Keeping parameters from the last finite iteration.")
+            state = last_finite_state
             break
         
         if num_iter == 0 and loglik < -1e10:

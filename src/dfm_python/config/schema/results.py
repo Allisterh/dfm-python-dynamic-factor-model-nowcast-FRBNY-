@@ -214,6 +214,8 @@ class BaseResult(ABC):
         lines.append(f"  Iterations: {self.num_iter}")
         if self.objective is not None:
             lines.append(f"  Objective: {self.objective:.6f}")
+        if self.loglik is not None:
+            lines.append(f"  Log-likelihood: {self.loglik:.4f}")
         lines.append("")
         
         lines.append("=" * 80)
