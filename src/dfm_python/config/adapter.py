@@ -285,7 +285,10 @@ class YamlSource:
         try:
             from omegaconf import OmegaConf
         except ImportError:
-            raise ImportError("omegaconf is required for YAML config loading. Install with: pip install omegaconf")
+            raise ImportError(
+                "omegaconf is required for YAML config loading. "
+                "Install it with: pip install 'dfm-python[yaml]'"
+            ) from None
         
         configfile = Path(self.yaml_path)
         if not configfile.exists():

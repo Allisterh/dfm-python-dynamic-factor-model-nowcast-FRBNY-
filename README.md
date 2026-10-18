@@ -23,6 +23,21 @@ pip install dfm-python        # or: uv add dfm-python
 
 Requires Python 3.10 or later; PyTorch is a required dependency.
 
+Optional extras:
+
+| Extra      | Adds        | Needed for                                              |
+|------------|-------------|---------------------------------------------------------|
+| `yaml`     | omegaconf   | loading configs from YAML (`YamlSource`)                |
+| `tune`     | optuna      | iVDFM hyperparameter search                             |
+| `metrics`  | sktime      | `calculate_rmse`, `calculate_mae`                       |
+| `polars`   | polars      | passing polars DataFrames to the dataset classes        |
+| `examples` | hydra-core  | running the scripts in `tutorial/`                      |
+| `all`      | all of the above |                                                    |
+
+```bash
+pip install "dfm-python[yaml,tune]"
+```
+
 ## DFM
 
 Pass preprocessed data; the model standardizes it internally.

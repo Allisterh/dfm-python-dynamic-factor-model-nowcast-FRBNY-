@@ -22,48 +22,45 @@ classifiers = [
 ]
 dependencies = [
     "einops>=0.8.1",
-    "hydra-core>=1.3.2",
-    "matplotlib>=3.5.0",
     "numpy>=1.24.0",
-    "optuna>=4.7.0",
     "pandas>=2.0.0",
-    "pyarrow>=22.0.0",
     "pykalman>=0.11.0",
-    "pytorch-lightning>=2.0.0",
     "scikit-learn>=1.7.2",
     "scipy>=1.10.0",
-    "sktime>=0.40.1",
     "torch>=2.0.0",
 ]
 
 [project.optional-dependencies]
-hydra = [
-    "hydra-core>=1.3.0",
+# iVDFM hyperparameter search (dfm_python.models.ivdfm.optuna)
+tune = [
+    "optuna>=4.7.0",
+]
+# Loading configurations from YAML files or OmegaConf DictConfig objects
+yaml = [
     "omegaconf>=2.3.0",
 ]
-db = [
-    "sqlalchemy>=2.0.0",
-    # psycopg2-binary for PostgreSQL (optional, install separately if needed)
+# calculate_rmse / calculate_mae (dfm_python.utils.metric)
+metrics = [
+    "sktime>=0.40.1",
 ]
-deep = [
-    # torch is now a core dependency (required for DFM EM algorithm)
-    # This section kept for backward compatibility
+# Passing polars DataFrames to the dataset classes
+polars = [
+    "polars>=1.0.0",
 ]
-transform = [
-    "sktime>=0.27.0",
+# Running the scripts in tutorial/ (Hydra entry points)
+examples = [
+    "hydra-core>=1.3.2",
+    "omegaconf>=2.3.0",
 ]
-forecasting = [
-    "sktime[forecasting]>=0.40.1",
+all = [
+    "dfm-python[tune,yaml,metrics,polars,examples]",
 ]
 dev = [
     "pytest>=7.0.0",
     "pytest-cov>=4.0.0",
-    "scikit-learn>=1.0.0",
+    "ruff>=0.6.0",
     "build>=1.4.0",
     "twine>=6.2.0",
-]
-all = [
-    "dfm-python[hydra,db,dev,deep,transform]",
 ]
 
 [build-system]
@@ -76,8 +73,6 @@ allow-direct-references = false
 allow-license-file = false
 
 [tool.hatch.build.targets.wheel]
-# Include DFM module
-# All application-specific code (adapters, database, scripts, etc.) is automatically excluded
 packages = [
     "src/dfm_python",
 ]
@@ -91,8 +86,10 @@ exclude = [
 ]
 
 [dependency-groups]
+# Development tooling for uv (`uv sync` installs this group by default).
+# The package list lives in the `dev` extra above; this group points at it.
 dev = [
-    "pytest>=9.0.1",
+    "dfm-python[dev]",
 ]
 
 [project.urls]

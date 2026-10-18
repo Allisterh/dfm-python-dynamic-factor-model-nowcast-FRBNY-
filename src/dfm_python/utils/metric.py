@@ -86,7 +86,7 @@ def calculate_rmse(
     if not _has_sktime:
         raise ImportError(
             "sktime is required for calculate_rmse. "
-            "Please install: pip install sktime"
+            "Install it with: pip install 'dfm-python[metrics]'"
         )
     
     # Ensure arrays are the same shape
@@ -202,7 +202,7 @@ def calculate_mae(
     if not _has_sktime:
         raise ImportError(
             "sktime is required for calculate_mae. "
-            "Please install: pip install sktime"
+            "Install it with: pip install 'dfm-python[metrics]'"
         )
     
     # Ensure arrays are the same shape

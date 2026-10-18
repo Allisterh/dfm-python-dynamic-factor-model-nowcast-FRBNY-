@@ -20,6 +20,18 @@ from ..ivdfm import iVDFM
 _logger = get_logger(__name__)
 
 
+def _require_optuna():
+    """Import optuna, or raise an ImportError naming the extra that provides it."""
+    try:
+        import optuna
+    except ImportError as e:
+        raise ImportError(
+            "optuna is required for iVDFM hyperparameter optimization. "
+            "Install it with: pip install 'dfm-python[tune]'"
+        ) from e
+    return optuna
+
+
 # -----------------------------------------------------------------------------
 # Subset sampling (latest windows)
 # -----------------------------------------------------------------------------
@@ -193,7 +205,7 @@ def suggest_ivdfm_hyperparameters_causal(
 
     Caller must merge the returned dict with fixed structural config (e.g. from base model).
     """
-    import optuna
+    optuna = _require_optuna()
 
     fixed = dict(fixed or {})
 
@@ -253,7 +265,7 @@ def suggest_ivdfm_hyperparameters(
     search_scope: "focused" = narrower lr/epochs for already-optimized datasets (ETT); None/"full" = wider for others.
     For causal/IRF experiments use suggest_ivdfm_hyperparameters_causal instead.
     """
-    import optuna
+    optuna = _require_optuna()
 
     fixed = dict(fixed or {})
     _exclude = {"max_regimes", "max_window", "min_window", "train_window_ratio", "min_stride"}
@@ -400,7 +412,7 @@ def create_objective(
     """Build an Optuna objective: suggest params, subset data, train iVDFM, predict, return metric."""
 
     def objective(trial: "optuna.Trial") -> float:
-        import optuna
+        optuna = _require_optuna()
 
         try:
             params = suggest_ivdfm_hyperparameters(
@@ -592,7 +604,7 @@ def run_hyperparameter_optimization(
     study : optuna.Study
         Completed study.
     """
-    import optuna
+    optuna = _require_optuna()
 
     if device is None:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
