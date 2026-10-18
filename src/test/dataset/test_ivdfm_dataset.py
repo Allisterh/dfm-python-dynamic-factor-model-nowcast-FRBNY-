@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import torch
 from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
-from dfm_python.config.constants import DEFAULT_TORCH_DTYPE, DEFAULT_IVDFM_SEQUENCE_LENGTH
+from dfm_python.config.constants import DEFAULT_TORCH_DTYPE
 
 
 class TestiVDFMDataset:
@@ -17,11 +17,11 @@ class TestiVDFMDataset:
         T, N = 50, 5
         data = np.random.randn(T, N)
         
-        dataset = iVDFMDataset(data=data, sequence_length=10)
+        dataset = iVDFMDataset(data=data, window=10, stride=1)
         
         assert dataset is not None
         assert dataset.data_dim == N
-        assert dataset.context_dim == 1  # Default context_dim
+        assert dataset.context_dim == 1  # Default time_context
         assert len(dataset) == T - 10 + 1
     
     def test_ivdfm_dataset_with_dataframe(self):
@@ -33,7 +33,7 @@ class TestiVDFMDataset:
             columns=[f'series_{i}' for i in range(N)]
         )
         
-        dataset = iVDFMDataset(data=data, sequence_length=10)
+        dataset = iVDFMDataset(data=data, window=10, stride=1)
         
         assert dataset.data_dim == N
         assert len(dataset.target_series) == N
@@ -50,7 +50,7 @@ class TestiVDFMDataset:
         
         dataset = iVDFMDataset(
             data=data,
-            sequence_length=10,
+            window=10, stride=1,
             context=['context1', 'context2']
         )
         
@@ -67,7 +67,7 @@ class TestiVDFMDataset:
         
         dataset = iVDFMDataset(
             data=data,
-            sequence_length=10,
+            window=10, stride=1,
             context=[0, 1]  # First two columns as context
         )
         
@@ -80,12 +80,12 @@ class TestiVDFMDataset:
         T, N = 50, 5
         data = np.random.randn(T, N)
         
-        # When context is None, time-based context is generated with context_dim
+        # When context is None, time-based context is generated with time_context
         dataset = iVDFMDataset(
             data=data,
-            sequence_length=10,
+            window=10, stride=1,
             context=None,  # No context columns provided
-            context_dim=2  # Generate time-based context with dimension 2
+            time_context=2  # Generate time-based context with dimension 2
         )
         
         assert dataset.context_dim == 2
@@ -114,9 +114,9 @@ class TestiVDFMDataset:
         
         dataset = iVDFMDataset(
             data=df,
-            sequence_length=10,
+            window=10, stride=1,
             context=['regime_0', 'regime_1', 'regime_2'],  # Extract regime from data
-            context_dim=3
+            time_context=3
         )
         
         assert dataset.context_dim == 6  # time(3) + regime(3)
@@ -140,7 +140,7 @@ class TestiVDFMDataset:
         
         dataset = iVDFMDataset(
             data=df,
-            sequence_length=10,
+            window=10, stride=1,
             context=['context_0', 'context_1', 'context_2']  # Extract context from data
         )
         
@@ -154,7 +154,7 @@ class TestiVDFMDataset:
         data = np.random.randn(T, N)
         sequence_length = 10
         
-        dataset = iVDFMDataset(data=data, sequence_length=sequence_length)
+        dataset = iVDFMDataset(data=data, window=sequence_length, stride=1)
         
         # Get first sequence
         y_seq, u_seq = dataset[0]
@@ -173,7 +173,7 @@ class TestiVDFMDataset:
         data = np.random.randn(T, N)
         sequence_length = 10
         
-        dataset = iVDFMDataset(data=data, sequence_length=sequence_length)
+        dataset = iVDFMDataset(data=data, window=sequence_length, stride=1)
         
         expected_len = T - sequence_length + 1
         assert len(dataset) == expected_len
@@ -184,7 +184,7 @@ class TestiVDFMDataset:
         T, N = 50, 5
         data = np.random.randn(T, N)
         
-        dataset = iVDFMDataset(data=data, sequence_length=10, context_dim=2)
+        dataset = iVDFMDataset(data=data, window=10, stride=1, time_context=2)
         
         assert dataset.data_dim == N
         assert dataset.context_dim == 2
@@ -202,7 +202,7 @@ class TestiVDFMDataset:
         
         dataset = iVDFMDataset(
             data=data,
-            sequence_length=10,
+            window=10, stride=1,
             context=['context1', 'context2']
         )
         
@@ -226,9 +226,9 @@ class TestiVDFMDataset:
         # and fallback to time-based context generation
         dataset = iVDFMDataset(
             data=data,
-            sequence_length=10,
+            window=10, stride=1,
             context=['nonexistent_col'],  # Column doesn't exist
-            context_dim=1  # Will generate time-based context instead
+            time_context=1  # Will generate time-based context instead
         )
         
         # Should fallback to time-based context
@@ -250,8 +250,8 @@ class TestiVDFMDataset:
             time_idx="date",
             covariates=["x1", "x2"],
             context=["aux1"],
-            sequence_length=10,
-            context_dim=1,
+            window=10, stride=1,
+            time_context=1,
         )
 
         assert dataset.data_dim == 2
@@ -266,7 +266,7 @@ class TestiVDFMDataset:
         T, N = 50, 5
         data_tensor = torch.randn(T, N)
         
-        dataset = iVDFMDataset(data=data_tensor, sequence_length=10)
+        dataset = iVDFMDataset(data=data_tensor, window=10, stride=1)
         
         assert dataset.data_dim == N
         assert isinstance(dataset.data, np.ndarray)
@@ -278,7 +278,7 @@ class TestiVDFMDataset:
         data = np.random.randn(T, N)
         sequence_length = 15
         
-        dataset = iVDFMDataset(data=data, sequence_length=sequence_length)
+        dataset = iVDFMDataset(data=data, window=sequence_length, stride=1)
         
         assert len(dataset) == T - sequence_length + 1
         assert len(dataset) == 6

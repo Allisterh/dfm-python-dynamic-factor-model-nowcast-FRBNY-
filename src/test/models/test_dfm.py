@@ -147,8 +147,8 @@ class TestDFM:
                 }
             },
             frequency={
-                'w': [f'weekly_{i}' for i in range(n_weekly)],
-                'm': [f'monthly_{i}' for i in range(n_monthly)]
+                **{f'weekly_{i}': 'w' for i in range(n_weekly)},
+                **{f'monthly_{i}': 'm' for i in range(n_monthly)},
             },
             clock='w',
             tent_weights={'m:w': [1, 2, 1]}  # Tent kernel for monthly-to-weekly aggregation

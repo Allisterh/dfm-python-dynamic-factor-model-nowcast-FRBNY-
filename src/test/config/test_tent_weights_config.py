@@ -212,9 +212,10 @@ class TestDatasetTentWeightsIntegration:
         # Create minimal data
         dates = pd.date_range('2020-01-01', periods=20, freq='W')
         data = pd.DataFrame({
+            'date': dates,
             'weekly_series': np.random.randn(20),
             'monthly_series': [np.nan] * 19 + [1.0],  # Only last value (monthly observation)
-        }, index=dates)
+        })
         
         # Config with custom tent weights
         config_dict = {
@@ -227,10 +228,15 @@ class TestDatasetTentWeightsIntegration:
         config = DFMConfig.from_dict(config_dict)
         
         # Create dataset
-        dataset = DFMDataset(config=config, data=data)
+        dataset = DFMDataset(config=config, data=data, time_index='date')
         
-        # Verify dataset has tent weights
-        init_params = dataset.get_initialization_params()
+        # Mixed-frequency parameters are resolved from the dataset's config
+        # and columns (formerly DFMDataset.get_initialization_params()).
+        from dfm_python.models.dfm.mixed_freq import setup_mixed_frequency_params
+        columns = list(dataset.variables.columns)
+        init_params = setup_mixed_frequency_params(
+            dataset.config, dataset.config.clock, columns, len(columns)
+        )
         assert 'tent_weights_dict' in init_params
         assert init_params['tent_weights_dict'] is not None
         

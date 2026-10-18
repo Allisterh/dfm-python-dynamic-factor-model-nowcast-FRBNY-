@@ -64,12 +64,16 @@ class TestImputeForInit:
         assert np.all(result == 0.0)  # Should fallback to 0.0
     
     def test_impute_mean_fallback(self):
-        """Test mean fallback for remaining NaNs."""
+        """Trailing NaNs are forward filled before the mean fallback applies.
+
+        The documented order is forward fill -> backward fill -> mean, so the
+        mean fallback only triggers when no observed value exists (see
+        test_impute_all_nan); trailing NaNs take the last observed value.
+        """
         data = np.array([1.0, 2.0, np.nan, np.nan])
         result = impute_for_init(data)
         assert not np.any(np.isnan(result))
-        # Should use mean (1.5) for remaining NaNs
-        assert np.allclose(result[2:], 1.5)
+        assert np.allclose(result[2:], 2.0)
 
 
 class TestInitializeBlockLoadings:
@@ -128,7 +132,6 @@ class TestInitializeBlockLoadings:
             max_lag_size=max_lag_size,
             matrix_regularization=DEFAULT_REGULARIZATION,
             dtype=DEFAULT_DTYPE,
-            impute_func=impute_for_init
         )
         
         # Verify output shapes
@@ -183,7 +186,6 @@ class TestInitializeBlockLoadings:
             max_lag_size=max_lag_size,
             matrix_regularization=DEFAULT_REGULARIZATION,
             dtype=DEFAULT_DTYPE,
-            impute_func=impute_for_init
         )
         
         # Should still produce valid output

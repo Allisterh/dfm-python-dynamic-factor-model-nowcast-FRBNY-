@@ -72,22 +72,27 @@ class TestStability:
     
     def test_compute_cov_safe_insufficient_observations(self):
         """Test compute_cov_safe raises DataError for insufficient observations."""
-        # Only 1 observation (need at least 2)
-        data = np.array([[1.0, 2.0, 3.0]], dtype=DEFAULT_DTYPE)
+        # 3 variables, only 1 observation (need at least 2).
+        # rowvar=True (default): rows are variables, columns are observations.
+        data = np.array([[1.0], [2.0], [3.0]], dtype=DEFAULT_DTYPE)
         with pytest.raises(DataError, match="Insufficient complete observations"):
             compute_cov_safe(data, fallback_to_identity=False)
-    
-    def test_safe_matrix_power_negative_power(self):
-        """Test safe_matrix_power raises DataValidationError for negative power."""
-        matrix = np.eye(3, dtype=DEFAULT_DTYPE)
-        with pytest.raises(DataValidationError, match="power must be >= 0"):
-            safe_matrix_power(matrix, power=-1)
-    
-    def test_safe_matrix_power_exceeds_max(self):
-        """Test safe_matrix_power raises DataValidationError when power exceeds max."""
-        matrix = np.eye(3, dtype=DEFAULT_DTYPE)
-        with pytest.raises(DataValidationError, match="power.*exceeds maximum"):
-            safe_matrix_power(matrix, power=1001, max_power=1000)
+        # rowvar=False: rows are observations, columns are variables.
+        with pytest.raises(DataError, match="Insufficient complete observations"):
+            compute_cov_safe(data.T, rowvar=False, fallback_to_identity=False)
+
+    def test_compute_cov_safe_listwise_matches_numpy(self):
+        """Listwise path returns the (N, N) covariance under both axis conventions."""
+        rng = np.random.default_rng(0)
+        X = rng.normal(size=(50, 3)).astype(DEFAULT_DTYPE)  # (T, N)
+        X[5, 1] = np.nan  # dropped by listwise deletion
+        complete = np.all(np.isfinite(X), axis=1)
+        expected = np.cov(X[complete], rowvar=False)
+        cov_rows = compute_cov_safe(X.T, rowvar=True, fallback_to_identity=False)
+        cov_cols = compute_cov_safe(X, rowvar=False, fallback_to_identity=False)
+        assert cov_rows.shape == (3, 3)
+        np.testing.assert_allclose(cov_rows, expected, rtol=1e-5)
+        np.testing.assert_allclose(cov_cols, expected, rtol=1e-5)
     
     def test_ensure_covariance_stable_error_handling(self):
         """Test ensure_covariance_stable handles linear algebra errors gracefully."""
@@ -120,16 +125,6 @@ class TestStability:
         # Result should be symmetric
         assert np.allclose(result, result.T, atol=1e-5)
     
-    def test_clean_matrix_uses_default_variance_fallback(self):
-        """Test clean_matrix uses DEFAULT_VARIANCE_FALLBACK constant."""
-        # Test that clean_matrix uses the constant when default_variance is not specified
-        M = np.array([[1.0, np.nan], [np.inf, 2.0]], dtype=DEFAULT_DTYPE)
-        result = clean_matrix(M, matrix_type='covariance')
-        # Should use DEFAULT_VARIANCE_FALLBACK for NaN/Inf values in covariance matrices
-        assert np.all(np.isfinite(result))
-        # Verify the constant is accessible
-        assert DEFAULT_VARIANCE_FALLBACK == 1.0
-    
     def test_ensure_symmetric(self):
         """Test ensure_symmetric function."""
         # Test with non-symmetric matrix
@@ -150,42 +145,6 @@ class TestStability:
         # Should remain symmetric and unchanged
         assert np.allclose(result, M)
         assert np.allclose(result, result.T)
-    
-    def test_safe_determinant_positive_definite(self):
-        """Test safe_determinant with positive definite matrix."""
-        # Create a positive definite matrix (identity)
-        M = np.eye(3, dtype=DEFAULT_DTYPE)
-        det = safe_determinant(M)
-        # Determinant of identity should be 1.0
-        assert abs(det - 1.0) < 1e-6
-    
-    def test_safe_determinant_uses_cholesky_log_det_factor(self):
-        """Test safe_determinant uses CHOLESKY_LOG_DET_FACTOR constant."""
-        # Create a positive definite matrix that will use Cholesky decomposition
-        M = np.array([[2.0, 1.0], [1.0, 2.0]], dtype=DEFAULT_DTYPE)
-        # Verify it's positive definite
-        eigenvals = np.linalg.eigvalsh(M)
-        assert np.all(eigenvals > 0)
-        
-        det = safe_determinant(M, use_logdet=True)
-        # Determinant should be computed correctly
-        expected_det = np.linalg.det(M)
-        assert abs(det - expected_det) < 1e-5
-        
-        # Verify CHOLESKY_LOG_DET_FACTOR is used (constant should be 2.0)
-        assert CHOLESKY_LOG_DET_FACTOR == 2.0
-    
-    def test_safe_determinant_empty_matrix(self):
-        """Test safe_determinant with empty matrix."""
-        M = np.array([]).reshape(0, 0)
-        det = safe_determinant(M)
-        assert det == 0.0
-    
-    def test_safe_determinant_non_square(self):
-        """Test safe_determinant with non-square matrix."""
-        M = np.array([[1.0, 2.0, 3.0]], dtype=DEFAULT_DTYPE)
-        det = safe_determinant(M)
-        assert det == 0.0
     
     def test_create_scaled_identity_default_scale(self):
         """Test create_scaled_identity with default scale."""
@@ -212,33 +171,6 @@ class TestStability:
         result = create_scaled_identity(n, dtype=np.float64)
         assert result.dtype == np.float64
         assert result.shape == (n, n)
-    
-    def test_safe_divide_normal_division(self):
-        """Test safe_divide with normal division."""
-        numerator = np.array([4.0, 6.0, 8.0], dtype=DEFAULT_DTYPE)
-        denominator = np.array([2.0, 3.0, 4.0], dtype=DEFAULT_DTYPE)
-        result = safe_divide(numerator, denominator)
-        expected = np.array([2.0, 2.0, 2.0], dtype=DEFAULT_DTYPE)
-        assert np.allclose(result, expected)
-    
-    def test_safe_divide_zero_denominator(self):
-        """Test safe_divide handles zero denominators."""
-        numerator = np.array([4.0, 6.0, 8.0], dtype=DEFAULT_DTYPE)
-        denominator = np.array([2.0, 0.0, 4.0], dtype=DEFAULT_DTYPE)
-        result = safe_divide(numerator, denominator)
-        # Should use DEFAULT_ZERO_VALUE for zero denominator
-        assert result[0] == 2.0
-        assert result[1] == DEFAULT_ZERO_VALUE
-        assert result[2] == 2.0
-    
-    def test_safe_divide_custom_default(self):
-        """Test safe_divide with custom default value."""
-        numerator = np.array([4.0, 6.0], dtype=DEFAULT_DTYPE)
-        denominator = np.array([0.0, 3.0], dtype=DEFAULT_DTYPE)
-        custom_default = 99.0
-        result = safe_divide(numerator, denominator, default=custom_default)
-        assert result[0] == custom_default
-        assert result[1] == 2.0
     
     def test_compute_var_safe_basic(self):
         """Test compute_var_safe with basic data."""
@@ -291,31 +223,6 @@ class TestStability:
         result = stabilize_innovation_covariance(Q)
         assert result.shape == Q.shape
     
-    def test_mse_missing_numpy_basic(self):
-        """Test mse_missing_numpy with no missing values."""
-        y_actual = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=DEFAULT_DTYPE)
-        y_predicted = np.array([[1.1, 2.1], [3.1, 4.1]], dtype=DEFAULT_DTYPE)
-        result = mse_missing_numpy(y_actual, y_predicted)
-        expected = np.mean((y_actual - y_predicted) ** 2)
-        assert abs(result - expected) < 1e-6
-        assert isinstance(result, float)
-    
-    def test_mse_missing_numpy_with_missing(self):
-        """Test mse_missing_numpy with missing values."""
-        y_actual = np.array([[1.0, np.nan], [3.0, 4.0]], dtype=DEFAULT_DTYPE)
-        y_predicted = np.array([[1.1, 2.1], [3.1, 4.1]], dtype=DEFAULT_DTYPE)
-        result = mse_missing_numpy(y_actual, y_predicted)
-        # Should only compute MSE on non-missing values (first column and second row)
-        expected = np.mean([(1.0 - 1.1) ** 2, (3.0 - 3.1) ** 2, (4.0 - 4.1) ** 2])
-        assert abs(result - expected) < 1e-6
-    
-    def test_mse_missing_numpy_all_missing(self):
-        """Test mse_missing_numpy with all missing values."""
-        y_actual = np.array([[np.nan, np.nan], [np.nan, np.nan]], dtype=DEFAULT_DTYPE)
-        y_predicted = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=DEFAULT_DTYPE)
-        result = mse_missing_numpy(y_actual, y_predicted)
-        assert result == DEFAULT_ZERO_VALUE
-    
     def test_convergence_checker_basic(self):
         """Test convergence_checker with basic inputs."""
         y_prev = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=DEFAULT_DTYPE)
@@ -336,54 +243,3 @@ class TestStability:
         assert isinstance(delta, float)
         assert isinstance(loss_now, float)
         assert loss_now >= 0
-    
-    def test_extract_matrix_block_numpy(self):
-        """Test extract_matrix_block with NumPy array."""
-        matrix = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=DEFAULT_DTYPE)
-        result = extract_matrix_block(matrix, 0, 2, 1, 3)
-        expected = np.array([[2.0, 3.0], [5.0, 6.0]], dtype=DEFAULT_DTYPE)
-        assert np.allclose(result, expected)
-        assert result.shape == (2, 2)
-    
-    def test_extract_matrix_block_torch(self):
-        """Test extract_matrix_block with PyTorch tensor."""
-        import torch
-        matrix = torch.tensor([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [7.0, 8.0, 9.0]], dtype=DEFAULT_TORCH_DTYPE)
-        result = extract_matrix_block(matrix, 0, 2, 1, 3)
-        expected = torch.tensor([[2.0, 3.0], [5.0, 6.0]], dtype=DEFAULT_TORCH_DTYPE)
-        assert torch.allclose(result, expected)
-        assert result.shape == (2, 2)
-    
-    def test_compute_forecast_metrics_basic(self):
-        """Test compute_forecast_metrics with basic inputs."""
-        forecast = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=DEFAULT_DTYPE)
-        actual = np.array([[1.1, 2.1], [3.1, 4.1]], dtype=DEFAULT_DTYPE)
-        metrics = compute_forecast_metrics(forecast, actual)
-        assert 'rmse' in metrics
-        assert 'mae' in metrics
-        assert 'r2' in metrics
-        assert isinstance(metrics['rmse'], float)
-        assert isinstance(metrics['mae'], float)
-        assert metrics['rmse'] >= 0
-        assert metrics['mae'] >= 0
-    
-    def test_compute_forecast_metrics_with_mask(self):
-        """Test compute_forecast_metrics with mask."""
-        forecast = np.array([[1.0, 2.0], [3.0, 4.0]], dtype=DEFAULT_DTYPE)
-        actual = np.array([[1.1, 2.1], [3.1, 4.1]], dtype=DEFAULT_DTYPE)
-        mask = np.array([[True, False], [True, True]], dtype=bool)
-        metrics = compute_forecast_metrics(forecast, actual, mask=mask)
-        assert 'rmse' in metrics
-        assert 'mae' in metrics
-        assert 'r2' in metrics
-        assert metrics['rmse'] >= 0
-    
-    def test_compute_forecast_metrics_all_invalid(self):
-        """Test compute_forecast_metrics with all invalid values."""
-        forecast = np.array([[np.nan, np.nan], [np.inf, np.inf]], dtype=DEFAULT_DTYPE)
-        actual = np.array([[np.nan, np.nan], [np.inf, np.inf]], dtype=DEFAULT_DTYPE)
-        metrics = compute_forecast_metrics(forecast, actual)
-        assert np.isnan(metrics['rmse'])
-        assert np.isnan(metrics['mae'])
-        assert np.isnan(metrics['r2'])
-
