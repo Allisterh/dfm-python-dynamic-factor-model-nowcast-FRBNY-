@@ -3,7 +3,7 @@
 import pytest
 import numpy as np
 import torch
-from dfm_python.models.ivdfm import iVDFM
+from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
 from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
 from dfm_python.config.schema.model import iVDFMConfig
 

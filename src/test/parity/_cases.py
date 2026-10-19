@@ -420,7 +420,10 @@ def _ddfm_macro() -> CaseRun:
 
 
 # --------------------------------------------------------------------- iVDFM
-_IVDFM_ATTRS = ["data_dim", "latent_dim", "context_dim", "time_context", "window",
+# The engine path: the pre-redesign iVDFM class, now the private iVDFMEngine,
+# called exactly as the old public constructor was (dataset in __init__).
+# test_golden_ivdfm.py also runs the public iVDFM estimator against the same fixtures.
+_IVDFM_ATTRS =["data_dim", "latent_dim", "context_dim", "time_context", "window",
                 "encoder_hidden_dim", "encoder_n_hidden_layers", "decoder_type",
                 "decoder_hidden_dim", "decoder_n_hidden_layers", "prior_hidden_dim",
                 "prior_n_hidden_layers", "activation", "slope", "factor_order",
@@ -484,7 +487,7 @@ _IVDFM_MAX_EPOCHS = 3
 
 
 def _ivdfm_macro() -> CaseRun:
-    from dfm_python import iVDFM
+    from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
     from dfm_python.config.schema.model import iVDFMConfig
     from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
 
@@ -515,7 +518,7 @@ def _ivdfm_macro() -> CaseRun:
 
 
 def _ivdfm_regimes() -> CaseRun:
-    from dfm_python import iVDFM
+    from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
     from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
 
     T, N, seed = 60, 4, 0
@@ -572,7 +575,7 @@ def ivdfm_exog_context_inputs() -> tuple[pd.DataFrame, np.ndarray, dict[str, Any
 
 
 def _ivdfm_exog_context() -> CaseRun:
-    from dfm_python import iVDFM
+    from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
     from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
 
     df, x_future, data = ivdfm_exog_context_inputs()

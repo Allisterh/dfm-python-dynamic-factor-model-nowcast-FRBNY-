@@ -3,6 +3,13 @@
 Implements the iVDFM framework that combines identifiable latent-variable modeling
 with explicit stochastic dynamics. Identifiability is achieved by applying iVAE
 conditions to the innovation process driving dynamics.
+
+``iVDFMEngine`` is the private engine behind the public estimator
+:class:`dfm_python.models.ivdfm.estimator.iVDFM`, which builds the engine's
+dataset from ``PanelData`` and passes every hyperparameter explicitly. The
+engine's code is the pre-redesign ``iVDFM`` class unchanged, apart from two
+pure extractions from ``predict``: :meth:`iVDFMEngine._future_time_features`
+and :meth:`iVDFMEngine._forecast`, which ``predict`` calls.
 """
 
 import time
@@ -46,7 +53,7 @@ from ...numeric.builder import build_ivdfm_optimizer
 _logger = get_logger(__name__)
 
 
-class iVDFM(BaseFactorModel, nn.Module):
+class iVDFMEngine(BaseFactorModel, nn.Module):
     """Identifiable Variational Dynamic Factor Model.
     
     Combines identifiable latent-variable modeling (iVAE) with explicit
@@ -880,12 +887,12 @@ class iVDFM(BaseFactorModel, nn.Module):
 
         return elbo, loss_dict
 
-    def set_dataset(self, dataset: "iVDFMDataset") -> "iVDFM":
+    def set_dataset(self, dataset: "iVDFMDataset") -> "iVDFMEngine":
         """Set the dataset used by fit() and hyperparameter_optimization(). Call before fit()."""
         self._dataset = dataset
         return self
 
-    def fit(self, *args, **kwargs) -> 'iVDFM':
+    def fit(self, *args, **kwargs) -> 'iVDFMEngine':
         """Fit on the dataset set via set_dataset(dataset). Call set_dataset(dataset) before fit()."""
         dataset = self._dataset
         if dataset is None or not isinstance(dataset, iVDFMDataset):
@@ -1290,6 +1297,66 @@ class iVDFM(BaseFactorModel, nn.Module):
         if horizon < 1:
             raise ValueError(f"horizon must be >= 1, got {horizon}")
         
+        factors_future, y_pred = self._forecast(horizon, context_data, deterministic, num_samples)
+        
+        # Convert to numpy and remove batch dimension
+        y_pred_np = to_numpy(y_pred.squeeze(0))  # (horizon, data_dim)
+        
+        return y_pred_np
+
+    def _future_time_features(self, horizon: int, time_context: int) -> np.ndarray:
+        """Time-based context for the ``horizon`` steps after training, ``time_context`` columns.
+        
+        Extracted unchanged from ``predict``: the normalized time step continues
+        from ``T_train`` (the length of the window-averaged factor path), and
+        ``time_context > 1`` adds periodic sine features.
+        
+        Returns
+        -------
+        np.ndarray
+            float32 array, shape (horizon, time_context)
+        """
+        if self.factors.ndim == 3:
+            factors_avg = np.mean(self.factors, axis=0)  # (T, r)
+        else:
+            factors_avg = self.factors  # (T, r)
+        
+        # Generate time-based context: continue from last training time step
+        T_train = factors_avg.shape[0]
+        time_indices = np.arange(T_train, T_train + horizon, dtype=np.float32)
+        if T_train > 1:
+            # Normalize by training length
+            time_indices = time_indices / (T_train - 1)
+        else:
+            time_indices = time_indices / T_train
+        
+        # Create time features using time_context (not full context_dim which may include custom context)
+        if time_context == 1:
+            u_future = time_indices.reshape(-1, 1)
+        else:
+            features = [time_indices.reshape(-1, 1)]
+            for i in range(1, time_context):
+                freq = 2 * np.pi * (i + 1) / T_train if T_train > 1 else 2 * np.pi * (i + 1)
+                periodic = np.sin(freq * np.arange(T_train, T_train + horizon, dtype=np.float32))
+                features.append(periodic.reshape(-1, 1))
+            u_future = np.hstack(features)
+        return u_future
+
+    def _forecast(
+        self,
+        horizon: int,
+        context_data: Optional[Union[np.ndarray, torch.Tensor]],
+        deterministic: bool,
+        num_samples: int,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Closed-loop forecast from the last training factor state (extracted unchanged from ``predict``).
+        
+        Returns
+        -------
+        Tuple[torch.Tensor, torch.Tensor]
+            ``(factors_future, y_pred)``: forecast factors, shape (1, horizon, r),
+            and decoded observations in model space, shape (1, horizon, data_dim).
+        """
         self.eval()
         with torch.no_grad():
             # Get last factor state from training
@@ -1310,24 +1377,7 @@ class iVDFM(BaseFactorModel, nn.Module):
             # Generate context variables for forecast horizon
             if context_data is None:
                 # Generate time-based context: continue from last training time step
-                T_train = factors_avg.shape[0]
-                time_indices = np.arange(T_train, T_train + horizon, dtype=np.float32)
-                if T_train > 1:
-                    # Normalize by training length
-                    time_indices = time_indices / (T_train - 1)
-                else:
-                    time_indices = time_indices / T_train
-                
-                # Create time features using time_context (not full context_dim which may include custom context)
-                if self.time_context == 1:
-                    u_future = time_indices.reshape(-1, 1)
-                else:
-                    features = [time_indices.reshape(-1, 1)]
-                    for i in range(1, self.time_context):
-                        freq = 2 * np.pi * (i + 1) / T_train if T_train > 1 else 2 * np.pi * (i + 1)
-                        periodic = np.sin(freq * np.arange(T_train, T_train + horizon, dtype=np.float32))
-                        features.append(periodic.reshape(-1, 1))
-                    u_future = np.hstack(features)
+                u_future = self._future_time_features(horizon, self.time_context)
                 
                 # If model has custom context columns, user must provide context_data for prediction
                 # (time features alone won't match full context_dim)
@@ -1394,10 +1444,7 @@ class iVDFM(BaseFactorModel, nn.Module):
             # Decode factors to observations (u_future_tensor always available in predict)
             y_pred = self._decode(factors_future, u_future_tensor)
             
-            # Convert to numpy and remove batch dimension
-            y_pred_np = to_numpy(y_pred.squeeze(0))  # (horizon, data_dim)
-            
-            return y_pred_np
+            return factors_future, y_pred
     
     def update(
         self,
@@ -1666,7 +1713,7 @@ class iVDFM(BaseFactorModel, nn.Module):
         _logger.info(f"Model saved to {path}")
     
     @classmethod
-    def load(cls, path: Union[str, Path], *args, **kwargs) -> 'iVDFM':
+    def load(cls, path: Union[str, Path], *args, **kwargs) -> 'iVDFMEngine':
         """Load model from file.
         
         Parameters

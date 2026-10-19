@@ -15,7 +15,7 @@ import torch
 
 from ...dataset.ivdfm_dataset import iVDFMDataset
 from ...logger import get_logger
-from ..ivdfm import iVDFM
+from ._engine import iVDFMEngine as iVDFM
 
 if TYPE_CHECKING:
     import optuna

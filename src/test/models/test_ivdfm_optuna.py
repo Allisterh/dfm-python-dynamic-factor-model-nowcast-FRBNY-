@@ -15,7 +15,7 @@ from dfm_python.models.ivdfm.optuna import (
     create_objective,
     run_hyperparameter_optimization,
 )
-from dfm_python.models.ivdfm import iVDFM
+from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
 
 
 def _make_mock_trial(suggest_ints=None, suggest_floats=None, suggest_categoricals=None):

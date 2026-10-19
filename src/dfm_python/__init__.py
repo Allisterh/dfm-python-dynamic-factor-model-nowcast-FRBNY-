@@ -78,7 +78,7 @@ from .dataset.ivdfm_dataset import iVDFMDataset
 from .base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.ddfm import DDFM
-from .models.ivdfm.ivdfm import iVDFM
+from .models.ivdfm._engine import iVDFMEngine as iVDFM
 from .models.afm.estimator import AFM
 
 __all__ = [
