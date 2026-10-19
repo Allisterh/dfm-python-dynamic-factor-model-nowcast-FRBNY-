@@ -1,0 +1,248 @@
+{
+  "data": {
+    "config": "config/dfm_macro.yaml",
+    "input_sha256": "9497772f2f3e4b03b1f99bc1f06b71612dcf03dd0cea047d449d03f52f4ae6f3",
+    "rows": "last 400 rows",
+    "source": "data/macro.csv",
+    "source_sha256": "fb5ef2512a6aa3a1c4b55876e00ae6cce336e7d330e8d5427cd09dac5076b440"
+  },
+  "fingerprint": {
+    "blas": [
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.28"
+      },
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.30"
+      }
+    ],
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "processor": "x86_64",
+    "torch": "2.9.1+cu128"
+  },
+  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "global_rng_preseed": 20251019,
+  "hyperparameters": {
+    "blocks": [
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ]
+    ],
+    "config": {
+      "ar_clip": null,
+      "block_names": [
+        "Block_Global"
+      ],
+      "blocks": {
+        "Block_Global": {
+          "num_factors": 3,
+          "series": [
+            "KORFBEV",
+            "KORWHLS",
+            "KORMCMP",
+            "KORELEC",
+            "KORCNST",
+            "KORMACH",
+            "KOROCOINF",
+            "KOEMPTOTO",
+            "KOHWRWEMP",
+            "KOWRCDURE",
+            "KOCONPRCF",
+            "KOEQUIPTE",
+            "KOWRCCNSE",
+            "KOIMPCONA"
+          ]
+        }
+      },
+      "clock": "w",
+      "damping_factor": null,
+      "data_clip": null,
+      "factors_per_block": [
+        3
+      ],
+      "frequency": {
+        "KOCONPRCF": "m",
+        "KOEMPTOTO": "m",
+        "KOEQUIPTE": "m",
+        "KOHWRWEMP": "m",
+        "KOIMPCONA": "m",
+        "KORCNST": "w",
+        "KORELEC": "w",
+        "KORFBEV": "w",
+        "KORMACH": "w",
+        "KORMCMP": "w",
+        "KOROCOINF": "w",
+        "KORWHLS": "w",
+        "KOWRCCNSE": "m",
+        "KOWRCDURE": "m"
+      },
+      "idio_min_var": 1e-08,
+      "idio_rho0": 0.1,
+      "max_iter": 10,
+      "regularization": null,
+      "scaler": null,
+      "target_scaler": null,
+      "tent_weights": {
+        "m:w": [
+          1,
+          2,
+          1
+        ]
+      },
+      "threshold": 1e-05
+    },
+    "em_config": {
+      "ar_clip": null,
+      "convergence_log_interval": 10,
+      "convergence_threshold": 0.0001,
+      "damping_factor": null,
+      "data_clip": null,
+      "default_observation_noise": 1e-08,
+      "default_process_noise": 0.1,
+      "default_transition_coef": 0.9,
+      "eigenval_floor": 1e-06,
+      "extreme_forecast_threshold": 50.0,
+      "matrix_regularization": 1e-06,
+      "max_eigenval": 0.99,
+      "max_variance": 10000.0,
+      "min_iterations_for_convergence_check": 2,
+      "min_norm": 1e-06,
+      "min_variance": 1e-08,
+      "normalize_C": true,
+      "progress_log_interval": 5,
+      "regularization": 1e-06,
+      "slower_freq_ar_coef": 0.1,
+      "slower_freq_variance_denominator": 19.0,
+      "small_loglik_threshold": 1e-10,
+      "tent_kernel_size": 5
+    },
+    "num_factors": 3,
+    "p": 1,
+    "r": [
+      3.0
+    ],
+    "scaler": "StandardScaler"
+  },
+  "model": "dfm",
+  "name": "dfm_macro_weekly_monthly",
+  "outputs": {
+    "A": {
+      "dtype": "float64",
+      "shape": [
+        44,
+        44
+      ]
+    },
+    "C": {
+      "dtype": "float64",
+      "shape": [
+        14,
+        44
+      ]
+    },
+    "Q": {
+      "dtype": "float64",
+      "shape": [
+        44,
+        44
+      ]
+    },
+    "R": {
+      "dtype": "float64",
+      "shape": [
+        14,
+        14
+      ]
+    },
+    "V_0": {
+      "dtype": "float64",
+      "shape": [
+        44,
+        44
+      ]
+    },
+    "Z_0": {
+      "dtype": "float64",
+      "shape": [
+        44
+      ]
+    },
+    "columns": {
+      "dtype": "<U9",
+      "shape": [
+        14
+      ]
+    },
+    "loglik": {
+      "dtype": "float64",
+      "shape": []
+    },
+    "num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        14
+      ]
+    },
+    "predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        44
+      ]
+    }
+  },
+  "raised": null,
+  "src_dirty": false
+}

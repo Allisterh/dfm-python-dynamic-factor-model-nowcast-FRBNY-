@@ -1,0 +1,242 @@
+{
+  "data": {
+    "column_order": [
+      "KOEQUIPTE",
+      "KOROCOINF",
+      "KOWRCDURE",
+      "KOIMPCONA",
+      "KOEMPTOTO",
+      "KOCONPRCF",
+      "KOWRCCNSE",
+      "KOHWRWEMP"
+    ],
+    "config": "config/dfm_macro.yaml with clock='m', tent_weights={'q:m': [1, 2, 3, 2, 1]}, one global block of 2 factors over monthly + quarterly series, grouped frequency",
+    "input_sha256": "60ea9f60b6c1061fd176c979c39fc43541492c744637dcfd0dfe286ea5e224d3",
+    "monthly": [
+      "KOROCOINF",
+      "KOEMPTOTO",
+      "KOHWRWEMP",
+      "KOWRCDURE",
+      "KOCONPRCF",
+      "KOWRCCNSE"
+    ],
+    "quarterly": [
+      "KOEQUIPTE",
+      "KOIMPCONA"
+    ],
+    "rows": "rows whose date is a month end, all-NaN rows dropped, last 120; quarterly series set to NaN where month % 3 != 0",
+    "source": "data/macro.csv",
+    "source_sha256": "fb5ef2512a6aa3a1c4b55876e00ae6cce336e7d330e8d5427cd09dac5076b440"
+  },
+  "fingerprint": {
+    "blas": [
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.28"
+      },
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.30"
+      }
+    ],
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "processor": "x86_64",
+    "torch": "2.9.1+cu128"
+  },
+  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "global_rng_preseed": 20251019,
+  "hyperparameters": {
+    "blocks": [
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ]
+    ],
+    "config": {
+      "ar_clip": null,
+      "block_names": [
+        "Block_Global"
+      ],
+      "blocks": {
+        "Block_Global": {
+          "num_factors": 2,
+          "series": [
+            "KOROCOINF",
+            "KOEMPTOTO",
+            "KOHWRWEMP",
+            "KOWRCDURE",
+            "KOCONPRCF",
+            "KOWRCCNSE",
+            "KOEQUIPTE",
+            "KOIMPCONA"
+          ]
+        }
+      },
+      "clock": "m",
+      "damping_factor": null,
+      "data_clip": null,
+      "factors_per_block": [
+        2
+      ],
+      "frequency": {
+        "KOCONPRCF": "m",
+        "KOEMPTOTO": "m",
+        "KOEQUIPTE": "q",
+        "KOHWRWEMP": "m",
+        "KOIMPCONA": "q",
+        "KOROCOINF": "m",
+        "KOWRCCNSE": "m",
+        "KOWRCDURE": "m"
+      },
+      "idio_min_var": 1e-08,
+      "idio_rho0": 0.1,
+      "max_iter": 10,
+      "regularization": null,
+      "scaler": null,
+      "target_scaler": null,
+      "tent_weights": {
+        "q:m": [
+          1,
+          2,
+          3,
+          2,
+          1
+        ]
+      },
+      "threshold": 1e-05
+    },
+    "em_config": {
+      "ar_clip": null,
+      "convergence_log_interval": 10,
+      "convergence_threshold": 0.0001,
+      "damping_factor": null,
+      "data_clip": null,
+      "default_observation_noise": 1e-08,
+      "default_process_noise": 0.1,
+      "default_transition_coef": 0.9,
+      "eigenval_floor": 1e-06,
+      "extreme_forecast_threshold": 50.0,
+      "matrix_regularization": 1e-06,
+      "max_eigenval": 0.99,
+      "max_variance": 10000.0,
+      "min_iterations_for_convergence_check": 2,
+      "min_norm": 1e-06,
+      "min_variance": 1e-08,
+      "normalize_C": true,
+      "progress_log_interval": 5,
+      "regularization": 1e-06,
+      "slower_freq_ar_coef": 0.1,
+      "slower_freq_variance_denominator": 19.0,
+      "small_loglik_threshold": 1e-10,
+      "tent_kernel_size": 5
+    },
+    "num_factors": 2,
+    "p": 1,
+    "r": [
+      2.0
+    ],
+    "scaler": "StandardScaler"
+  },
+  "model": "dfm",
+  "name": "dfm_macro_monthly_quarterly_permuted",
+  "outputs": {
+    "A": {
+      "dtype": "float64",
+      "shape": [
+        28,
+        28
+      ]
+    },
+    "C": {
+      "dtype": "float64",
+      "shape": [
+        8,
+        28
+      ]
+    },
+    "Q": {
+      "dtype": "float64",
+      "shape": [
+        28,
+        28
+      ]
+    },
+    "R": {
+      "dtype": "float64",
+      "shape": [
+        8,
+        8
+      ]
+    },
+    "V_0": {
+      "dtype": "float64",
+      "shape": [
+        28,
+        28
+      ]
+    },
+    "Z_0": {
+      "dtype": "float64",
+      "shape": [
+        28
+      ]
+    },
+    "columns": {
+      "dtype": "<U9",
+      "shape": [
+        8
+      ]
+    },
+    "loglik": {
+      "dtype": "float64",
+      "shape": []
+    },
+    "num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        8
+      ]
+    },
+    "predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        28
+      ]
+    }
+  },
+  "raised": null,
+  "src_dirty": false
+}

@@ -1,0 +1,230 @@
+{
+  "data": {
+    "N": 5,
+    "T": 80,
+    "columns": [
+      "s0",
+      "s1",
+      "s2",
+      "s3",
+      "s4"
+    ],
+    "config_dict": {
+      "blocks": {
+        "Block_Global": {
+          "num_factors": 2,
+          "series": [
+            "s0",
+            "s1",
+            "s2",
+            "s3",
+            "s4"
+          ]
+        }
+      },
+      "clock": "m",
+      "frequency": {
+        "s0": "m",
+        "s1": "m",
+        "s2": "m",
+        "s3": "m",
+        "s4": "m"
+      },
+      "max_iter": 20,
+      "threshold": 1e-05
+    },
+    "generator": "numpy.random.default_rng",
+    "index": "pd.date_range('2010-01-31', periods=T, freq='ME') in column 'date'",
+    "input_sha256": "e21679bea33b8fc9a0170a9e82f00270421d6651682eda1f190c216cfaf63360",
+    "recipe": "f[0]=0; f[t] = 0.7 f[t-1] + rng.standard_normal(2) for t=1..T-1; loadings = rng.standard_normal((N, 2)); y = f @ loadings.T + 0.5 * rng.standard_normal((T, N))",
+    "seed": 0
+  },
+  "fingerprint": {
+    "blas": [
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.28"
+      },
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.30"
+      }
+    ],
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "processor": "x86_64",
+    "torch": "2.9.1+cu128"
+  },
+  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "global_rng_preseed": 20251019,
+  "hyperparameters": {
+    "blocks": [
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ],
+      [
+        1.0
+      ]
+    ],
+    "config": {
+      "ar_clip": null,
+      "block_names": [
+        "Block_Global"
+      ],
+      "blocks": {
+        "Block_Global": {
+          "num_factors": 2,
+          "series": [
+            "s0",
+            "s1",
+            "s2",
+            "s3",
+            "s4"
+          ]
+        }
+      },
+      "clock": "m",
+      "damping_factor": null,
+      "data_clip": null,
+      "factors_per_block": [
+        2
+      ],
+      "frequency": {
+        "s0": "m",
+        "s1": "m",
+        "s2": "m",
+        "s3": "m",
+        "s4": "m"
+      },
+      "idio_min_var": 1e-08,
+      "idio_rho0": 0.1,
+      "max_iter": 20,
+      "regularization": null,
+      "scaler": null,
+      "target_scaler": null,
+      "tent_weights": null,
+      "threshold": 1e-05
+    },
+    "em_config": {
+      "ar_clip": null,
+      "convergence_log_interval": 10,
+      "convergence_threshold": 0.0001,
+      "damping_factor": null,
+      "data_clip": null,
+      "default_observation_noise": 1e-08,
+      "default_process_noise": 0.1,
+      "default_transition_coef": 0.9,
+      "eigenval_floor": 1e-06,
+      "extreme_forecast_threshold": 50.0,
+      "matrix_regularization": 1e-06,
+      "max_eigenval": 0.99,
+      "max_variance": 10000.0,
+      "min_iterations_for_convergence_check": 2,
+      "min_norm": 1e-06,
+      "min_variance": 1e-08,
+      "normalize_C": true,
+      "progress_log_interval": 5,
+      "regularization": 1e-06,
+      "slower_freq_ar_coef": 0.1,
+      "slower_freq_variance_denominator": 19.0,
+      "small_loglik_threshold": 1e-10,
+      "tent_kernel_size": 5
+    },
+    "num_factors": 2,
+    "p": 1,
+    "r": [
+      2.0
+    ],
+    "scaler": "StandardScaler"
+  },
+  "model": "dfm",
+  "name": "dfm_synthetic",
+  "outputs": {
+    "A": {
+      "dtype": "float64",
+      "shape": [
+        9,
+        9
+      ]
+    },
+    "C": {
+      "dtype": "float64",
+      "shape": [
+        5,
+        9
+      ]
+    },
+    "Q": {
+      "dtype": "float64",
+      "shape": [
+        9,
+        9
+      ]
+    },
+    "R": {
+      "dtype": "float64",
+      "shape": [
+        5,
+        5
+      ]
+    },
+    "V_0": {
+      "dtype": "float64",
+      "shape": [
+        9,
+        9
+      ]
+    },
+    "Z_0": {
+      "dtype": "float64",
+      "shape": [
+        9
+      ]
+    },
+    "columns": {
+      "dtype": "<U2",
+      "shape": [
+        5
+      ]
+    },
+    "loglik": {
+      "dtype": "float64",
+      "shape": []
+    },
+    "num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        5
+      ]
+    },
+    "predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        9
+      ]
+    }
+  },
+  "raised": null,
+  "src_dirty": false
+}

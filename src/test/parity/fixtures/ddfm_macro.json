@@ -1,0 +1,158 @@
+{
+  "data": {
+    "config": "config/ddfm_macro.yaml",
+    "covariates": [
+      "KORFBEV",
+      "KORWHLS",
+      "KORMCMP",
+      "KORELEC",
+      "KORCNST",
+      "KORMACH",
+      "KOROCOINF",
+      "KOEMPTOTO",
+      "KOHWRWEMP",
+      "KOWRCDURE",
+      "KOCONPRCF",
+      "KOWRCCNSE",
+      "KOIMPCONA"
+    ],
+    "input_sha256": "9497772f2f3e4b03b1f99bc1f06b71612dcf03dd0cea047d449d03f52f4ae6f3",
+    "rows": "last 400 rows",
+    "source": "data/macro.csv",
+    "source_sha256": "fb5ef2512a6aa3a1c4b55876e00ae6cce336e7d330e8d5427cd09dac5076b440",
+    "target": "KOEQUIPTE"
+  },
+  "fingerprint": {
+    "blas": [
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.28"
+      },
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.30"
+      }
+    ],
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "processor": "x86_64",
+    "torch": "2.9.1+cu128"
+  },
+  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "global_rng_preseed": 20251019,
+  "hyperparameters": {
+    "activation": "relu",
+    "decoder_size": null,
+    "decoder_type": "linear",
+    "device": "cpu",
+    "disp": 10,
+    "encoder_size": [
+      64,
+      32,
+      2
+    ],
+    "initializer_seed": 3,
+    "input_dim": 14,
+    "interpolation_limit": 10,
+    "interpolation_limit_direction": "both",
+    "interpolation_method": "linear",
+    "lags_input": 0,
+    "learning_rate": 0.001,
+    "max_epoch_pre_train": 200,
+    "max_iter": 3,
+    "min_target_interporate_ratio": 0.3,
+    "n_mc_samples": 1,
+    "num_series": 14,
+    "optimizer_type": "Adam",
+    "output_dim": 1,
+    "scaler": "StandardScaler",
+    "tolerance": 0.0005,
+    "window_size": 100
+  },
+  "model": "ddfm",
+  "name": "ddfm_macro",
+  "outputs": {
+    "F": {
+      "dtype": "float64",
+      "shape": [
+        2,
+        2
+      ]
+    },
+    "H": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        2
+      ]
+    },
+    "Q": {
+      "dtype": "float64",
+      "shape": [
+        2,
+        2
+      ]
+    },
+    "R": {
+      "dtype": "float64",
+      "shape": [
+        1,
+        1
+      ]
+    },
+    "Sigma_0": {
+      "dtype": "float64",
+      "shape": [
+        2,
+        2
+      ]
+    },
+    "eps": {
+      "dtype": "float64",
+      "shape": [
+        400,
+        1
+      ]
+    },
+    "factors": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        400,
+        2
+      ]
+    },
+    "mu_0": {
+      "dtype": "float64",
+      "shape": [
+        2
+      ]
+    },
+    "num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        1
+      ]
+    },
+    "predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        2
+      ]
+    }
+  },
+  "raised": null,
+  "src_dirty": false
+}

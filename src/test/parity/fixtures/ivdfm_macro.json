@@ -1,0 +1,131 @@
+{
+  "data": {
+    "config": "config/ivdfm_macro.yaml",
+    "covariates": [
+      "KORFBEV",
+      "KORWHLS",
+      "KORMCMP",
+      "KORELEC",
+      "KORCNST",
+      "KORMACH",
+      "KOROCOINF",
+      "KOWRCDURE",
+      "KOCONPRCF",
+      "KOWRCCNSE",
+      "KOIMPCONA"
+    ],
+    "input_sha256": "95058fe030481aa5ce9502fba11dad3253d5aa7ddcebecf429c3b06c587238c8",
+    "rows": "last 400 rows",
+    "source": "data/macro.csv",
+    "source_sha256": "fb5ef2512a6aa3a1c4b55876e00ae6cce336e7d330e8d5427cd09dac5076b440",
+    "targets": [
+      "KOEQUIPTE",
+      "KOEMPTOTO",
+      "KOHWRWEMP"
+    ],
+    "window": 200
+  },
+  "fingerprint": {
+    "blas": [
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.28"
+      },
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.30"
+      }
+    ],
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "processor": "x86_64",
+    "torch": "2.9.1+cu128"
+  },
+  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "global_rng_preseed": 20251019,
+  "hyperparameters": {
+    "activation": "lrelu",
+    "batch_size": 256,
+    "beta_kl": 1.0,
+    "context_dim": 1,
+    "data_dim": 3,
+    "dataset": {
+      "context_dim": 1,
+      "scaler": "StandardScaler",
+      "stride": 100,
+      "window": 200
+    },
+    "decoder_hidden_dim": 200,
+    "decoder_n_hidden_layers": 2,
+    "decoder_type": "mlp",
+    "decoder_var": 0.01,
+    "device": "cpu",
+    "encoder_hidden_dim": 200,
+    "encoder_n_hidden_layers": 2,
+    "factor_order": 1,
+    "innovation_distribution": "laplace",
+    "latent_dim": 5,
+    "learning_rate": 0.001,
+    "max_epochs": 3,
+    "mixing": false,
+    "num_regimes": 1,
+    "optimizer_momentum": 0.9,
+    "optimizer_type": "Adam",
+    "optimizer_weight_decay": 0.0,
+    "patience": 20,
+    "prior_hidden_dim": 100,
+    "prior_n_hidden_layers": 1,
+    "regime_temperature": 1.0,
+    "scheduler_factor": 0.1,
+    "scheduler_gamma": 0.5,
+    "scheduler_min_lr": 0.0,
+    "scheduler_patience": 10,
+    "scheduler_step_size": null,
+    "scheduler_type": "step",
+    "seed": 3,
+    "slope": 0.1,
+    "time_context": 1,
+    "tolerance": 0.0005,
+    "use_layer_norm": false,
+    "window": 200
+  },
+  "model": "ivdfm",
+  "name": "ivdfm_macro",
+  "outputs": {
+    "factors": {
+      "dtype": "float32",
+      "shape": [
+        3,
+        200,
+        5
+      ]
+    },
+    "innovations": {
+      "dtype": "float32",
+      "shape": [
+        3,
+        200,
+        5
+      ]
+    },
+    "num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "predict": {
+      "dtype": "float32",
+      "shape": [
+        6,
+        3
+      ]
+    }
+  },
+  "raised": null,
+  "src_dirty": false
+}

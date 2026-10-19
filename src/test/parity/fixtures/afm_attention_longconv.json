@@ -1,0 +1,141 @@
+{
+  "data": {
+    "M": 8,
+    "N": 6,
+    "T": 60,
+    "characteristics": "rng.standard_normal((T, N, M)), drawn after returns",
+    "characteristics_passed": true,
+    "dataset": "AFMDataset(returns=returns, characteristics=characteristics if passed else omitted)",
+    "generator": "numpy.random.default_rng",
+    "input_sha256": "59c3677a62267ddd94a27f01c0c67a81348ae47148a7f102468e49318849cbc9",
+    "returns": "rng.standard_normal((T, N)) * 0.01",
+    "seed": 0
+  },
+  "fingerprint": {
+    "blas": [
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.28"
+      },
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.30"
+      }
+    ],
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "processor": "x86_64",
+    "torch": "2.9.1+cu128"
+  },
+  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "global_rng_preseed": 20251019,
+  "hyperparameters": {
+    "device": "cpu",
+    "embed_dim": 32,
+    "factor_model": "attention",
+    "hist_len": 10,
+    "lambda_var": 0.1,
+    "learning_rate": 0.001,
+    "max_epochs": 5,
+    "n_char": 8,
+    "n_factors": 3,
+    "n_kernels": 32,
+    "patience": null,
+    "pca_window": 252,
+    "reestim": 21,
+    "ridge": 0.01,
+    "risk_free": 0.0,
+    "seed": 0,
+    "short_cost": 0.0001,
+    "squash_lambda": 0.001,
+    "trading": "longconv",
+    "turnover_cost": 0.0005
+  },
+  "model": "afm",
+  "name": "afm_attention_longconv",
+  "outputs": {
+    "book_returns": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        50
+      ]
+    },
+    "explained_variance": {
+      "dtype": "float32",
+      "shape": []
+    },
+    "num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "predict_weights": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        50,
+        6
+      ]
+    },
+    "residuals": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        60,
+        6
+      ]
+    },
+    "sd/factor_block.embed": {
+      "dtype": "float32",
+      "shape": [
+        8,
+        32
+      ]
+    },
+    "sd/factor_block.query": {
+      "dtype": "float32",
+      "shape": [
+        3,
+        32
+      ]
+    },
+    "sd/filter.kernel": {
+      "dtype": "float32",
+      "shape": [
+        32,
+        10
+      ]
+    },
+    "sd/filter.readout.bias": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "sd/filter.readout.weight": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        32
+      ]
+    },
+    "sd/filter.skip": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sharpe": {
+      "dtype": "float32",
+      "shape": []
+    }
+  },
+  "raised": null,
+  "src_dirty": false
+}

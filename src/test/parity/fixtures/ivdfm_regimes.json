@@ -1,0 +1,120 @@
+{
+  "data": {
+    "N": 4,
+    "T": 60,
+    "generator": "numpy.random.default_rng",
+    "input_sha256": "59a3424cae34fcf2d2a74eacd355aded8cfcd2862d818344cdc9293550c9539a",
+    "recipe": "y = rng.standard_normal((T, N)); iVDFMDataset(data=y, window=24, stride=1, time_context=1)",
+    "seed": 0
+  },
+  "fingerprint": {
+    "blas": [
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.28"
+      },
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.30"
+      }
+    ],
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "processor": "x86_64",
+    "torch": "2.9.1+cu128"
+  },
+  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "global_rng_preseed": 20251019,
+  "hyperparameters": {
+    "activation": "lrelu",
+    "batch_size": 16,
+    "beta_kl": 1.0,
+    "context_dim": 1,
+    "data_dim": 4,
+    "dataset": {
+      "context_dim": 1,
+      "scaler": null,
+      "stride": 1,
+      "window": 24
+    },
+    "decoder_hidden_dim": 200,
+    "decoder_n_hidden_layers": 2,
+    "decoder_type": "mlp",
+    "decoder_var": 0.01,
+    "device": "cpu",
+    "encoder_hidden_dim": 200,
+    "encoder_n_hidden_layers": 2,
+    "factor_order": 2,
+    "innovation_distribution": "laplace",
+    "latent_dim": 3,
+    "learning_rate": 0.001,
+    "max_epochs": 2,
+    "mixing": false,
+    "num_regimes": 2,
+    "optimizer_momentum": 0.9,
+    "optimizer_type": "Adam",
+    "optimizer_weight_decay": 0.0,
+    "patience": 20,
+    "prior_hidden_dim": 100,
+    "prior_n_hidden_layers": 1,
+    "regime_temperature": 1.0,
+    "scheduler_factor": 0.1,
+    "scheduler_gamma": 0.5,
+    "scheduler_min_lr": 0.0,
+    "scheduler_patience": 10,
+    "scheduler_step_size": null,
+    "scheduler_type": "step",
+    "seed": 3,
+    "slope": 0.1,
+    "time_context": 1,
+    "tolerance": 0.0005,
+    "use_layer_norm": false,
+    "window": 24
+  },
+  "model": "ivdfm",
+  "name": "ivdfm_regimes",
+  "outputs": {
+    "factors": {
+      "dtype": "float32",
+      "shape": [
+        37,
+        24,
+        3
+      ]
+    },
+    "innovations": {
+      "dtype": "float32",
+      "shape": [
+        37,
+        24,
+        3
+      ]
+    },
+    "num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "predict": {
+      "dtype": "float32",
+      "shape": [
+        6,
+        4
+      ]
+    },
+    "regime_weights": {
+      "dtype": "float32",
+      "shape": [
+        37,
+        2
+      ]
+    }
+  },
+  "raised": null,
+  "src_dirty": false
+}
