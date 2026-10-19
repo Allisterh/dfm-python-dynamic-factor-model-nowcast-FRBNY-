@@ -9,20 +9,20 @@ Models
 - ``iVDFM``: identifiable variational dynamic factor model.
 - ``AFM``: attention factor model for cross-sectional returns.
 
-Each model is built from a dataset and a config, then fitted::
+``AFM`` follows the estimator API: hyperparameters in the constructor, data in
+one ``PanelData`` container, fitted state in attributes ending in ``_`` and a
+pickle-free save directory::
 
-    >>> from dfm_python import DFM, DFMDataset, DFMConfig
-    >>> config = DFMConfig(
-    ...     blocks={"global": {"num_factors": 1, "series": cols}},
-    ...     frequency={c: "m" for c in cols},
-    ...     clock="m",
-    ... )
-    >>> dataset = DFMDataset(config=config, data=df, time_index="date")
-    >>> model = DFM(dataset=dataset, config=config)
-    >>> model.fit()
-    >>> X_forecast, Z_forecast = model.predict(horizon=6)
+    >>> from dfm_python import AFM, PanelData
+    >>> data = PanelData.from_arrays(y=returns, series_exog=characteristics)  # (T, N), (T, N, M)
+    >>> model = AFM(n_factors=3, hist_len=20, max_epochs=20, random_state=0).fit(data)
+    >>> weights = model.allocate()               # DataFrame (T - hist_len) x N
+    >>> model.result_.sharpe, model.book_returns_
+    >>> model.save("runs/afm")
+    >>> model = AFM.load("runs/afm")             # or dfm_python.load("runs/afm")
 
-See README.md for complete examples of every model.
+``DFM``, ``DDFM`` and ``iVDFM`` are still built from a dataset and a config
+until they are migrated; see README.md for complete examples of every model.
 """
 
 import logging as _logging
@@ -72,10 +72,10 @@ from .io.loading import load
 from .dataset.dfm_dataset import DFMDataset
 from .dataset.ddfm_dataset import DDFMDataset
 from .dataset.ivdfm_dataset import iVDFMDataset
-from .dataset.afm_dataset import AFMDataset
 
-# Models
-from .models.base import BaseFactorModel
+# Models (BaseFactorModel is the estimator base; the unmigrated engines still
+# inherit the old one from dfm_python.models.base)
+from .base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.ddfm import DDFM
 from .models.ivdfm.ivdfm import iVDFM
@@ -94,7 +94,7 @@ __all__ = [
     # Saved runs
     'load',
     # Datasets
-    'DFMDataset', 'DDFMDataset', 'iVDFMDataset', 'AFMDataset',
+    'DFMDataset', 'DDFMDataset', 'iVDFMDataset',
     # Results and metrics
     'BaseResult', 'DFMResult', 'DDFMResult', 'calculate_rmse',
     # Errors

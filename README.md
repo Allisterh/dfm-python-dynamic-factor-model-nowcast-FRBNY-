@@ -77,43 +77,51 @@ end-to-end scripts in
 
 ## AFM
 
-AFM takes a returns panel `(T, N)` and, for learned attention factors, firm
-characteristics `(T, N, M)`. It is trained on an after-cost Sharpe ratio plus an
-explained-variance term (`lambda_var`).
+AFM takes asset returns `(T, N)` and, for learned attention factors, firm
+characteristics `(T, N, M)` in one `PanelData` container. It is trained on an
+after-cost Sharpe ratio plus an explained-variance term (`lambda_var`). AFM
+allocates rather than forecasts: `allocate()` returns portfolio weights and
+`backtest(data)` evaluates them on other data.
 
 ```python
 import numpy as np
-import torch
-from dfm_python import AFM, AFMDataset
-from dfm_python.models.afm.factors import residuals
+import pandas as pd
+from dfm_python import AFM, PanelData
 
 rng = np.random.default_rng(0)
 T, N, M = 120, 20, 8                        # dates, assets, characteristics
 returns = 0.01 * rng.standard_normal((T, N))
 characteristics = rng.standard_normal((T, N, M))
+dates = pd.bdate_range("2020-01-01", periods=T, name="date")
+tickers = [f"a{i}" for i in range(N)]
 
-ds = AFMDataset(returns=returns, characteristics=characteristics)
-model = AFM(dataset=ds, n_factors=3, hist_len=20, max_epochs=20, seed=0)
-model.fit()
+data = PanelData.from_arrays(y=returns, series_exog=characteristics, index=dates,
+                             names=tickers, series_exog_names=[f"c{j}" for j in range(M)])
+model = AFM(n_factors=3, hist_len=20, max_epochs=20, random_state=0, device="cpu")
+model.fit(data)                             # returns model
 
-out = model.predict()
-out["residuals"].shape                      # (1, T, N) residual returns
-out["weights"].shape                        # (1, T - hist_len, N) portfolio weights
-out["book_returns"].shape                   # (1, T - hist_len) after-cost returns
-result = model.get_result()
-print(result.sharpe, result.explained_variance)
+weights = model.allocate()                  # DataFrame (T - hist_len) x N, index dates[hist_len:]
+model.result_.sharpe, model.result_.explained_variance
+model.residuals_                            # DataFrame T x N of residual returns
+model.book_returns_                         # Series of after-cost returns on dates[hist_len:]
 
-# Residuals from the fitted factor block directly
-R, X = ds.get_tensors(model.device)
-with torch.no_grad():
-    omega_f, beta_t = model.factor_block(X)  # (T, K, N), (T, N, K)
-    eps = residuals(omega_f, beta_t, R)      # (T, N)
+res = model.backtest(data.loc(dates[60], None))   # AFMResult on other data, no training
+res.sharpe, res.weights.shape               # (1, n_eval, N)
+
+model.save("runs/afm")                      # pickle-free directory
+model = AFM.load("runs/afm")                # or dfm_python.load("runs/afm"); device= overrides
+weights = model.allocate(data=data)         # a loaded model keeps no data: pass it
 
 # Benchmarks: PCA factors need no characteristics
-pca = AFM(dataset=AFMDataset(returns=returns), n_factors=3, hist_len=20,
-          factor_model="pca", trading="ou")  # or trading="longconv"
-pca.fit()
+pca = AFM(n_factors=3, hist_len=20, factor_model="pca", trading="ou")  # or trading="longconv"
+pca.fit(PanelData(y=pd.DataFrame(returns, index=dates, columns=tickers)))
 ```
+
+In long format (`unique_id`, `ds`, `y` plus one column per characteristic),
+build the same panel with
+`PanelData.from_long(df, series_exog_cols=["c0", ..., "c7"])`. The
+hyperparameters can also come from YAML: `config/afm_finance.yaml` holds a
+`model:` section that `AFM.from_config(AFMConfig.from_yaml(path))` reads.
 
 ## Layout
 
