@@ -66,14 +66,13 @@ X_forecast, Z_forecast = model.predict(horizon=6)
 print(X_forecast.shape, Z_forecast.shape)       # (6, 4) series, (6, state dim)
 ```
 
-`DDFM` is an estimator like iVDFM and AFM below: `DDFM(n_factors=4,
-encoder_layers=(16,), scaler="standard").fit(PanelData(y=targets, exog=covariates))`,
-then `predict(h)` and `predict_factors(h)`. Every model and config class is
-importable from `dfm_python`. Hydra YAML configurations for each model are in
+DFM still uses this dataset-then-model pattern; AFM, iVDFM and DDFM below are
+estimators that take a `PanelData` container. Every model and config class is
+importable from `dfm_python`. YAML configurations for each model are in
 [`config/`](https://github.com/minkeymouse/dfm-python/tree/main/config) and
 end-to-end scripts in
 [`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial)
-(install the `examples` extra to run them).
+(the DFM scripts use Hydra: install the `examples` extra to run them).
 
 ## AFM
 
@@ -199,18 +198,86 @@ data = PanelData.from_wide(pd.read_csv("data/exchange_rate.csv"), **sections["da
 `tutorial/tutorial_{macro,finance,exchange}_ivdfm.py` run these configurations
 end to end (`--rows` and `--max-epochs` shorten a run).
 
+## DDFM
+
+DDFM, the deep dynamic factor model, encodes each time step with a nonlinear
+encoder into `n_factors` factors and reconstructs the targets with a linear (or
+MLP) decoder. The autoencoder is pre-trained, then trained with MCMC denoising
+(`n_mc_samples` corrupted copies of the targets per iteration, at most
+`max_iter` iterations); `fit` then builds a linear state space on the factors,
+an AR(1) transition and the decoder's last linear layer, which the forecasts
+use. The `exog` columns of `PanelData` are the encoder's covariates: they are
+encoded with the targets but not reconstructed or forecast. Missing values are
+interpolated. Forecasts are returned in data units: the model's output is
+inverse-transformed with the fitted `scaler_`.
+
+```python
+import numpy as np
+import pandas as pd
+from dfm_python import DDFM, PanelData
+
+rng = np.random.default_rng(0)
+dates = pd.date_range("2010-01-31", periods=132, freq="ME", name="date")
+raw = pd.DataFrame(rng.standard_normal((132, 5)), columns=["s0", "s1", "s2", "oil", "fx"])
+raw.insert(0, "date", dates)
+
+data = PanelData.from_wide(raw.iloc[:120], time_col="date", exog_cols=["oil", "fx"])  # exog = covariates
+model = DDFM(n_factors=2, encoder_layers=(16,), decoder_type="linear",  # encoder 5 -> 16 -> 2
+             learning_rate=0.005, n_mc_samples=10, max_iter=50, tol=5e-4,
+             scaler="standard", random_state=3, device="auto")     # random_state=3 is the default
+model.fit(data)                             # returns model; builds the state space too
+model.n_iter_, model.converged_
+model.result_.A, model.result_.C            # AR(1) transition (2 x 2), loadings (3 x 2: series x factors)
+model.factors_                              # DataFrame 120 x 2 (factor_0, factor_1)
+
+fc = model.predict(6)                       # DataFrame 6 x 3 (s0, s1, s2), data units
+zf = model.predict_factors(6)               # DataFrame 6 x 2
+
+full = PanelData.from_wide(raw, time_col="date", exog_cols=["oil", "fx"])   # all 132 rows
+fc_new = model.predict(6, data=full)        # conditions on the full panel; model unchanged
+model.update(full)                          # mutates: encodes every row, refits the target scaler
+model.predict(6)                            # equals fc_new
+
+model.save("runs/ddfm", overwrite=True)     # pickle-free directory (weights.pt, state.npz, ...)
+model = DDFM.load("runs/ddfm")              # or dfm_python.load("runs/ddfm"); device= overrides
+```
+
+`data=` and `update` take the full panel, the training rows plus any new ones,
+with the same series and exog columns: every row is encoded with the trained
+weights and the forecasts start after its last date. The target scaler is
+refitted on the training targets and the panel's, so `scaler_` changes;
+`predict(h, data=)` does all of this on a copy. `update(data)` never trains:
+`update(data, refit=True)` raises `UnsupportedInputError`, so call `fit` to
+retrain. `result_.C` is N x r (series by factors), as in DFM.
+
+The shipped YAMLs (`config/ddfm_macro.yaml`, `ddfm_finance.yaml`,
+`ddfm_exchange.yaml`) hold a `model:` section with the constructor parameters
+and a `data:` section with the `PanelData.from_wide` arguments; the macro and
+finance files name the covariates in `exog_cols`:
+
+```python
+from dfm_python.config import DDFMConfig, load_yaml
+
+model = DDFM.from_config(DDFMConfig.from_yaml("config/ddfm_exchange.yaml"))
+sections = load_yaml("config/ddfm_exchange.yaml")
+data = PanelData.from_wide(pd.read_csv("data/exchange_rate.csv"), **sections["data"])
+```
+
+`tutorial/tutorial_{macro,finance,exchange}_ddfm.py` run these configurations
+end to end (`--rows` and `--max-iter` shorten a run).
+
 ## Layout
 
 ```
 src/dfm_python/
   models/      dfm/, ddfm/, ivdfm/, afm/ model classes
-  dataset/     DFMDataset, DDFMDataset, AFMDataset
+  dataset/     PanelData, DFMDataset, and the private data adapters of DDFM, iVDFM and AFM
   config/      model configs (DFMConfig, ..., AFMConfig), YAML adapter, results
   ssm/         state-space form and Kalman filtering
   functional/  EM algorithm
   numeric/, layer/, utils/, logger/   shared numerics, network layers, helpers
 src/test/      pytest suite
-config/        example Hydra YAML configurations
+config/        example YAML configurations (model: and data: sections; DFM's are flat Hydra files)
 data/          example datasets used by the tutorials
 tutorial/      end-to-end scripts per model and dataset
 ```

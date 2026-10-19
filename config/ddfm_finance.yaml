@@ -1,37 +1,60 @@
-# DDFM Configuration for Finance Dataset
-# Data: Finance data with market_forward_excess_returns as target variable
-# Clock: Monthly (m) - all series are monthly frequency
+# DDFM on the finance panel (data/finance.csv), forecasting market_forward_excess_returns
+# with every other column except forward_returns and risk_free_rate as encoder covariates.
+#
+#   from dfm_python import DDFM, PanelData
+#   from dfm_python.config import DDFMConfig, load_yaml
+#   sections = load_yaml("config/ddfm_finance.yaml")
+#   data = PanelData.from_wide(df, **sections["data"])
+#   model = DDFM.from_config(DDFMConfig.from_dict(sections["model"]))
+#
+# finance.csv has no date column (only date_id); the tutorial adds a daily
+# 'date' column starting 1980-01-01 and drops forward_returns and risk_free_rate.
+#
+# The model: section holds DDFM's constructor parameters and is exactly what
+# runs. Earlier releases ignored this file when it was passed as
+# DDFM(dataset, config=...) (only the interpolation values were read); these
+# values now take effect and differ from what such a run used:
+#   learning_rate: 0.001         (ran as 0.005)
+#   encoder_layers: [64, 32]     (ran as [16])
+#   n_factors: 5                 (ran as 4; the old encoder_layers [64, 32, 5] ended with it)
+#   decoder_type: mlp            (ran as linear)
+#   window_size: 200             (ran as 100)
+#   max_iter: 10                 (ran as 200)
+#
+# The old tutorial passed the values explicitly, so for it only these differ:
+# random_state: 3 (it ran unseeded from seed: null) and decoder_type: mlp (it
+# read decoder_type from a config class without that field, so it ran linear).
+# scaler: standard is the StandardScaler the tutorial used. The never-read
+# use_batch_norm and disp, and the data settings clock, target_col and
+# covariates, are gone: the target and covariates are in the data: section.
+model:
+  # Network
+  n_factors: 5                   # latent factors (the encoder's output width)
+  encoder_layers: [64, 32]       # encoder hidden widths; the MLP decoder mirrors them
+  decoder_type: mlp
+  activation: relu
 
-# Neural Network Architecture
-# Match iVDFM depth/width more closely: 3 hidden layers of size ~200
-encoder_layers: [64, 32, 5]  # Hidden layers: [200, 200] -> latent: 5 factors (match iVDFM capacity)
-activation: relu  # Activation function: 'tanh', 'relu', 'sigmoid'
-use_batch_norm: true  # Use batch normalization
-decoder_type: mlp  # Use non-linear (MLP) decoder instead of linear
+  # Training
+  learning_rate: 0.001
+  optimizer: Adam
+  n_mc_samples: 10               # MC samples per MCMC iteration (and pre-training epochs)
+  window_size: 200               # time steps per training batch
+  max_iter: 10                   # MCMC iterations
+  tol: 5.0e-4
+  interpolation_method: linear
+  interpolation_limit: 10
+  interpolation_limit_direction: both
+  scaler: standard               # targets (covariates get a fresh scaler of the same class)
+  random_state: 3
 
-# Target/covariate split
-# For DDFM finance: covariates are ALL columns except the target.
-target_col: market_forward_excess_returns
-covariates: all_except_target
-
-# Training Parameters
-learning_rate: 0.001  # Learning rate for optimizer
-n_mc_samples: 10  # Number of MC samples per MCMC iteration
-window_size: 200  # Align with iVDFM sequence_length=200
-
-# MCMC/Iterative Parameters
-max_epoch: 10  # Align with iVDFM max_epochs=10
-tolerance: 0.0005  # Convergence tolerance
-disp: 10  # Display frequency for training progress
-seed: null  # Random seed (None uses default)
-
-# Interpolation Parameters
-interpolation_method: linear  # Interpolation method for missing values
-interpolation_limit: 10  # Maximum consecutive NaNs to interpolate
-interpolation_limit_direction: both  # Direction to fill ('forward', 'backward', or 'both')
-
-# Data Handling (used by Dataset, not Model)
-clock: m  # Monthly clock frequency
-scaler: standard  # Scaler for target series: 'standard', 'robust', 'minmax', 'maxabs', 'quantile', or null
-
-
+# PanelData.from_wide arguments. The exog columns are the encoder's covariates,
+# in this order (the CSV's, date_id included), ahead of the target.
+data:
+  time_col: date
+  target_cols: [market_forward_excess_returns]
+  exog_cols: [
+    date_id, D1, D2, D3, D4, D5, D6, D7, D8, D9, E1, E10, E11, E12, E13, E14, E15, E16, E17, E18,
+    E19, E2, E20, E3, E4, E5, E6, E7, E8, E9, I1, I2, I3, I4, I5, I6, I7, I8, I9, M1, M10, M11,
+    M12, M13, M14, M15, M16, M17, M18, M2, M3, M4, M5, M6, M7, M8, M9, P1, P10, P11, P12, P13, P2,
+    P3, P4, P5, P6, P7, P8, P9, S1, S10, S11, S12, S2, S3, S4, S5, S6, S7, S8, S9, V1, V10, V11,
+    V12, V13, V2, V3, V4, V5, V6, V7, V8, V9]

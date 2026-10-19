@@ -1,210 +1,105 @@
-"""Tutorial: DDFM for Finance Data
+"""Tutorial: DDFM on the finance panel.
 
-This tutorial demonstrates the complete workflow for training and prediction
-using finance data with market_forward_excess_returns as the target variable.
+Loads ``config/ddfm_finance.yaml`` (a ``model:`` section with the DDFM
+constructor parameters and a ``data:`` section with the ``PanelData.from_wide``
+arguments), fits the model, forecasts ``market_forward_excess_returns`` 6 steps
+ahead in data units, forecasts the factors, and saves and reloads the run. The
+other columns (except ``forward_returns`` and ``risk_free_rate``) are the
+encoder's covariates (``exog``).
+
+Run from the repository root (needs the ``yaml`` extra, or PyYAML)::
+
+    python tutorial/tutorial_finance_ddfm.py
+    python tutorial/tutorial_finance_ddfm.py --rows 120 --max-iter 1   # quick check
+
+``--rows`` and ``--max-iter`` default to the environment variables
+``DFM_TUTORIAL_ROWS`` and ``DFM_TUTORIAL_MAX_ITER``; unset, the whole file and
+the YAML's ``max_iter`` are used.
 """
 
+from __future__ import annotations
+
+import argparse
+import os
 import sys
 from pathlib import Path
-import traceback
-import json
-from datetime import datetime
 
-project_root = Path(__file__).parent.parent
-sys.path.insert(0, str(project_root / "src"))
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(PROJECT_ROOT / "src"))  # run from a clone without installing
 
-import pandas as pd
 import numpy as np
-from dfm_python import DDFMDataset
-from dfm_python.models.ddfm._engine import DDFMEngine as DDFM  # until this tutorial moves to the estimator
-from dfm_python.config import DDFMConfig
-from sklearn.preprocessing import StandardScaler
-import hydra
-from omegaconf import DictConfig, OmegaConf
+import pandas as pd
 
-def save_failure_report(step: str, error: Exception, context: dict, project_root: Path):
-    """Save detailed failure report to file."""
-    reports_dir = project_root / "failure_reports"
-    reports_dir.mkdir(exist_ok=True)
-    
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_file = reports_dir / f"finance_ddfm_failure_{timestamp}.json"
-    
-    report = {
-        "experiment": "finance_ddfm",
-        "step": step,
-        "timestamp": timestamp,
-        "error_type": type(error).__name__,
-        "error_message": str(error),
-        "traceback": traceback.format_exc(),
-        "context": context
-    }
-    
-    with open(report_file, 'w') as f:
-        json.dump(report, f, indent=2, default=str)
-    
-    print(f"\n[FAILURE] Error report saved to: {report_file}")
-    return report_file
+from dfm_python import DDFM, PanelData
+from dfm_python.config import DDFMConfig, load_yaml
 
-@hydra.main(version_base=None, config_path="../config", config_name="ddfm_finance")
-def main(cfg: DictConfig) -> None:
-    print("=" * 80)
-    print("DDFM Tutorial: Finance Data")
-    print("=" * 80)
-    
-    start_time = datetime.now()
-    model = None
-    dataset = None
-    config = None
-    df = None
-    
-    try:
-        print("\n[Step 1] Loading data...")
-        try:
-            df = pd.read_csv(project_root / "data" / "finance.csv")
-            if "date" not in df.columns:
-                from datetime import datetime as dt
-                start_date = dt(1980, 1, 1)
-                df["date"] = pd.date_range(start=start_date, periods=len(df), freq="D")
-            # Drop unused columns (do not use for targets/covariates)
-            df = df.drop(columns=[c for c in ["forward_returns", "risk_free_rate"] if c in df.columns])
-            print(f"   Data shape: {df.shape}")
-        except Exception as e:
-            context = {
-                "data_shape": df.shape if df is not None else None,
-                "data_columns": list(df.columns) if df is not None else None,
-            }
-            save_failure_report("Step 1: Loading data", e, context, project_root)
-            raise
+CONFIG = PROJECT_ROOT / "config" / "ddfm_finance.yaml"
+DATA = PROJECT_ROOT / "data" / "finance.csv"
+RUN_DIR = PROJECT_ROOT / "models" / "ddfm_finance"
 
-        try:
-            print("\n[Step 2] Creating Dataset...")
-            config = DDFMConfig.from_dict(OmegaConf.to_container(cfg, resolve=True))
-            
-            # Finance DDFM: covariates are all columns except target_col
-            target_col = getattr(config, "target_col", "market_forward_excess_returns")
-            covariates_mode = getattr(config, "covariates", "all_except_target")
 
-            # Keep all columns; DDFMDataset deduces targets = all - covariates
-            df_filtered = df.copy()
+def _env_int(name: str) -> int | None:
+    value = os.environ.get(name)
+    return int(value) if value else None
 
-            all_series = [c for c in df_filtered.columns if c not in ("date",)]
-            if target_col not in all_series:
-                raise ValueError(f"Expected target column '{target_col}' not found in finance.csv")
 
-            if isinstance(covariates_mode, str) and covariates_mode.lower() == "all_except_target":
-                covariates = [c for c in all_series if c != target_col]
-            elif covariates_mode in (None, "none"):
-                covariates = []
-            else:
-                # Allow explicit list in config if user provides one
-                covariates = [c for c in (covariates_mode or []) if c in all_series and c != target_col]
-            
-            dataset = DDFMDataset(
-                data=df_filtered,
-                time_idx='date',
-                covariates=covariates if covariates else None,
-                scaler=StandardScaler()
-            )
-            print(f"   Dataset created: {dataset.data.shape}")
-        except Exception as e:
-            context = {
-                "config_max_epoch": cfg.get('max_epoch', None),
-                "data_shape": df.shape if df is not None else None,
-            }
-            save_failure_report("Step 2: Creating Dataset", e, context, project_root)
-            raise
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument("--config", type=Path, default=CONFIG, help="YAML file with model: and data: sections")
+    parser.add_argument("--rows", type=int, default=_env_int("DFM_TUTORIAL_ROWS"),
+                        help="use only the last ROWS rows of the data (quick runs)")
+    parser.add_argument("--max-iter", type=int, default=_env_int("DFM_TUTORIAL_MAX_ITER"),
+                        help="override the YAML's max_iter (MCMC iterations)")
+    parser.add_argument("--device", default=None, help="override the device ('auto', 'cpu', 'cuda')")
+    parser.add_argument("--run-dir", type=Path, default=RUN_DIR, help="directory the fitted run is saved to")
+    return parser.parse_args(argv)
 
-        try:
-            print("\n[Step 3] Training DDFM model...")
-            encoder_layers = getattr(config, 'encoder_layers', [32, 1])
-            encoder_size = tuple(encoder_layers) if encoder_layers else (32, 1)
-            decoder_type = getattr(config, "decoder_type", "linear")
-            
-            model = DDFM(
-                dataset=dataset,
-                config=config,
-                encoder_size=encoder_size,
-                decoder_type=decoder_type,
-                activation=getattr(config, 'activation', 'relu'),
-                learning_rate=getattr(config, 'learning_rate', 0.001),
-                optimizer='Adam',
-                n_mc_samples=getattr(config, 'n_mc_samples', 1),
-                window_size=getattr(config, 'window_size', 100),
-                max_iter=getattr(config, 'max_epoch', 200),  # Config uses max_epoch, DDFM uses max_iter
-                tolerance=getattr(config, 'tolerance', 0.0005),
-                disp=getattr(config, 'disp', 10),
-                seed=getattr(config, 'seed', None),
-                interpolation_method=getattr(config, 'interpolation_method', 'linear'),
-                interpolation_limit=getattr(config, 'interpolation_limit', 10),
-                interpolation_limit_direction=getattr(config, 'interpolation_limit_direction', 'both')
-            )
-            model.fit()
-            model.build_state_space()
-            
-            result = model.get_result()
-            print(f"   Converged: {result.converged if hasattr(result, 'converged') else 'N/A'}, Iterations: {getattr(model, '_num_iter', 'N/A')}")
-        except Exception as e:
-            context = {
-                "config_max_epoch": cfg.get('max_epoch', None),
-                "dataset_shape": dataset.data.shape if dataset is not None else None,
-                "elapsed_time": str(datetime.now() - start_time),
-            }
-            save_failure_report("Step 3: Training DDFM model", e, context, project_root)
-            raise
 
-        try:
-            print("\n[Step 4] Making predictions...")
-            X_forecast, Z_forecast = model.predict(horizon=6, return_series=True, return_factors=True)
-            print(f"   Forecast shape: {X_forecast.shape}")
-            
-            if np.any(np.isnan(X_forecast)) or np.any(np.isinf(X_forecast)):
-                print("   WARNING: Forecast contains NaN or Inf!")
+def main(argv: list[str] | None = None) -> None:
+    args = parse_args(argv)
+    print("DDFM tutorial: finance data")
 
-            # Simple prediction quality check on the last 6 time steps (scaled targets)
-            try:
-                # For finance, target is a single series: target_col
-                y_scaled = dataset.y  # (T, 1) scaled targets
-                y_true = y_scaled[-6:, :]
-                y_pred = X_forecast  # DDFM.predict returns targets in scaled space when return_series=True
-                if y_pred.shape != y_true.shape:
-                    print(f"   WARNING: forecast shape {y_pred.shape} != y_true shape {y_true.shape}; skipping metric.")
-                else:
-                    mse = np.mean((y_pred - y_true) ** 2, axis=0)
-                    mae = np.mean(np.abs(y_pred - y_true), axis=0)
-                    print("   Prediction MSE (scaled):", mse)
-                    print("   Prediction MAE (scaled):", mae)
-            except Exception as eval_e:
-                print(f"   WARNING: prediction evaluation failed: {eval_e}")
-        except Exception as e:
-            context = {
-                "result_converged": result.converged if 'result' in locals() else None,
-            }
-            save_failure_report("Step 4: Making predictions", e, context, project_root)
-            raise
+    # 1. Config: model: holds the constructor parameters, data: the PanelData.from_wide arguments.
+    sections = load_yaml(args.config)
+    config = DDFMConfig.from_dict(sections["model"])
+    overrides = {}
+    if args.max_iter is not None:
+        overrides["max_iter"] = args.max_iter
+    if args.device is not None:
+        overrides["device"] = args.device
 
-        try:
-            print("\n[Step 5] Saving model...")
-            model_path = project_root / "models" / "ddfm_finance.pkl"
-            model_path.parent.mkdir(exist_ok=True)
-            model.save(model_path)
-            print(f"   Model saved to: {model_path}")
-        except Exception as e:
-            context = {
-                "model_path": str(model_path) if 'model_path' in locals() else None,
-                "result_converged": result.converged if 'result' in locals() else None,
-            }
-            save_failure_report("Step 5: Saving model", e, context, project_root)
-            raise
+    # 2. Data: finance.csv has no dates (only date_id), so give the rows daily dates from 1980-01-01.
+    #    forward_returns and risk_free_rate are not used.
+    df = pd.read_csv(DATA)
+    df["date"] = pd.date_range("1980-01-01", periods=len(df), freq="D")
+    df = df.drop(columns=["forward_returns", "risk_free_rate"])
+    if args.rows is not None:
+        df = df.iloc[-args.rows:]
+    data = PanelData.from_wide(df, **sections["data"])
+    print(f"   targets {list(data.series_names)}, {len(data.exog_names)} covariates, "
+          f"{data.n_timesteps} dates {data.index[0].date()} .. {data.index[-1].date()}")
 
-        elapsed = datetime.now() - start_time
-        print(f"\n[SUCCESS] Tutorial completed in {elapsed}")
-        
-    except Exception as e:
-        elapsed = datetime.now() - start_time
-        print(f"\n[FAILURE] Tutorial failed after {elapsed}")
-        print(f"Error: {type(e).__name__}: {str(e)}")
-        raise
+    # 3. Fit: pre-training, MCMC denoising and the linear state space on the factors.
+    model = DDFM.from_config(config).set_params(**overrides)
+    print(f"   {model!r}")
+    model.fit(data)
+    print(f"   trained {model.n_iter_} MCMC iteration(s), converged={model.converged_}")
+    print(f"   factors_ {model.factors_.shape}, loadings result_.C {model.result_.C.shape} (series x factors)")
+
+    # 4. Forecast the target (data units) and the factors.
+    forecast = model.predict(6)
+    print("\n   6-step forecast (data units):")
+    print(forecast.to_string(float_format=lambda v: f"{v:.4f}"))
+    if not np.isfinite(forecast.to_numpy()).all():
+        print("   WARNING: the forecast has non-finite values")
+    factors = model.predict_factors(6)
+    print(f"\n   factor forecast {factors.shape}, columns {list(factors.columns)}")
+
+    # 5. Save the run and load it back without the data.
+    model.save(args.run_dir, overwrite=True)
+    loaded = DDFM.load(args.run_dir)
+    assert loaded.predict(6).equals(forecast)
+    print(f"\n   saved to {args.run_dir} and reloaded; the reloaded forecast is identical")
 
 
 if __name__ == "__main__":

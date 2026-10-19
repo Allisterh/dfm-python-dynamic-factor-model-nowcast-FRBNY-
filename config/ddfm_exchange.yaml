@@ -1,34 +1,47 @@
-# DDFM Configuration for Exchange Rate Dataset
-# Based on original TensorFlow DDFM implementation (DDFM/run_exchange_rate_original.py)
-# Data: 8 exchange rate series (AUD_USD, GBP_USD, CAD_USD, CHF_USD, CNY_USD, JPY_USD, SGD_USD, NZD_USD)
-# Clock: Daily (d) - all series are daily frequency
-# Date range: 1990-01-01 to 2010-10-10
+# DDFM on the daily exchange rates (data/exchange_rate.csv, 1990-01-01 to 2010-10-10).
+#
+#   from dfm_python import DDFM, PanelData
+#   from dfm_python.config import DDFMConfig, load_yaml
+#   sections = load_yaml("config/ddfm_exchange.yaml")
+#   data = PanelData.from_wide(df, **sections["data"])
+#   model = DDFM.from_config(DDFMConfig.from_dict(sections["model"]))
+#
+# The model: section holds DDFM's constructor parameters and is exactly what
+# runs. Earlier releases ignored this file when it was passed as
+# DDFM(dataset, config=...) (only the interpolation values were read); these
+# values now take effect and differ from what such a run used:
+#   window_size: 200             (ran as 100)
+#   max_iter: 10                 (ran as 200)
+#
+# The old tutorial passed every value explicitly, so it ran these values.
+# scaler: standard is the StandardScaler the tutorial used (the old file said
+# null, which the tutorial did not read). The old encoder_layers [16, 4] is
+# encoder_layers [16] with n_factors 4. The never-read use_batch_norm and disp,
+# and the data setting clock, are gone.
+#
+# All eight series are targets and there are no exog columns (covariates).
+model:
+  # Network
+  n_factors: 4                   # latent factors (the encoder's output width)
+  encoder_layers: [16]           # encoder hidden widths
+  decoder_type: linear
+  activation: relu
 
-# Neural Network Architecture (matching original TensorFlow DDFM)
-encoder_layers: [16, 4]  # Hidden layers: [16] -> latent: 4 (matching original structure_encoder=(16, 4))
-activation: relu  # Matching original link='relu'
-use_batch_norm: true  # Matching original batch_norm=True
+  # Training
+  learning_rate: 0.005
+  optimizer: Adam
+  n_mc_samples: 10               # MC samples per MCMC iteration (and pre-training epochs)
+  window_size: 200               # time steps per training batch
+  max_iter: 10                   # MCMC iterations
+  tol: 5.0e-4
+  interpolation_method: linear
+  interpolation_limit: 10
+  interpolation_limit_direction: both
+  scaler: standard
+  random_state: 3
 
-# Training Parameters
-# NOTE: for fair comparison with iVDFM exchange tutorial/config, we align the
-# effective window length and training budget (see ivdfm_exchange.yaml).
-learning_rate: 0.005
-n_mc_samples: 10
-window_size: 200  # Align with iVDFM sequence_length=200
-
-# MCMC/Iterative Parameters
-# NOTE: DDFM uses max_epoch as an iteration budget; iVDFM uses max_epochs.
-# We set this to 10 here to make the tutorials comparable in runtime budget.
-max_epoch: 10
-tolerance: 0.0005
-disp: 10
-seed: 3
-
-# Interpolation Parameters
-interpolation_method: linear  # Interpolation method for missing values
-interpolation_limit: 10  # Maximum consecutive NaNs to interpolate
-interpolation_limit_direction: both  # Direction to fill ('forward', 'backward', or 'both')
-
-# Data Handling (used by Dataset, not Model)
-clock: d  # Daily clock frequency (all series are daily)
-scaler: null  # No scaler - data should be pre-scaled before passing to Dataset
+# PanelData.from_wide arguments.
+data:
+  time_col: date
+  target_cols: [AUD_USD, GBP_USD, CAD_USD, CHF_USD, CNY_USD, JPY_USD, SGD_USD, NZD_USD]
+  exog_cols: []

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import dataclasses
 import importlib.util
 import inspect
+import io
 import json
 import logging
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -19,7 +22,7 @@ import dfm_python
 import dfm_python.models
 import dfm_python.models.ddfm
 from dfm_python import PanelData
-from dfm_python.config import DDFMConfig, DFMConfig
+from dfm_python.config import DDFMConfig, DFMConfig, load_yaml
 from dfm_python.config.schema.params import DDFMModelState
 from dfm_python.config.schema.results import DDFMResult
 from dfm_python.dataset.ddfm_dataset import DDFMDataset
@@ -30,6 +33,8 @@ from dfm_python.testing import _state_hash
 from dfm_python.utils.errors import ConfigurationError, DataValidationError, NotFittedError, UnsupportedInputError
 
 _YAML = importlib.util.find_spec("omegaconf") is not None or importlib.util.find_spec("yaml") is not None
+
+_REPO = Path(__file__).resolve().parents[3]
 
 TINY = {"n_factors": 2, "encoder_layers": (4,), "n_mc_samples": 2, "window_size": 16, "max_iter": 2,
         "random_state": 0, "device": "cpu"}
@@ -525,6 +530,7 @@ def test_update_rejects_excluded_inputs(fitted):
 
 
 def test_update_before_fit_raises():
+    """Ported from the old engine test: update before fit raises (now NotFittedError)."""
     with pytest.raises(NotFittedError):
         DDFM(**TINY).update(_full())
 
@@ -770,3 +776,161 @@ def test_yaml_interpolation_values_reach_the_engine(tmp_path, monkeypatch):
 
 def test_ddfm_is_registered():
     assert ("DDFM", DDFM) in all_estimators()
+
+
+# -- workflow (ported from the old test_ddfm.py) -------------------------------------
+
+
+def _five_series(T: int = 50, *, start: str = "2010-01-31", seed: int = 42) -> PanelData:
+    """Five target series and no covariates, as the old engine tests used."""
+    rng = np.random.RandomState(seed)
+    idx = pd.date_range(start, periods=T, freq="ME", name="date")
+    return PanelData(y=pd.DataFrame(rng.randn(T, 5), index=idx, columns=[f"series_{i}" for i in range(5)]))
+
+
+def test_fit_creates_the_network_components():
+    model = DDFM(max_iter=1, device="cpu")
+    assert not hasattr(model, "network_")
+    model.fit(_five_series())
+    engine = model.network_
+    assert engine.autoencoder is not None
+    assert engine.encoder is not None
+    assert engine.decoder is not None
+    assert engine.optimizer is not None
+    assert engine.scheduler is not None
+    assert engine.factors is not None
+    assert engine._training_time > 0
+
+
+def test_fit_builds_the_state_space():
+    model = DDFM(max_iter=1, device="cpu").fit(_five_series())
+    state = model.network_.training_state
+    for name in ("F", "H", "Q", "R", "mu_0", "Sigma_0"):
+        assert getattr(state, name) is not None, name
+    r = model.n_factors_
+    assert model.result_.A.shape == (r, r) == state.F.shape
+    assert model.result_.C.shape == (5, r) == state.H.shape
+
+
+def test_result_and_predict_are_available_right_after_fit():
+    """The old engine needed build_state_space() before predict and get_result(); fit now builds it."""
+    model = DDFM(max_iter=1, scaler="standard", device="cpu").fit(_five_series())
+    for name in ("Z", "C", "A", "x_sm"):
+        assert getattr(model.result_, name) is not None, name
+    forecast = model.predict(5)
+    assert forecast.shape == (5, 5) and np.isfinite(forecast.to_numpy()).all()
+
+
+def test_full_workflow():
+    data = _five_series()
+    model = DDFM(max_iter=2, scaler="standard", device="cpu")  # encoder (16,) and 4 factors: the defaults
+    assert model.fit(data) is model
+    assert model.network_.factors.shape[-1] == 4
+    assert model.factors_.shape == (50, 4) and model.result_.Z.shape[-1] == 4
+    assert model.predict(5).shape == (5, 5)
+    assert model.predict_factors(5).shape == (5, 4)
+    assert model.result_.converged is not None and model.result_.num_iter >= 0
+    assert model.n_iter_ == 2
+
+
+def test_update_with_new_rows():
+    model = DDFM(max_iter=1, device="cpu").fit(_five_series())
+    old = model.network_.factors.copy()
+    new = _five_series(T=10, start="2014-03-31", seed=0)  # the ten months after the training data
+    assert model.update(new) is model
+    factors = model.network_.factors
+    assert factors.shape[:-2] == old.shape[:-2]
+    assert factors.shape[-2] == old.shape[-2] + 10 and factors.shape[-1] == old.shape[-1]
+    np.testing.assert_array_equal(factors[..., : old.shape[-2], :], old)
+    forecast = model.predict(3)
+    assert forecast.index[0] > new.index[-1]
+    assert forecast.index.equals(pd.date_range(new.index[-1], periods=4, freq="ME", name="date")[1:])
+
+
+# -- shipped YAMLs and tutorials -------------------------------------------------
+
+_MACRO_EXOG = ["KORFBEV", "KORWHLS", "KORMCMP", "KORELEC", "KORCNST", "KORMACH", "KOROCOINF", "KOEMPTOTO",
+               "KOHWRWEMP", "KOWRCDURE", "KOCONPRCF", "KOWRCCNSE", "KOIMPCONA"]
+_EXCHANGE = ["AUD_USD", "GBP_USD", "CAD_USD", "CHF_USD", "CNY_USD", "JPY_USD", "SGD_USD", "NZD_USD"]
+_FINANCE_TARGET = "market_forward_excess_returns"
+
+
+def _finance_exog() -> list[str]:
+    """Every column of finance.csv except the target, forward_returns and risk_free_rate, in CSV order."""
+    header = pd.read_csv(_REPO / "data" / "finance.csv", nrows=0).columns
+    return [c for c in header if c not in (_FINANCE_TARGET, "forward_returns", "risk_free_rate")]
+
+
+_SHIPPED = {
+    "macro": {
+        "model": {"n_factors": 2, "encoder_layers": (64, 32), "decoder_type": "linear", "activation": "relu",
+                  "learning_rate": 0.001, "optimizer": "Adam", "n_mc_samples": 1, "window_size": 100,
+                  "max_iter": 200, "tol": 5e-4, "interpolation_method": "linear", "interpolation_limit": 10,
+                  "interpolation_limit_direction": "both", "scaler": "standard", "random_state": 3},
+        "data": {"time_col": "date", "target_cols": ["KOEQUIPTE"], "exog_cols": _MACRO_EXOG},
+        "csv": "macro.csv",
+    },
+    "finance": {
+        "model": {"n_factors": 5, "encoder_layers": (64, 32), "decoder_type": "mlp", "activation": "relu",
+                  "learning_rate": 0.001, "optimizer": "Adam", "n_mc_samples": 10, "window_size": 200,
+                  "max_iter": 10, "tol": 5e-4, "interpolation_method": "linear", "interpolation_limit": 10,
+                  "interpolation_limit_direction": "both", "scaler": "standard", "random_state": 3},
+        "data": {"time_col": "date", "target_cols": [_FINANCE_TARGET], "exog_cols": _finance_exog()},
+        "csv": "finance.csv",
+    },
+    "exchange": {
+        "model": {"n_factors": 4, "encoder_layers": (16,), "decoder_type": "linear", "activation": "relu",
+                  "learning_rate": 0.005, "optimizer": "Adam", "n_mc_samples": 10, "window_size": 200,
+                  "max_iter": 10, "tol": 5e-4, "interpolation_method": "linear", "interpolation_limit": 10,
+                  "interpolation_limit_direction": "both", "scaler": "standard", "random_state": 3},
+        "data": {"time_col": "date", "target_cols": _EXCHANGE, "exog_cols": []},
+        "csv": "exchange_rate.csv",
+    },
+}
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+@pytest.mark.parametrize("name", sorted(_SHIPPED))
+def test_shipped_yaml_builds_the_estimator(name):
+    path = _REPO / "config" / f"ddfm_{name}.yaml"
+    expected = {**DDFM().get_params(), **_SHIPPED[name]["model"]}
+    cfg = DDFMConfig.from_yaml(path)
+    assert cfg.to_dict() == expected
+    assert DDFM.from_config(cfg).get_params() == expected
+    sections = load_yaml(path)
+    assert sections["data"] == _SHIPPED[name]["data"]
+    # Every column the data: section names is in the shipped CSV (finance.csv gets its 'date' in the tutorial).
+    header = set(pd.read_csv(_REPO / "data" / _SHIPPED[name]["csv"], nrows=0).columns) | {"date"}
+    data = sections["data"]
+    assert set(data["target_cols"]) | set(data["exog_cols"]) <= header
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+@pytest.mark.parametrize("name", ["macro", "finance"])
+def test_shipped_yaml_covariates_are_the_ones_the_tutorials_ran(name):
+    """The exog columns, in order, are the engine covariates the golden fixtures recorded from the old tutorials."""
+    manifest = json.loads((_REPO / "src" / "test" / "parity" / "fixtures" / f"ddfm_{name}.json").read_text())
+    data = load_yaml(_REPO / "config" / f"ddfm_{name}.yaml")["data"]
+    assert data["exog_cols"] == manifest["data"]["covariates"]
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+@pytest.mark.parametrize("name", sorted(_SHIPPED))
+def test_tutorial_runs_on_truncated_data(name, tmp_path):
+    """The tutorial runs end to end: YAML, PanelData.from_wide, fit, predict, predict_factors, save and load."""
+    path = _REPO / "tutorial" / f"tutorial_{name}_ddfm.py"
+    spec = importlib.util.spec_from_file_location(f"_tutorial_{name}_ddfm", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out):
+        module.main(["--rows", "120", "--max-iter", "1", "--device", "cpu", "--run-dir", str(tmp_path / "run")])
+    text = out.getvalue()
+    assert "6-step forecast (data units)" in text and "reloaded forecast is identical" in text
+    loaded = DDFM.load(tmp_path / "run")
+    expected = {**_SHIPPED[name]["model"], "max_iter": 1, "device": "cpu"}
+    assert {k: loaded.get_params()[k] for k in expected} == expected
+    assert loaded.n_iter_ == 1 and loaded.index_.size == 120
+    assert list(loaded.feature_names_in_) == _SHIPPED[name]["data"]["target_cols"]
+    assert list(loaded.exog_names_in_) == _SHIPPED[name]["data"]["exog_cols"]
+    assert np.isfinite(loaded.predict(6).to_numpy()).all()

@@ -441,9 +441,9 @@ def _ddfm_update_outputs(model: Any, upd: Any) -> dict[str, np.ndarray]:
 
 # The values of the flat config/ddfm_macro.yaml (commit 5d19c19) that the
 # ddfm_macro fixture was captured with (at 0add6b5, through the old
-# DDFMConfig.from_dict): the keys the case reads. The shipped file is being
-# rewritten in the model:/data: layout with the canonical names, and DDFMConfig
-# is now the estimator's mirror, so the case keeps its captured values here.
+# DDFMConfig.from_dict): the keys the case reads. The shipped file is now in
+# the model:/data: layout with the canonical names, and DDFMConfig is the
+# estimator's mirror, so the case keeps its captured values here.
 # The data recipe still names the file the values came from.
 _DDFM_MACRO_FLAT_CONFIG: dict[str, Any] = {
     "encoder_layers": [64, 32, 2], "activation": "relu", "learning_rate": 0.001, "n_mc_samples": 1,
@@ -458,7 +458,7 @@ def _ddfm_macro() -> CaseRun:
     from dfm_python.models.ddfm._engine import DDFMEngine as DDFM
     from dfm_python.dataset.ddfm_dataset import DDFMDataset
 
-    # tutorial_macro_ddfm.py on the last rows of data/macro.csv, with a few MCMC
+    # The old tutorial_macro_ddfm.py on the last rows of data/macro.csv, with a few MCMC
     # iterations and an explicit seed (the YAML's seed is null, which would not
     # be reproducible).
     df = _macro_tail(_DDFM_ROWS)
@@ -530,14 +530,15 @@ def _ddfm_fit_and_update(panel: pd.DataFrame, time_idx: str, covariates: list[st
 
 
 def ddfm_exchange_panel() -> pd.DataFrame:
-    """The last rows of data/exchange_rate.csv, read as tutorial_exchange_ddfm.py reads it."""
+    """The last rows of data/exchange_rate.csv, read as the old tutorial_exchange_ddfm.py read it."""
     df = pd.read_csv(EXCHANGE_CSV, index_col=0, parse_dates=True)
     return df.iloc[-_DDFM_TRUNC_ROWS:]
 
 
 def _ddfm_exchange() -> CaseRun:
-    # tutorial_exchange_ddfm.py with config/ddfm_exchange.yaml's values written
-    # inline, a few MCMC iterations and seed 3. Every column is a target.
+    # The old tutorial_exchange_ddfm.py with the values of the flat
+    # config/ddfm_exchange.yaml it read at capture written inline, a few MCMC
+    # iterations and seed 3. Every column is a target.
     panel = ddfm_exchange_panel()
     data = {
         "source": "data/exchange_rate.csv", "source_sha256": _file_digest(EXCHANGE_CSV),
@@ -577,9 +578,10 @@ def ddfm_finance_panel() -> tuple[pd.DataFrame, list[str]]:
 
 
 def _ddfm_finance() -> CaseRun:
-    # tutorial_finance_ddfm.py with config/ddfm_finance.yaml's values written
-    # inline, a few MCMC iterations and seed 3 (the YAML's seed is null). The
-    # MLP decoder covers decoder_size and the MLP last_neurons.
+    # The old tutorial_finance_ddfm.py with the values of the flat
+    # config/ddfm_finance.yaml at capture written inline, a few MCMC iterations
+    # and seed 3 (that YAML's seed was null). The MLP decoder covers
+    # decoder_size and the MLP last_neurons.
     panel, covariates = ddfm_finance_panel()
     data = {
         "source": "data/finance.csv", "source_sha256": _file_digest(FINANCE_CSV),

@@ -1,60 +1,50 @@
-# DDFM Configuration for Macroeconomic Datasets
-# Based on Korean economic indicators (KO* series)
-# Data: 101 series, mixed weekly/monthly frequency (1985-04-05 to 2025-11-21)
-# Clock: Weekly (w) - base frequency for latent factors
-# Target: KOEQUIPTE (Investment, Equipment, Estimation, SA)
+# DDFM on the Korean macro panel (data/macro.csv, weekly dates 1985-04-05 to 2025-11-21),
+# forecasting KOEQUIPTE (investment, equipment) with the other series as encoder covariates.
+#
+#   from dfm_python import DDFM, PanelData
+#   from dfm_python.config import DDFMConfig, load_yaml
+#   sections = load_yaml("config/ddfm_macro.yaml")
+#   data = PanelData.from_wide(df, **sections["data"])
+#   model = DDFM.from_config(DDFMConfig.from_dict(sections["model"]))
+#
+# The model: section holds DDFM's constructor parameters and is exactly what
+# runs. Earlier releases ignored this file when it was passed as
+# DDFM(dataset, config=...) (only the interpolation values were read); these
+# values now take effect and differ from what such a run used:
+#   learning_rate: 0.001         (ran as 0.005)
+#   n_mc_samples: 1              (ran as 10)
+#   encoder_layers: [64, 32]     (ran as [16])
+#   n_factors: 2                 (ran as 4; the old encoder_layers [64, 32, 2] ended with it)
+#
+# The old tutorial passed the values explicitly, so for it only random_state: 3
+# differs (it ran unseeded from seed: null). scaler: standard is the
+# StandardScaler the tutorial used. The never-read use_batch_norm and disp, and
+# the data settings clock and frequency, are gone: the target and covariates
+# are in the data: section.
+model:
+  # Network
+  n_factors: 2                   # latent factors (the encoder's output width)
+  encoder_layers: [64, 32]       # encoder hidden widths
+  decoder_type: linear
+  activation: relu
 
-# Neural Network Architecture
-encoder_layers: [64, 32, 2]  # Hidden layers: [64, 32] -> latent: 2 factors
-activation: relu  # Activation function: 'tanh', 'relu', 'sigmoid'
-use_batch_norm: true  # Use batch normalization
+  # Training
+  learning_rate: 0.001
+  optimizer: Adam
+  n_mc_samples: 1                # MC samples per MCMC iteration (and pre-training epochs)
+  window_size: 100               # time steps per training batch
+  max_iter: 200                  # MCMC iterations
+  tol: 5.0e-4
+  interpolation_method: linear
+  interpolation_limit: 10
+  interpolation_limit_direction: both
+  scaler: standard               # targets (covariates get a fresh scaler of the same class)
+  random_state: 3
 
-# Training Parameters
-learning_rate: 0.001  # Learning rate for optimizer
-n_mc_samples: 1  # Number of MC samples per MCMC iteration (reduced for faster execution)
-window_size: 100  # Time-step batch size for training
-
-# MCMC/Iterative Parameters
-max_epoch: 200  # Maximum MCMC iterations
-tolerance: 0.0005  # Convergence tolerance
-disp: 10  # Display frequency for training progress
-seed: null  # Random seed (None uses default)
-
-# Interpolation Parameters
-interpolation_method: linear  # Interpolation method for missing values
-interpolation_limit: 10  # Maximum consecutive NaNs to interpolate
-interpolation_limit_direction: both  # Direction to fill ('forward', 'backward', or 'both')
-
-# Data Handling (used by Dataset, not Model)
-clock: w  # Weekly clock frequency (base frequency for latent factors)
-scaler: standard  # Scaler for target series: 'standard', 'robust', 'minmax', 'maxabs', 'quantile', or null
-
-# Frequency mapping for mixed-frequency macro data
-# Clock is weekly (w), so monthly series are slower frequency
-# Grouped format: frequencies are specified as lists grouped by frequency code
-# Reduced set for faster testing (~50% reduction: 12 monthly series kept from original ~24)
-frequency:
-  # Monthly series (slower than weekly clock) - typically end-of-month observations
-  # Essential series for testing
-  m:
-    - KOEMPTOTO  # Total employment (monthly)
-    - KOHWRWEMP  # Hours worked (monthly)
-    - KOIMPCONA  # Investment, Construction (monthly)
-    - KOWRCCNSE  # Consumption (monthly)
-    - KOCONPRCF  # Production (monthly)
-    - KOCPCOREF  # Consumer prices (monthly)
-    - KOCPEXFEF  # Export prices (monthly)
-    - KOCREU..A  # Credit (monthly)
-    - KOLRLTHH  # Interest rates (monthly)
-    - KOBSIHAPR  # Business survey (monthly)
-    - KOCNFCONR  # Confidence (monthly)
-    - KOEQUIPTE  # Investment, Equipment (monthly, target series)
-  # Weekly series (same as clock frequency)
-  w:
-    - KORFBEV  # Retail, Food & Beverages (weekly)
-    - KORWHLS  # Retail, Wholesale (weekly)
-    - KORMCMP  # Retail, Miscellaneous & Comparison (weekly)
-    - KORELEC  # Retail, Electronics (weekly)
-    - KORCNST  # Retail, Construction (weekly)
-    - KORMACH  # Retail, Machinery (weekly)
-    - KOROCOINF  # Retail, Other Consumer & Information (weekly)
+# PanelData.from_wide arguments. The exog columns are the encoder's covariates,
+# in this order (the CSV's), ahead of the target.
+data:
+  time_col: date
+  target_cols: [KOEQUIPTE]
+  exog_cols: [KORFBEV, KORWHLS, KORMCMP, KORELEC, KORCNST, KORMACH, KOROCOINF, KOEMPTOTO, KOHWRWEMP,
+              KOWRCDURE, KOCONPRCF, KOWRCCNSE, KOIMPCONA]
