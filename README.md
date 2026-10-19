@@ -1,19 +1,21 @@
 # dfm-python
 
-Dynamic factor models in Python.
+Dynamic factor models in Python, with one estimator API for four models:
 
-- **DFM**: linear, mixed-frequency Dynamic Factor Model estimated by EM with
-  Kalman filtering and smoothing.
-- **DDFM**: Deep Dynamic Factor Model with a nonlinear (PyTorch) encoder.
-- **iVDFM**: Identifiable Variational Dynamic Factor Model.
+- **DFM**: the linear, mixed-frequency dynamic factor model, estimated by EM
+  with Kalman filtering and smoothing (numpy).
+- **DDFM**: the deep dynamic factor model, a nonlinear encoder trained with
+  MCMC denoising and a linear state space on its factors (PyTorch).
+- **iVDFM**: the identifiable variational dynamic factor model, trained on
+  the ELBO with a context-conditioned innovation prior (PyTorch).
 - **AFM**: the Attention Factor Model of Epstein, Wang, Choi and Pelger (2025),
   a cross-sectional conditional factor model whose residuals are traded
-  portfolios, with PCA and Avellaneda-Lee benchmarks.
+  portfolios, with PCA and Avellaneda-Lee benchmarks (PyTorch).
 
-Mixed frequencies are handled with a clock: latent factors evolve at one
-frequency (for example monthly) and lower-frequency series load on them through
-tent-kernel aggregation in the observation equation. Series faster than the
-clock are not supported.
+DFM handles mixed frequencies through a clock: the latent factors evolve at
+one frequency (for example monthly), and series sampled at one slower
+frequency (for example quarterly) load on them through a tent kernel in the
+observation equation. Series faster than the clock are not supported.
 
 ## Install
 
@@ -21,36 +23,157 @@ clock are not supported.
 pip install dfm-python        # or: uv add dfm-python
 ```
 
-Requires Python 3.10 or later; PyTorch is a required dependency.
+Python 3.10 or later. The runtime dependencies are numpy, pandas, scipy,
+scikit-learn, torch, pykalman and einops. Optional extras:
 
-Optional extras:
-
-| Extra      | Adds        | Needed for                                              |
-|------------|-------------|---------------------------------------------------------|
-| `yaml`     | omegaconf   | reading YAML configs (`load_yaml`, `XConfig.from_yaml`) |
-| `tune`     | optuna      | iVDFM hyperparameter search (`dfm_python.tuning`)       |
-| `metrics`  | sktime      | `calculate_rmse`, `calculate_mae`                       |
-| `polars`   | polars, pyarrow | passing polars DataFrames to `PanelData`            |
-| `all`      | all of the above |                                                    |
+| Extra     | Adds              | Needed for                                                  |
+|-----------|-------------------|-------------------------------------------------------------|
+| `yaml`    | omegaconf         | YAML configs (`load_yaml`, `XConfig.from_yaml`) and the `tutorial/` scripts |
+| `tune`    | optuna            | iVDFM hyperparameter search (`dfm_python.tuning`)           |
+| `metrics` | sktime            | `calculate_rmse`, `calculate_mae`                           |
+| `polars`  | polars, pyarrow   | passing polars DataFrames to `PanelData`                    |
+| `all`     | all of the above  |                                                             |
 
 ```bash
 pip install "dfm-python[yaml,tune]"
 ```
 
+Without an extra, the code that needs it raises an `ImportError` naming the
+extra to install. PyYAML also works for `load_yaml`.
+
+## Quick start
+
+Every model follows the same contract, modelled on scikit-learn:
+
+- `Model(**hyperparameters)` stores keyword-only hyperparameters and does
+  nothing else.
+- `fit(data)` takes a `PanelData` (or a DataFrame) and returns the model.
+- `predict(h)` returns a DataFrame of the `h` steps after the last
+  conditioning date, one column per series in your order, in data units.
+  `predict_factors(h)` returns the factor (state) forecast. AFM allocates
+  instead: `allocate()` and `backtest(data)`.
+- Fitted state lives in attributes ending in `_`: `result_`, `n_iter_`,
+  `converged_`, `scaler_`, `factors_`, ... Before `fit` they raise
+  `NotFittedError`.
+- `update(data)` conditions later forecasts on new data with the fitted
+  parameters; `update(data, refit=True)` also re-estimates where the model
+  supports it.
+- `save(path)` writes a pickle-free directory; `Model.load(path)` and
+  `dfm_python.load(path)` read it back without data.
+- `get_params`, `set_params` and `sklearn.base.clone` work as in
+  scikit-learn, and `get_config()` / `Model.from_config(cfg)` convert to and
+  from the typed config mirror (`DFMConfig`, `DDFMConfig`, `iVDFMConfig`,
+  `AFMConfig`).
+
+```python
+import numpy as np
+import pandas as pd
+from sklearn.base import clone
+
+import dfm_python
+from dfm_python import DFM, PanelData
+
+idx = pd.date_range("2015-01-31", periods=96, freq="ME", name="date")
+df = pd.DataFrame(np.random.default_rng(0).standard_normal((96, 3)),
+                  index=idx, columns=["a", "b", "c"])
+train, new = PanelData(y=df.iloc[:84]), PanelData(y=df.iloc[84:])
+
+model = DFM(n_factors=1, max_iter=50, scaler="standard")  # hyperparameters only
+model = model.fit(train)                                  # fit returns the model
+fc = model.predict(6)               # DataFrame 6 x 3, index 2022-01-31 ... 2022-06-30
+zf = model.predict_factors(6)       # DataFrame 6 x state dimension (state_0, ...)
+model.result_.loglik, model.n_iter_, model.converged_
+
+model.update(new)                   # condition on the 12 new rows; returns model
+assert model.predict(6).index[0] == pd.Timestamp("2023-01-31")
+
+model.save("runs/quickstart", overwrite=True)            # pickle-free directory
+same = dfm_python.load("runs/quickstart")                # or DFM.load(...); no data needed
+pd.testing.assert_frame_equal(same.predict(6), model.predict(6))
+
+params = model.get_params()                              # {"n_factors": 1, ...}
+two = clone(model).set_params(n_factors=2)               # unfitted copy with 2 factors
+cfg = model.get_config()                                 # DFMConfig with the same fields
+assert DFM.from_config(cfg).get_params() == params
+```
+
+## Data
+
+`PanelData` is the one data container. It is frozen and validated, uses only
+numpy and pandas, and never imputes, scales or reorders values. Its slots:
+
+| Slot          | Shape                                         | Meaning                                          |
+|---------------|-----------------------------------------------|--------------------------------------------------|
+| `y`           | DataFrame, T x N                              | the target series (macro panel or asset returns) |
+| `exog`        | DataFrame, T x K, or None                     | per-time inputs that are not forecast            |
+| `series_exog` | DataFrame, T x (M*N), columns `(feature, series)`, or None | per-time, per-series features       |
+| `freq`        | dict or None                                  | each series' sampling frequency                  |
+
+The index is a unique, increasing `DatetimeIndex`, `PeriodIndex` or
+`RangeIndex` (arrays get a `RangeIndex`), shared by every slot. `freq` takes
+the per-series form `{"gdp": "q"}` or the grouped form `{"q": ["gdp"]}` and
+stores the per-series form; series that are not listed use the model's clock.
+
+```python
+import numpy as np
+import pandas as pd
+from dfm_python import DFM, PanelData, UnsupportedInputError
+
+dates = pd.date_range("2020-01-31", periods=24, freq="ME", name="date")
+wide = pd.DataFrame({"date": dates, "gdp": np.nan,
+                     "ip": np.linspace(0.0, 1.0, 24), "oil": np.ones(24)})
+wide.loc[2::3, "gdp"] = 1.0                       # quarterly: observed every third month
+
+p = PanelData.from_wide(wide, time_col="date", exog_cols=["oil"])   # targets: gdp, ip
+q1 = PanelData.from_wide(wide, time_col="date", target_cols=["gdp", "ip"],
+                         freq={"gdp": "q"})                         # per-series form
+q2 = PanelData(y=wide.set_index("date")[["gdp", "ip"]], freq={"q": ["gdp"]})  # grouped form
+assert q1.freq == q2.freq == {"gdp": "q"}
+
+long = p.to_long()                                # unique_id, ds, y (+ exog columns)
+assert PanelData.from_long(long, exog_cols=["oil"]).equals(p)
+
+arr = PanelData.from_arrays(np.zeros((24, 2)), series_exog=np.zeros((24, 2, 3)),
+                            index=dates, names=["x", "z"])           # y (T, N), series_exog (T, N, M)
+assert arr.series_exog_array().shape == (24, 2, 3)
+
+try:
+    DFM().fit(p)                                  # DFM takes no exog
+except UnsupportedInputError as err:
+    print(err)                                    # names the tag capability:exog
+```
+
+`from_wide(df, *, time_col, target_cols, exog_cols, freq)` takes one wide
+frame (targets default to every other column);
+`from_long(df, *, id_col="unique_id", time_col="ds", target_col="y",
+series_exog_cols=(), exog_cols=())` one row per `(series, time)`; and
+`from_arrays(y, *, exog, series_exog, index, names, exog_names,
+series_exog_names, freq)` numpy arrays. `fit`, `predict` and `update` also
+accept a bare DataFrame (`PanelData(y=df)`) or a 2-D array.
+
+Which slots each model accepts; anything else raises `UnsupportedInputError`
+naming the tag (`Model.get_tags()`):
+
+| Model | `y`          | `exog`                      | `series_exog`                       | mixed `freq`              | missing values |
+|-------|--------------|-----------------------------|-------------------------------------|---------------------------|----------------|
+| DFM   | series       | no                          | no                                  | yes, one slower frequency | yes            |
+| DDFM  | targets      | encoder covariates          | no                                  | no                        | interpolated   |
+| iVDFM | targets      | context u_t of the prior    | no                                  | no                        | interpolated   |
+| AFM   | asset returns | no                          | characteristics (attention factors) | no                        | no             |
+
 ## DFM
 
-DFM, the linear dynamic factor model, is estimated by EM with Kalman filtering
-and smoothing. It is an estimator on `PanelData`: the series in `y`, in any
-column order, and each series' sampling frequency in `freq`, either per series
-(`{"gdp": "q"}`) or grouped by frequency (`{"q": ["gdp"], "m": ["s0", "s1"]}`);
-unlisted series use the clock. Latent factors evolve at the `clock` frequency.
-Every series is sampled at the clock or at one slower frequency: a series
-faster than the clock, or a second slower frequency, raises
-`UnsupportedInputError`. A slower series is NaN at the clock dates between its
-observations and loads on the factors through a tent kernel, which you give in
-`tent_weights` under the key `"f:clock"`; there is no default kernel, and the
-error for a missing one names the symmetric kernel to pass
-(`{"q:m": [1, 2, 3, 2, 1]}` for quarterly series on a monthly clock).
+DFM, the linear dynamic factor model, is estimated by EM with Kalman
+filtering and smoothing. The series are `PanelData.y`, in any column order,
+and their frequencies `PanelData.freq`. The latent factors evolve at the
+`clock` frequency. Every series is sampled at the clock or at one slower
+frequency: a series faster than the clock, or a second slower frequency,
+raises `UnsupportedInputError`. A slower series is NaN at the clock dates
+between its observations and loads on the factors through a tent kernel,
+given in `tent_weights` under the key `"f:clock"`. There is no default
+kernel: mixed-frequency data without one raises `ConfigurationError` naming
+the symmetric kernel to pass (`{"q:m": [1, 2, 3, 2, 1]}` for quarterly series
+on a monthly clock).
 
 ```python
 import numpy as np
@@ -67,79 +190,163 @@ new = PanelData(y=df.iloc[-6:-3], freq={"gdp": "q"})   # rows after the last fit
 more = PanelData(y=df.iloc[-3:], freq={"gdp": "q"})    # rows after those
 model = DFM(n_factors=1, clock="m", tent_weights={"q:m": [1, 2, 3, 2, 1]},
             max_iter=50, tol=1e-5, scaler="standard")   # blocks=None: one global block
-model.fit(data)                                         # initialization, then EM; returns model
+model.fit(data)                                         # initialization, then EM
 model.result_.loglik, model.n_iter_, model.converged_
-fc = model.predict(6)                                   # DataFrame 6 x 4, data units, columns in your order
-zf = model.predict_factors(6)                           # DataFrame 6 x state dim (state_0, ...)
-fc_new = model.predict(6, data=new)                     # filters the new rows; model unchanged
-model.update(new)                                       # Kalman update, fixed parameters; returns model
+fc = model.predict(6)                                   # DataFrame 6 x 4, data units, your column order
+zf = model.predict_factors(6)                           # DataFrame 6 x state dimension
+fc_new = model.predict(6, data=new)                     # filters the new rows on a copy
+model.update(new)                                       # Kalman filter and smoother, fixed parameters
 model.update(more, refit=True)                          # one EM iteration on all rows; refreshes result_
-model.save("runs/dfm")
-model = DFM.load("runs/dfm")                            # or dfm_python.load("runs/dfm"); no data needed
+model.save("runs/dfm", overwrite=True)
+model = DFM.load("runs/dfm")                            # no data needed
 ```
 
-The constructor takes hyperparameters only: `n_factors` is the size of the
-single global block used when `blocks` is None (None means 1), and
-`blocks={"name": {"n_factors": 2, "series": [...]}, ...}` replaces it (set one
-of the two, not both; the block order is the factor order). `max_iter` and
-`tol` control EM; `ar_clip`, `data_clip`, `regularization` and
-`damping_factor` are the engine's optional stabilizers (None leaves them off).
+- **Hyperparameters.** `n_factors` is the size of the single global block
+  used when `blocks` is None (None means 1);
+  `blocks={"name": {"n_factors": 2, "series": [...]}, ...}` replaces it (set
+  one of the two; the block order is the factor order). `max_iter` and `tol`
+  control EM; `ar_clip`, `data_clip`, `regularization` and `damping_factor`
+  are the engine's optional stabilizers (None leaves them off).
+- **Scaling.** `scaler=None` is the default and fits the data as given; the
+  engine then rejects series whose standard deviation is above 100 or below
+  1e-4, so pass `scaler="standard"` (or `"robust"`, `"minmax"`, `"maxabs"`,
+  `"quantile"` or a transformer) unless the data is already standardized.
+- **Column order.** The engine orders the series `[clock | slower]`
+  internally, a stable partition of your order (`internal_feature_names_`).
+  Forecasts and `freq_` follow your order; the series-indexed matrices of
+  `result_` (`C`, `R`, `x_sm`) are in the internal order.
+- **Mixed-frequency forecasts** report every series at every clock date,
+  slower series included: a quarterly series on a monthly clock gets a value
+  for each forecast month (the tent-weighted combination of the factor
+  forecasts).
+- **New rows.** `predict(h, data=)` and `update` take only the rows after
+  the last conditioning date, with the training series and frequencies; an
+  overlap raises `DataValidationError`. They are the engine's two paths and
+  give different numbers (see [update and predict(data=)](#update-and-predictdata)).
 
-`scaler=None` is the default and fits on the data as given; the engine then
-rejects series whose standard deviation is above 100 or below 1e-4, so pass
-`scaler="standard"` (or another scaler name or transformer) unless the data is
-already standardized. Forecasts are always in data units and report every
-series at every clock date, slower series included: a quarterly series on a
-monthly clock gets a value for each forecast month (the tent-weighted
-combination of the factor forecasts).
+`tutorial/tutorial_{macro,finance,exchange}_dfm.py` fit the shipped
+configurations end to end.
 
-The engine orders the series `[clock | slower]` internally, a stable
-partition of your order (`internal_feature_names_`); forecasts follow your
-order, while the series-indexed matrices of `result_` (`C`, `R`, `x_sm`) are
-in the internal order. `freq_` holds every series' frequency.
+## DDFM
 
-`predict(h, data=new)` and `update(new)` take only the rows after the last
-conditioning date (tag `predict_data="new_rows"`; an overlap raises
-`DataValidationError`), with the training series and frequencies. They are
-the engine's two paths and give different numbers: `predict(h, data=)`
-filters the new rows from the initial covariance and forecasts from the last
-filtered state, on a copy, while `update` filters and smooths from the last
-filtered covariance and appends the smoothed states, keeping `result_` and the
-parameters. `update(new, refit=True)` runs one EM iteration on all rows and
-refreshes `result_`, `n_iter_`, `converged_`, `loglik_` and `factors_`.
-`save` writes a pickle-free directory (no `weights.pt`; the scaled data and the
-smoothed state are in `state.npz`), and `DFM.load` needs no data.
-
-`DFMConfig` mirrors the constructor. The shipped YAMLs (`config/dfm_macro.yaml`,
-`dfm_finance.yaml`, `dfm_exchange.yaml`) hold a `model:` section with the
-constructor parameters and a `data:` section with the `PanelData.from_wide`
-arguments, frequencies included:
+DDFM, the deep dynamic factor model, encodes each time step with a nonlinear
+encoder into `n_factors` factors and reconstructs the targets with a linear
+(or MLP) decoder. The autoencoder is pre-trained, then trained with MCMC
+denoising (`n_mc_samples` corrupted copies of the targets per iteration, at
+most `max_iter` iterations). `fit` then builds a linear state space on the
+factors, an AR(1) transition and the decoder's last linear layer, which the
+forecasts use. The `exog` columns are the encoder's covariates: encoded with
+the targets but not reconstructed or forecast. Missing values are
+interpolated.
 
 ```python
-from dfm_python.config import DFMConfig, load_yaml
+import numpy as np
+import pandas as pd
+from dfm_python import DDFM, PanelData
 
-model = DFM.from_config(DFMConfig.from_yaml("config/dfm_macro.yaml"))   # weekly clock, monthly series
-sections = load_yaml("config/dfm_macro.yaml")
-data = PanelData.from_wide(pd.read_csv("data/macro.csv"), **sections["data"])
+rng = np.random.default_rng(0)
+dates = pd.date_range("2010-01-31", periods=132, freq="ME", name="date")
+raw = pd.DataFrame(rng.standard_normal((132, 5)), columns=["s0", "s1", "s2", "oil", "fx"])
+raw.insert(0, "date", dates)
+
+data = PanelData.from_wide(raw.iloc[:120], time_col="date", exog_cols=["oil", "fx"])
+model = DDFM(n_factors=2, encoder_layers=(16,), decoder_type="linear",  # encoder 5 -> 16 -> 2
+             learning_rate=0.005, n_mc_samples=10, max_iter=50, tol=5e-4,
+             scaler="standard", random_state=3, device="auto")
+model.fit(data)                             # trains, then builds the state space
+model.result_.A, model.result_.C            # AR(1) transition (2 x 2), loadings (3 x 2: series x factors)
+model.factors_                              # DataFrame 120 x 2 (factor_0, factor_1)
+fc = model.predict(6)                       # DataFrame 6 x 3 (s0, s1, s2), data units
+zf = model.predict_factors(6)               # DataFrame 6 x 2
+
+full = PanelData.from_wide(raw, time_col="date", exog_cols=["oil", "fx"])   # all 132 rows
+fc_new = model.predict(6, data=full)        # conditions on the full panel on a copy
+model.update(full)                          # encodes every row, refits the target scaler
+pd.testing.assert_frame_equal(model.predict(6), fc_new)
+
+model.save("runs/ddfm", overwrite=True)     # config.json, weights.pt, state.npz, ...
+model = DDFM.load("runs/ddfm", device="cpu")
 ```
 
-`tutorial/tutorial_{macro,finance,exchange}_dfm.py` run these configurations
-end to end (`--rows` and `--max-iter` shorten a run).
+`data=` and `update` take the full panel, the training rows plus any new
+ones, with the same series and exog columns. The target scaler is refitted
+on the training targets and the panel's, so `scaler_` changes. This is only
+meaningful with `scaler="standard"` or `None`: for the other scalers the
+engine refits on scaled training targets stacked with raw new ones (a known
+engine limitation, kept for identical numbers). `result_.C` is N x r (series
+by factors), as in DFM. `tutorial/tutorial_{macro,finance,exchange}_ddfm.py`
+fit the shipped configurations.
 
-AFM, iVDFM and DDFM below are estimators on the same `PanelData` container.
-Every model and config class is importable from `dfm_python`. YAML
-configurations for each model are in
-[`config/`](https://github.com/minkeymouse/dfm-python/tree/main/config) and
-end-to-end scripts in
-[`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial).
+## iVDFM
+
+iVDFM, the identifiable variational dynamic factor model, learns nonlinear
+factors with AR(`factor_order`) dynamics from sliding windows of the panel and
+is trained on the ELBO. The prior of the innovations is conditioned on a
+context u_t, which makes the factors identifiable: u_t is the `exog` columns
+plus `time_context` generated time features. Missing target and exog values
+are interpolated. Forecasts are in data units (inverse-transformed with
+`scaler_`).
+
+```python
+import numpy as np
+import pandas as pd
+from dfm_python import iVDFM, PanelData
+
+rng = np.random.default_rng(0)
+dates = pd.date_range("2010-01-31", periods=156, freq="ME", name="date")
+raw = pd.DataFrame(rng.standard_normal((156, 4)), columns=["s0", "s1", "s2", "policy_rate"])
+raw.insert(0, "date", dates)
+
+data = PanelData.from_wide(raw.iloc[:144], time_col="date", exog_cols=["policy_rate"])
+model = iVDFM(n_factors=2, factor_order=2, window=48, stride=None,  # stride=None: window // 2
+              time_context=1, scaler="standard", max_epochs=20,
+              random_state=3, device="auto")
+model.fit(data)
+model.result_.training_elbo, model.n_iter_, model.converged_
+model.factors_                              # window factors, (window, time) MultiIndex
+
+future = raw.set_index("date")[["policy_rate"]]                # future values of the exog
+fc = model.predict(6, futr_exog=future.iloc[144:150])          # DataFrame 6 x 3, data units
+zf = model.predict_factors(6, futr_exog=future.iloc[144:150])  # DataFrame 6 x 2
+
+new = PanelData.from_wide(raw.iloc[96:150], time_col="date", exog_cols=["policy_rate"])
+fc_new = model.predict(6, new, futr_exog=future.iloc[150:156])  # encodes new on a copy
+model.update(new)                           # encoder forward pass; appends the factors
+pd.testing.assert_frame_equal(model.predict(6, futr_exog=future.iloc[150:156]), fc_new)
+
+model.save("runs/ivdfm", overwrite=True)
+model = iVDFM.load("runs/ivdfm", device="cpu")
+```
+
+- With `factor_order > 1` and `n_regimes == 1`, `n_factors` must not exceed
+  the number of targets (`fit` raises `ConfigurationError`).
+- Without `futr_exog`, a model fitted with exog warns and fills the future
+  context with time features. A `futr_exog` DataFrame is matched by column
+  name and its index must be the forecast dates (a default `RangeIndex` or an
+  array is taken by position).
+
+Hyperparameter search uses optuna (the `tune` extra). It fits clones of the
+estimator on a holdout split, never changes the estimator, and returns the
+best values under the estimator's names:
+
+```python
+from dfm_python.tuning import tune_hyperparameters
+
+best = tune_hyperparameters(model, data, n_trials=3, max_epochs_per_trial=2,  # use more trials
+                            horizon=12, min_window=24, max_window=44, metric="sMSE")
+model.set_params(**best).fit(data)
+```
+
+`tutorial/tutorial_{macro,finance,exchange}_ivdfm.py` fit the shipped
+configurations.
 
 ## AFM
 
 AFM takes asset returns `(T, N)` and, for learned attention factors, firm
-characteristics `(T, N, M)` in one `PanelData` container. It is trained on an
-after-cost Sharpe ratio plus an explained-variance term (`lambda_var`). AFM
-allocates rather than forecasts: `allocate()` returns portfolio weights and
-`backtest(data)` evaluates them on other data.
+characteristics `(T, N, M)`. It is trained on an after-cost Sharpe ratio
+plus an explained-variance term (`lambda_var`). AFM allocates rather than
+forecasts: `allocate()` returns portfolio weights, `backtest(data)`
+evaluates them on other data, and `predict` raises `TypeError`.
 
 ```python
 import numpy as np
@@ -155,8 +362,8 @@ tickers = [f"a{i}" for i in range(N)]
 
 data = PanelData.from_arrays(y=returns, series_exog=characteristics, index=dates,
                              names=tickers, series_exog_names=[f"c{j}" for j in range(M)])
-model = AFM(n_factors=3, hist_len=20, max_epochs=20, random_state=0, device="cpu")
-model.fit(data)                             # returns model
+model = AFM(n_factors=3, hist_len=20, max_epochs=20, random_state=0, device="auto")
+model.fit(data)
 
 weights = model.allocate()                  # DataFrame (T - hist_len) x N, index dates[hist_len:]
 model.result_.sharpe, model.result_.explained_variance
@@ -166,199 +373,264 @@ model.book_returns_                         # Series of after-cost returns on da
 res = model.backtest(data.loc(dates[60], None))   # AFMResult on other data, no training
 res.sharpe, res.weights.shape               # (1, n_eval, N)
 
-model.save("runs/afm")                      # pickle-free directory
-model = AFM.load("runs/afm")                # or dfm_python.load("runs/afm"); device= overrides
+model.save("runs/afm", overwrite=True)
+model = AFM.load("runs/afm", device="cpu")
 weights = model.allocate(data=data)         # a loaded model keeps no data: pass it
 
 # Benchmarks: PCA factors need no characteristics
-pca = AFM(n_factors=3, hist_len=20, factor_model="pca", trading="ou")  # or trading="longconv"
+pca = AFM(n_factors=3, hist_len=20, factor_model="pca", trading="ou", max_epochs=5)
 pca.fit(PanelData(y=pd.DataFrame(returns, index=dates, columns=tickers)))
 ```
 
-In long format (`unique_id`, `ds`, `y` plus one column per characteristic),
+In long format (`unique_id`, `ds`, `y` plus one column per characteristic)
 build the same panel with
-`PanelData.from_long(df, series_exog_cols=["c0", ..., "c7"])`. The
-hyperparameters can also come from YAML: `config/afm_finance.yaml` holds a
-`model:` section that `AFM.from_config(AFMConfig.from_yaml(path))` reads.
+`PanelData.from_long(df, series_exog_cols=["c0", ..., "c7"])`.
+`trading="longconv"` is the other benchmark trading rule.
 
-## iVDFM
+## update and predict(data=)
 
-iVDFM, the identifiable variational dynamic factor model, learns nonlinear
-factors with AR(`factor_order`) dynamics from sliding windows of the panel and
-is trained on the ELBO. The prior of the innovations is conditioned on a context
-u_t, which makes the factors identifiable. u_t is the `exog` columns of
-`PanelData` plus `time_context` generated time features. Missing target and exog
-values are interpolated. Forecasts are returned in data units: the model's
-output is inverse-transformed with the fitted `scaler_`.
+After `update(data)`, `predict` conditions on `data`; fitted parameters change
+only with `refit=True`. The mechanism is each model's own and is published in
+the tags `update_kind` and `predict_data`. `predict(h, data=)` never changes
+the model: it runs on a copy.
+
+| Model | `update_kind` | `update(data)` | `update(data, refit=True)` | `predict_data` | `data=` / `update` take |
+|-------|---------------|----------------|----------------------------|----------------|-------------------------|
+| DFM   | `filter` | Kalman filter and smoother over the new rows from the last smoothed state and the last filtered covariance; `result_` unchanged | one EM iteration on all rows; refreshes `result_`, `n_iter_`, `converged_`, `loglik_`, `factors_` | `new_rows` | only the rows after the last conditioning date; overlap raises `DataValidationError` |
+| DDFM  | `encoder_forward_rescale` | encodes every row with the trained weights and refits the target scaler | `UnsupportedInputError` | `full_panel` | the full panel: training rows plus new ones |
+| iVDFM | `encoder_forward` | encoder forward pass with the fixed weights; appends the factors | `UnsupportedInputError` | `window` | any window: every row is encoded and the last state starts the forecast |
+| AFM   | `reattach` | attaches the data for later `allocate()` | continues training from the current weights | (none) | `update` and `allocate(data=)` take any panel with the training assets and characteristics |
+
+For DDFM and iVDFM, `predict(h, data=d)` equals `update(d)` followed by
+`predict(h)`. For DFM they differ: `predict(h, data=)` filters the new rows
+from the initial covariance `V_0` and forecasts from the last filtered state,
+while `update` starts from the last filtered covariance, as the old engine
+did.
+
+## Saving and loading
+
+`save(path, overwrite=False)` writes a directory: to a temporary sibling,
+reloaded to verify, then renamed into place. `Model.load(path)` and
+`dfm_python.load(path)` (which dispatches on the saved `model_type`) read it
+without data.
+
+| File             | Contents                                                              |
+|------------------|-----------------------------------------------------------------------|
+| `config.json`    | format version, model type, library version, `get_params()`, tags, runtime (device, versions, threads) |
+| `data_spec.json` | series, exog and series-exog names, `freq`, the training index         |
+| `state.npz`      | non-parameter arrays: DFM's state space, scaled data and smoothed state; DDFM's factors and state space; iVDFM's factors; AFM's residuals; the scaler's arrays |
+| `state.json`     | the rest of the fitted state (training diagnostics, engine settings)   |
+| `result.npz`, `result.json` | `result_`, so a loaded model reports what the fitted one did |
+| `weights.pt`     | torch models only: the network's `state_dict`                         |
+| `scaler.json`    | the scaler, for `StandardScaler`, `RobustScaler`, `MinMaxScaler`, `MaxAbsScaler`, `QuantileTransformer` (and None) |
+| `scaler.pkl`     | any other scaler                                                      |
+
+Nothing is pickled by default: arrays are read with `allow_pickle=False` and
+weights with `torch.load(..., weights_only=True)`. Another scaler is written
+to `scaler.pkl`, and loading it needs `allow_pickle=True`, as does a
+`config.json` naming an estimator class outside `sklearn.preprocessing`;
+enable it only for directories you trust. `device=` chooses where torch
+weights are loaded (`map_location`), so a run saved on a GPU loads on a
+CPU-only machine. A single-file `.pkl` or `.pt` checkpoint from 0.7 raises
+`ConfigurationError`: load it with the release that wrote it.
+
+```python
+import os
+
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import PowerTransformer
+
+import dfm_python
+from dfm_python import DFM, PanelData
+from dfm_python.utils.errors import ConfigurationError
+
+idx = pd.date_range("2015-01-31", periods=60, freq="ME", name="date")
+df = pd.DataFrame(np.random.default_rng(1).standard_normal((60, 3)), index=idx, columns=["a", "b", "c"])
+model = DFM(max_iter=20, scaler=PowerTransformer()).fit(PanelData(y=df))
+model.save("runs/power", overwrite=True)
+assert "scaler.pkl" in os.listdir("runs/power")
+try:
+    dfm_python.load("runs/power")           # refuses to unpickle by default
+except ConfigurationError:
+    model = dfm_python.load("runs/power", allow_pickle=True)
+```
+
+## YAML configurations
+
+A YAML file has a `model:` section with the constructor parameters and an
+optional `data:` section with the `PanelData.from_wide` arguments
+(`time_col`, `target_cols`, `exog_cols`, `freq`). `load_yaml(path)` returns
+both sections as dicts, `XConfig.from_yaml(path)` builds the config from the
+`model:` section, and `Model.from_config(cfg)` builds exactly the constructor
+call `Model(**cfg.to_dict())`. A flat file without `model:`, or an unknown
+key (including a pre-redesign name such as `num_factors`, `threshold` or
+`seed`), raises `ConfigurationError` naming the canonical key. Needs the
+`yaml` extra.
+
+```python
+import pandas as pd
+from dfm_python import DFM, DDFM, PanelData
+from dfm_python.config import DDFMConfig, DFMConfig, load_yaml
+
+model = DFM.from_config(DFMConfig.from_yaml("config/dfm_macro.yaml"))   # weekly clock, monthly series
+sections = load_yaml("config/dfm_macro.yaml")                          # {"model": {...}, "data": {...}}
+data = PanelData.from_wide(pd.read_csv("data/macro.csv"), **sections["data"])
+assert data.freq["KOEQUIPTE"] == "m"
+
+ddfm = DDFM.from_config(DDFMConfig.from_yaml("config/ddfm_exchange.yaml"))
+ddfm.get_config().to_yaml("ddfm.yaml")                                 # round-trips
+assert DDFMConfig.from_yaml("ddfm.yaml") == ddfm.get_config()
+```
+
+The shipped files in [`config/`](https://github.com/minkeymouse/dfm-python/tree/main/config),
+with the datasets in `data/` and the scripts in
+[`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial):
+
+| File | Model | Data |
+|------|-------|------|
+| `dfm_macro.yaml`    | DFM, weekly clock, 7 weekly and 7 monthly series     | `data/macro.csv` |
+| `dfm_finance.yaml`  | DFM, 27 daily series                                  | `data/finance.csv` |
+| `dfm_exchange.yaml` | DFM, 8 daily exchange rates                           | `data/exchange_rate.csv` |
+| `ddfm_macro.yaml`   | DDFM, `KOEQUIPTE` with 13 covariates                  | `data/macro.csv` |
+| `ddfm_finance.yaml` | DDFM, `market_forward_excess_returns` with covariates | `data/finance.csv` |
+| `ddfm_exchange.yaml`| DDFM, 8 exchange rates                                | `data/exchange_rate.csv` |
+| `ivdfm_macro.yaml`  | iVDFM, 3 monthly targets                              | `data/macro.csv` |
+| `ivdfm_finance.yaml`| iVDFM, `market_forward_excess_returns`                | `data/finance.csv` |
+| `ivdfm_exchange.yaml`| iVDFM, 8 exchange rates                              | `data/exchange_rate.csv` |
+| `afm_finance.yaml`  | AFM hyperparameters (`model:` only)                   | your returns and characteristics |
+
+Each `tutorial/tutorial_{macro,finance,exchange}_{dfm,ddfm,ivdfm}.py` loads
+its YAML, fits, forecasts, saves and reloads (`--rows`, `--max-iter` or
+`--max-epochs`, `--run-dir`, and `--device` for the torch models shorten or
+redirect a run; the tutorials need the `yaml` extra).
+
+## Reproducibility
+
+The same data and hyperparameters give the same numbers. Seeds:
+
+| Model | Parameter      | Default | What is seeded |
+|-------|----------------|---------|----------------|
+| DFM   | none           | n/a     | nothing; EM is deterministic |
+| DDFM  | `random_state` | 3       | a local `np.random.RandomState` in fit; `torch.manual_seed` when the networks are built |
+| iVDFM | `random_state` | 3       | `torch.manual_seed`, then `np.random.seed`, before the networks are built |
+| AFM   | `random_state` | None    | `torch.manual_seed` before the network is built |
+
+`random_state` is always recorded in `config.json`, and saving a run with
+`random_state=None` warns. Results are bitwise reproducible on CPU with one
+BLAS thread, one torch thread and deterministic algorithms, on the same
+machine and library versions; elsewhere expect agreement to rounding. GPU
+runs are not bitwise reproducible.
 
 ```python
 import numpy as np
 import pandas as pd
-from dfm_python import iVDFM, PanelData
-
-rng = np.random.default_rng(0)
-dates = pd.date_range("2010-01-31", periods=156, freq="ME", name="date")
-raw = pd.DataFrame(rng.standard_normal((156, 4)), columns=["s0", "s1", "s2", "policy_rate"])
-raw.insert(0, "date", dates)
-
-data = PanelData.from_wide(raw.iloc[:144], time_col="date", exog_cols=["policy_rate"])  # exog = context u_t
-model = iVDFM(n_factors=2, factor_order=2, window=48, stride=None,  # stride=None means window // 2
-              time_context=1, scaler="standard", max_epochs=20,
-              random_state=3, device="auto")                      # random_state=3 is the default
-model.fit(data)                                                   # returns model
-model.result_.training_elbo, model.n_iter_, model.converged_
-model.factors_                              # window factors, (window, time) MultiIndex
-
-future = raw.set_index("date")[["policy_rate"]]                # future values of the exog
-fc = model.predict(6, futr_exog=future.iloc[144:150])          # DataFrame 6 x 3, data units
-zf = model.predict_factors(6, futr_exog=future.iloc[144:150])  # DataFrame 6 x 2 (factor_0, factor_1)
-
-new = PanelData.from_wide(raw.iloc[96:150], time_col="date", exog_cols=["policy_rate"])
-fc_new = model.predict(6, new, futr_exog=future.iloc[150:156])  # conditions on new; model unchanged
-model.update(new)               # encoder forward pass with the fixed weights; appends the factors
-model.predict(6, futr_exog=future.iloc[150:156])                # equals fc_new
-
-model.save("runs/ivdfm", overwrite=True)    # pickle-free directory
-model = iVDFM.load("runs/ivdfm")            # or dfm_python.load("runs/ivdfm"); device= overrides
-```
-
-`update(data)` never trains: `update(data, refit=True)` raises
-`UnsupportedInputError`, so call `fit` to retrain. Without `futr_exog`, a model
-fitted with exog warns and fills the future context with time features. A
-`futr_exog` DataFrame is matched by column name and its index must be the
-forecast dates (a default `RangeIndex` or an array is taken by position). With
-`factor_order > 1` and one regime, `n_factors` cannot exceed the number of
-targets: `fit` raises `ConfigurationError`.
-
-Hyperparameter search uses optuna (the `tune` extra). It fits clones of the
-estimator on a holdout split and returns the best values under the estimator's
-names:
-
-```python
-from dfm_python.tuning import tune_hyperparameters   # pip install "dfm-python[tune]"
-
-best = tune_hyperparameters(model, data, n_trials=30, horizon=12, min_window=24, max_window=48,
-                            metric="sMSE")
-model.set_params(**best).fit(data)
-```
-
-The shipped YAMLs (`config/ivdfm_macro.yaml`, `ivdfm_finance.yaml`,
-`ivdfm_exchange.yaml`) hold a `model:` section with the constructor parameters
-and a `data:` section with the `PanelData.from_wide` arguments:
-
-```python
-from dfm_python.config import iVDFMConfig, load_yaml
-
-model = iVDFM.from_config(iVDFMConfig.from_yaml("config/ivdfm_exchange.yaml"))
-sections = load_yaml("config/ivdfm_exchange.yaml")
-data = PanelData.from_wide(pd.read_csv("data/exchange_rate.csv"), **sections["data"])
-```
-
-`tutorial/tutorial_{macro,finance,exchange}_ivdfm.py` run these configurations
-end to end (`--rows` and `--max-epochs` shorten a run).
-
-## DDFM
-
-DDFM, the deep dynamic factor model, encodes each time step with a nonlinear
-encoder into `n_factors` factors and reconstructs the targets with a linear (or
-MLP) decoder. The autoencoder is pre-trained, then trained with MCMC denoising
-(`n_mc_samples` corrupted copies of the targets per iteration, at most
-`max_iter` iterations); `fit` then builds a linear state space on the factors,
-an AR(1) transition and the decoder's last linear layer, which the forecasts
-use. The `exog` columns of `PanelData` are the encoder's covariates: they are
-encoded with the targets but not reconstructed or forecast. Missing values are
-interpolated. Forecasts are returned in data units: the model's output is
-inverse-transformed with the fitted `scaler_`.
-
-```python
-import numpy as np
-import pandas as pd
+import torch
+from threadpoolctl import threadpool_limits
 from dfm_python import DDFM, PanelData
 
-rng = np.random.default_rng(0)
-dates = pd.date_range("2010-01-31", periods=132, freq="ME", name="date")
-raw = pd.DataFrame(rng.standard_normal((132, 5)), columns=["s0", "s1", "s2", "oil", "fx"])
-raw.insert(0, "date", dates)
+torch.set_num_threads(1)
+torch.use_deterministic_algorithms(True)
 
-data = PanelData.from_wide(raw.iloc[:120], time_col="date", exog_cols=["oil", "fx"])  # exog = covariates
-model = DDFM(n_factors=2, encoder_layers=(16,), decoder_type="linear",  # encoder 5 -> 16 -> 2
-             learning_rate=0.005, n_mc_samples=10, max_iter=50, tol=5e-4,
-             scaler="standard", random_state=3, device="auto")     # random_state=3 is the default
-model.fit(data)                             # returns model; builds the state space too
-model.n_iter_, model.converged_
-model.result_.A, model.result_.C            # AR(1) transition (2 x 2), loadings (3 x 2: series x factors)
-model.factors_                              # DataFrame 120 x 2 (factor_0, factor_1)
-
-fc = model.predict(6)                       # DataFrame 6 x 3 (s0, s1, s2), data units
-zf = model.predict_factors(6)               # DataFrame 6 x 2
-
-full = PanelData.from_wide(raw, time_col="date", exog_cols=["oil", "fx"])   # all 132 rows
-fc_new = model.predict(6, data=full)        # conditions on the full panel; model unchanged
-model.update(full)                          # mutates: encodes every row, refits the target scaler
-model.predict(6)                            # equals fc_new
-
-model.save("runs/ddfm", overwrite=True)     # pickle-free directory (weights.pt, state.npz, ...)
-model = DDFM.load("runs/ddfm")              # or dfm_python.load("runs/ddfm"); device= overrides
+idx = pd.date_range("2015-01-31", periods=60, freq="ME", name="date")
+df = pd.DataFrame(np.random.default_rng(2).standard_normal((60, 3)), index=idx, columns=["a", "b", "c"])
+with threadpool_limits(limits=1):
+    fcs = [DDFM(n_factors=2, max_iter=5, n_mc_samples=2, random_state=3, device="cpu")
+           .fit(PanelData(y=df)).predict(6) for _ in range(2)]
+pd.testing.assert_frame_equal(fcs[0], fcs[1], check_exact=True)
 ```
 
-`data=` and `update` take the full panel, the training rows plus any new ones,
-with the same series and exog columns: every row is encoded with the trained
-weights and the forecasts start after its last date. The target scaler is
-refitted on the training targets and the panel's, so `scaler_` changes;
-`predict(h, data=)` does all of this on a copy. `update(data)` never trains:
-`update(data, refit=True)` raises `UnsupportedInputError`, so call `fit` to
-retrain. `result_.C` is N x r (series by factors), as in DFM.
-`update` and `predict(h, data=)` are only meaningful with `scaler="standard"`
-or `None`: for the other scalers the engine refits on scaled training targets
-stacked with raw new ones (a known engine bug, kept for identical numbers).
+## Logging
 
-The shipped YAMLs (`config/ddfm_macro.yaml`, `ddfm_finance.yaml`,
-`ddfm_exchange.yaml`) hold a `model:` section with the constructor parameters
-and a `data:` section with the `PanelData.from_wide` arguments; the macro and
-finance files name the covariates in `exog_cols`:
+The package is silent by default: its logger has only a `NullHandler`, and
+nothing is configured at import. `dfm_python.set_verbosity("debug" | "info"
+| "warning" | "error")` shows the package's records on standard output from
+that level up, and `get_verbosity()` returns the level; the environment
+variable `DFM_PYTHON_VERBOSITY` (for example `DFM_PYTHON_VERBOSITY=info`) is
+applied at import. Every model also takes `verbose`: 0 (the default) is
+silent, 1 shows training progress (EM iterations, epochs) during `fit`, and 2
+adds debug records. The progress handler exists only while `fit` runs.
 
 ```python
-from dfm_python.config import DDFMConfig, load_yaml
+import numpy as np
+import pandas as pd
+import dfm_python
+from dfm_python import DFM, PanelData
 
-model = DDFM.from_config(DDFMConfig.from_yaml("config/ddfm_exchange.yaml"))
-sections = load_yaml("config/ddfm_exchange.yaml")
-data = PanelData.from_wide(pd.read_csv("data/exchange_rate.csv"), **sections["data"])
+df = pd.DataFrame(np.random.default_rng(3).standard_normal((48, 3)), columns=["a", "b", "c"])
+DFM(max_iter=3, scaler="standard", verbose=1).fit(PanelData(y=df))  # prints EM progress
+dfm_python.set_verbosity("warning")                                   # warnings from now on
 ```
 
-`tutorial/tutorial_{macro,finance,exchange}_ddfm.py` run these configurations
-end to end (`--rows` and `--max-iter` shorten a run).
+## Errors
+
+The exceptions are in `dfm_python.utils.errors` (`NotFittedError` and
+`UnsupportedInputError` are also exported from `dfm_python`). Each derives
+from the matching built-in, so `except ValueError` still works.
+
+| Exception | Bases | Raised when |
+|---|---|---|
+| `DFMError` | `Exception` | root of the library's errors |
+| `ConfigurationError`, `ConfigValidationError` | `DFMError`, `ValueError` | invalid hyperparameters; unknown config keys; flat YAML; single-file checkpoints |
+| `DataValidationError` | `DFMError`, `ValueError` | malformed `PanelData`, misaligned index, overlapping `new_rows` data |
+| `UnsupportedInputError` | `DataValidationError` | a slot, frequency layout or `refit` that the tags exclude |
+| `NotFittedError` | `DFMError`, `sklearn.exceptions.NotFittedError` | `predict`, `allocate`, `update`, `save` or `result_` before `fit` |
+| `ModelNotTrainedError` | alias of `NotFittedError` | raised inside the engines |
+| `NumericalError`, `NumericalStabilityError` | `DFMError`, `ArithmeticError` | numerical failures inside the engines |
+
+Messages name the argument and the fix: the closest canonical key, the
+excluding tag, or the value to pass.
+
+## Migrating from 0.7
+
+This release replaces the 0.7 API of every model: constructors take
+hyperparameters only, data goes to `fit` in a `PanelData`, `predict` returns
+DataFrames, results live in `result_`, and runs are saved as directories.
+Nothing of the old API is kept as a deprecated alias. The
+[CHANGELOG](https://github.com/minkeymouse/dfm-python/blob/main/CHANGELOG.md)
+has the old-to-new call table for every model, the renamed hyperparameters
+and the shipped YAML values that now take effect. Scripts written for 0.7,
+and checkpoints saved with it, keep working with `pip install
+"dfm-python==0.7.0"`.
 
 ## Layout
 
 ```
 src/dfm_python/
-  models/      dfm/, ddfm/, ivdfm/, afm/ model classes
-  dataset/     PanelData, and the private data adapters of DFM, DDFM, iVDFM and AFM
+  base.py      BaseFactorModel: the estimator base (tags, save/load template)
+  models/      dfm/, ddfm/, ivdfm/, afm/: estimator.py (public) and _engine.py (private)
+  dataset/     PanelData, and the private data adapters of the four models
   config/      constructor mirrors (DFMConfig, ..., AFMConfig), load_yaml, results
+  io/          the save directory: layout, codecs, scaler files, dfm_python.load
   ssm/         state-space form and Kalman filtering
   functional/  EM algorithm
-  numeric/, layer/, utils/   shared numerics, network layers, helpers
+  numeric/, layer/, utils/   shared numerics, network layers, helpers, errors, seeding
   logger/      logger.py (set_verbosity) and progress.py (fit-scoped progress)
-src/test/      pytest suite
+  tuning/      tune_hyperparameters (iVDFM, optuna)
+  registry.py, testing.py    all_estimators() and check_estimator()
+src/test/      pytest suite (contract/ and parity/ hold the contract and golden tests)
 config/        example YAML configurations (model: and data: sections)
 data/          example datasets used by the tutorials
 tutorial/      end-to-end scripts per model and dataset
+docs/design/   the API design specification
 ```
 
-Development, from a clone (the `dev` dependency group holds pytest, ruff, the
-build tools and the optional packages the tests import):
+## Development
+
+From a clone (the `dev` dependency group holds pytest, ruff, the build tools
+and the optional packages the tests import):
 
 ```bash
-uv sync --group dev      # or: pip install -e . --group dev
-uv run pytest            # test suite (src/test)
-uv run ruff check        # lint; also run by pre-commit and CI
+uv sync --group dev --all-extras    # or: pip install -e ".[all]" --group dev
+uv run pytest                       # test suite (src/test), including this README's examples
+uv run ruff check                   # lint; also run by pre-commit and CI
 ```
 
-Add `--all-extras` to the sync to also run the tests that skip without
-sktime (as CI does).
-
-The paper repository [minkeymouse/nfe](https://github.com/minkeymouse/nfe) uses
-AFM as a baseline.
+`dfm_python.registry.all_estimators()` lists the four estimators, and
+`dfm_python.testing.check_estimator(model)` runs the contract checks every
+model passes. The golden tests in `src/test/parity/` pin each engine's
+numbers. The paper repository
+[minkeymouse/nfe](https://github.com/minkeymouse/nfe) uses AFM as a baseline.
 
 ## License
 

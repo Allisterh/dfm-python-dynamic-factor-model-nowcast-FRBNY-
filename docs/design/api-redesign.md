@@ -102,7 +102,8 @@ from dfm_python import iVDFM, PanelData
 from dfm_python.tuning import tune_hyperparameters       # needs the `tune` extra
 
 data = PanelData.from_wide(raw_df, time_col="date", exog_cols=["policy_rate"])  # exog = context u_t
-model = iVDFM(n_factors=5, factor_order=3, window=200, stride=None,
+# with factor_order > 1 and n_regimes == 1, n_factors must not exceed the number of targets
+model = iVDFM(n_factors=2, factor_order=3, window=200, stride=None,
               innovation_distribution="laplace", learning_rate=1e-3,
               batch_size=256, max_epochs=10, scaler="standard",
               random_state=3, device="auto")
@@ -452,10 +453,13 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
 10. **iVDFM tuning and examples.** Extract `tuning.tune_hyperparameters` around today's optuna code. Rewrite the iVDFM YAMLs and tutorials.
 11. **DDFM.** Engine move, the `n_factors`/`encoder_layers` split, the `[exog | y]` adapter, `fit` including the state space, deep-copy `predict(data=)`, `predict_factors`, `update`, `_from_saved` replacing the minimal-dataset rebuild, the config mirror without the dead fields, contract registration and the golden switch.
 12. **DFM.** Engine move, the adapter that builds `DFMConfig` and `DFMDataset` with the stable partition and output in user order, `_from_saved` with `data_processed` and the last smoothed state, `new_rows` validation and `update`. Remove `load_config`. Add the permuted-input golden case, contract registration and the golden switch.
+    Done. The engine is `models/dfm/_engine.py` (`DFMEngine`) and the estimator `models/dfm/estimator.py`. The old engine config dataclass is the private `_DFMEngineConfig`, and `DFMConfig` is the constructor mirror. The golden fixtures were recaptured before the move with more outputs and an update path; every previously pinned output stayed bitwise identical, and all five DFM cases pass bitwise through the engine, the constructor, the YAML and save-then-load. `update()`'s broken validator import was fixed in the move.
 13. **DFM and DDFM examples.** Rewrite the YAMLs and tutorials on the new API.
+    Done. Every shipped YAML uses the `model:`/`data:` layout, and the nine tutorials run on the new API without Hydra (`--rows`, `--max-iter`/`--max-epochs`, `--run-dir`, `--device`).
 14. **Cleanup.** Remove the public `*Dataset` exports, `ConfigSource`, `YamlSource` and `make_config_source`; rename the old engine base class; collapse the logger modules; make the tutorials a CI smoke job on truncated data.
     Done. The old engine base class was deleted rather than renamed: once no engine inherited it, nothing used it (`models/base.py` keeps `BaseEncoder` and `BaseDecoder` for the DDFM and iVDFM networks), and each engine sets its attributes in `_init_engine_state`. `DictSource`, `detect_config_type` (still used privately by the DFM engine config) and `BaseModelConfig` are no longer exported either. The unused `examples` extra (hydra-core) was removed. The CI `tutorials` job runs the nine scripts with 120 rows (400 for the weekly-clock macro DFM) and one iteration or epoch.
 15. **Documentation.** Rewrite the README and write the CHANGELOG entry described in section 12.
+    Done. The README documents the shared contract, `PanelData`, the four models, `update` and `predict(data=)`, saving, YAML, reproducibility, logging, errors and migration; `src/test/test_readme.py` runs its Python examples. The CHANGELOG's "Breaking: estimator API for all four models" entry holds the section 10 table for every model, the removals, the renames and the shipped YAML values that now take effect.
 
 ## 14. Risks
 
@@ -482,8 +486,10 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
 
 - **Known DFM engine issues, left in place** (the engine is frozen; each fix changes golden outputs):
   - mixed-frequency EM reports the log-likelihood as exactly `-T/2` (`-200` for 400 rows, `-60` for 120), which looks wrong;
-  - EM diverges, or leaves parameters under which the Kalman filter over the training data is not finite, on some mixed-frequency panels (the full `data/macro.csv` with `config/dfm_macro.yaml` converges in 3 iterations, but the filter `update` runs then fails, so `save` stores a NaN `last_smoothed_cov` and `update` raises);
-  - one or two EM iterations on short weekly/monthly slices give explosive forecasts.
+  - EM diverges, or leaves parameters under which the Kalman filter over the training data is not finite, on some mixed-frequency panels, such as truncated slices of `data/macro.csv` (the full `data/macro.csv` with `config/dfm_macro.yaml` converges in 3 iterations, but the filter `update` runs then fails, so `save` stores a NaN `last_smoothed_cov` and `update` raises);
+  - one or two EM iterations on short weekly/monthly slices give explosive forecasts;
+  - `predict(h, data=)` filters the new rows from the initial covariance `V_0`, while `update` starts from the last filtered covariance, so `predict(h, data=new)` differs from `update(new).predict(h)` (the old engine's two paths, kept for identical numbers);
+  - `update(data, refit=True)` (the old `retrain=True`) runs one EM iteration on all rows, not a full refit.
 
 ## 15. Open questions for the owner
 
