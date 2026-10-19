@@ -19,17 +19,27 @@ apart from these edits, none of which changes math or numbers:
 ``fit`` set from the saved state.
 
 The public :class:`~dfm_python.models.dfm.estimator.DFM` estimator builds
-this engine from ``PanelData`` (``dfm_python.DFM`` names the estimator). The
-``dataset=``/``config=`` constructor, the pickle ``save``/``load``,
-``load_config``, ``result`` and the old ``models.base.BaseFactorModel`` base
-class stay until the cleanup that removes the old entry points.
+this engine from ``PanelData`` (``dfm_python.DFM`` names the estimator) with
+the ``dataset=``/``config=`` constructor.
+
+Removed, because the estimator covers them (none of these ran in ``fit``,
+``predict`` or ``update``): ``load_config`` (it called the missing
+``_load_config_common`` and could not run); the pickle ``save`` and the
+pickle/joblib ``load``, which needed a dataset (the estimator saves a
+pickle-free directory and loads through ``_from_saved``); ``reset``; the
+``result`` property (``get_result()`` returns the same cached result); and
+``predict``'s ``horizon=None`` default (one year of clock periods through
+``utils.misc.compute_default_horizon``, removed with it): ``horizon`` is
+required. Without ``save``/``load`` the engine no longer inherits the old
+abstract base ``dfm_python.models.base.BaseFactorModel``:
+:func:`_init_engine_state` sets the attributes that base's ``__init__`` set, at
+the same point in ``__init__`` and ``_from_saved``, and
+:meth:`DFMEngine._ensure_result` is that base's method, unchanged.
 """
 
 # Standard library imports
 import copy
 import dataclasses
-from pathlib import Path
-import pickle
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 # Third-party imports
@@ -40,10 +50,7 @@ import pandas as pd
 from ...ssm.kalman import DFMKalmanFilter
 
 # Local imports
-from ...config import (
-    ConfigSource,
-    DFMResult,
-)
+from ...config import DFMResult
 from ...config.schema.model import _DFMEngineConfig
 from ...config.schema.params import DFMModelState
 # get_agg_structure and get_slower_freq_tent_weights are now used in dfm.mixed_frequency and dfm.initialization modules
@@ -58,7 +65,6 @@ from ...config.constants import (
     MIN_STD_SCALED,
 )
 from ...logger import get_logger
-from ..base import BaseFactorModel
 from ...dataset.dfm_dataset import DFMDataset
 from ...utils.errors import (
     ModelNotTrainedError,
@@ -89,7 +95,16 @@ from ...numeric.validator import validate_column_order
 _logger = get_logger(__name__)
 
 
-class DFMEngine(BaseFactorModel):
+def _init_engine_state(engine: Any) -> None:
+    """Set the attributes the old ``models.base.BaseFactorModel.__init__`` set."""
+    engine._config = None
+    engine._result = None
+    engine.training_state = None
+    engine._dataset = None
+    engine.data_processed = None
+
+
+class DFMEngine:
     """Linear Dynamic Factor Model using EM algorithm with NumPy and pykalman."""
     
     def __init__(
@@ -152,7 +167,7 @@ class DFMEngine(BaseFactorModel):
         ...     threshold=1e-6  # Override config.threshold
         ... )
         """
-        super().__init__()
+        _init_engine_state(self)
         
         # Dataset is required
         if not isinstance(dataset, DFMDataset):
@@ -279,7 +294,8 @@ class DFMEngine(BaseFactorModel):
           ``update`` computes it.
         """
         engine = cls.__new__(cls)
-        # What models.base.BaseFactorModel.__init__ and __init__ set.
+        _init_engine_state(engine)
+        # What __init__ sets.
         engine._config = _DFMEngineConfig.from_dict(dict(engine_config))
         engine._dataset = None
         engine.training_state = state
@@ -713,6 +729,14 @@ class DFMEngine(BaseFactorModel):
         self._result = result
         return result
     
+    def _ensure_result(self) -> DFMResult:
+        """Ensure result exists, computing it if necessary."""
+        if self._result is None:
+            if self.training_state is None:
+                raise ModelNotTrainedError("Model has not been trained yet")
+            self._result = self.get_result()
+        return self._result
+    
     def _get_last_state(self, result: DFMResult, fallback: Optional[np.ndarray] = None) -> np.ndarray:
         """Get last state from result.Z with safe fallback.
         
@@ -879,39 +903,9 @@ class DFMEngine(BaseFactorModel):
             self._result = result  # Update cached result with new Z
             _logger.debug("Invalidated cached smoothed factors after update() - result.Z was mutated")
     
-    def load_config(
-        self,
-        source: Optional[Union[str, Path, Dict[str, Any], _DFMEngineConfig, ConfigSource]] = None,
-        *,
-        yaml: Optional[Union[str, Path]] = None,
-        mapping: Optional[Dict[str, Any]] = None,
-        hydra: Optional[Union[Dict[str, Any], Any]] = None,
-    ) -> 'DFMEngine':
-        """Load configuration from various sources.
-        
-        After loading config, the model needs to be re-initialized with the new config.
-        For standard pattern, pass config directly to __init__.
-        """
-        new_config = self._load_config_common(
-            source=source,
-            yaml=yaml,
-            mapping=mapping,
-            hydra=hydra,
-        )
-        
-        # DFM-specific: Initialize r and blocks arrays
-        self.r = np.array(
-            new_config.factors_per_block if new_config.factors_per_block is not None
-            else np.ones(new_config.get_blocks_array().shape[1]),
-            dtype=DEFAULT_DTYPE
-        )
-        self.blocks = np.array(new_config.get_blocks_array(), dtype=DEFAULT_DTYPE)
-        
-        return self
-    
     def predict(
         self,
-        horizon: Optional[int] = None,
+        horizon: int,
         *,
         data: Optional[Union[np.ndarray, Any]] = None
     ) -> Tuple[np.ndarray, np.ndarray]:
@@ -919,9 +913,8 @@ class DFMEngine(BaseFactorModel):
         
         Parameters
         ----------
-        horizon : int, optional
-            Number of periods ahead to forecast. If None, defaults to 1 year
-            of periods based on clock frequency.
+        horizon : int
+            Number of periods ahead to forecast.
         data : np.ndarray, pandas.DataFrame, or polars.DataFrame, optional
             New preprocessed observations (T_new x N). If None, uses latest training data.
             Data must be preprocessed but NOT standardized.
@@ -950,18 +943,8 @@ class DFMEngine(BaseFactorModel):
             "DFM prediction failed: result.Z is not available"
         )
         
-        # Validate and resolve horizon
+        # Validate horizon
         from ...numeric.validator import validate_horizon
-        from ...config.constants import DEFAULT_FORECAST_HORIZON
-        if horizon is None:
-            if self._config is not None:
-                from ...utils.misc import compute_default_horizon
-                try:
-                    horizon = compute_default_horizon(self._config)
-                except (AttributeError, ValueError):
-                    horizon = DEFAULT_FORECAST_HORIZON
-            else:
-                horizon = DEFAULT_FORECAST_HORIZON
         horizon = validate_horizon(horizon)
         A = result.A
         C = result.C
@@ -1038,172 +1021,3 @@ class DFMEngine(BaseFactorModel):
         validate_no_nan_inf(Z_forecast, name="factor forecast Z_forecast")
         
         return X_forecast, Z_forecast
-    
-    @property
-    def result(self) -> DFMResult:
-        """Get model result from training state.
-        
-        Raises
-        ------
-        ModelNotTrainedError
-            If model has not been trained yet
-        """
-        result = self._ensure_result()
-        # Type assertion: get_result() always returns DFMResult for DFM model
-        assert isinstance(result, DFMResult), f"Expected DFMResult but got {type(result)}"
-        return result
-    
-    def save(self, path: Union[str, Path]) -> None:
-        """Save DFM model to file.
-        
-        Parameters
-        ----------
-        path : str or Path
-            Path to save the model checkpoint file
-        """
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Prepare result
-        result = self._result if self._result is not None else (self.get_result() if self.training_state is not None else None)
-        
-        # Extract dataset metadata
-        dataset_metadata = None
-        if hasattr(self, '_dataset') and self._dataset is not None:
-            dataset = self._dataset
-            processed_columns = getattr(dataset, '_processed_columns', None) or getattr(dataset, 'colnames', None)
-            dataset_metadata = {
-                '_processed_columns': processed_columns,
-                'colnames': getattr(dataset, 'colnames', None),
-                'time_idx': getattr(dataset, 'time_idx', None),
-            }
-        
-        checkpoint = {
-            'model_state': self.training_state if self.training_state is not None else DFMModelState.from_model(self),
-            'result': result,
-            'config': self._config,
-            'data_processed': self.data_processed,
-            'scaler': self.scaler,
-            'dataset_metadata': dataset_metadata,
-            'training_loglik': getattr(self, '_training_loglik', None),
-            'training_num_iter': getattr(self, '_training_num_iter', None),
-            'training_converged': getattr(self, '_training_converged', None),
-        }
-        
-        temp_path = path.with_suffix('.pkl.tmp')
-        
-        try:
-            with open(temp_path, 'wb') as f:
-                pickle.dump(checkpoint, f, protocol=pickle.HIGHEST_PROTOCOL)
-                f.flush()
-                import os
-                os.fsync(f.fileno())
-            
-            temp_path.replace(path)
-            
-            # Verify saved file
-            try:
-                with open(path, 'rb') as f:
-                    pickle.load(f)
-            except Exception as e:
-                _logger.error(f"Failed to verify saved checkpoint: {e}")
-                try:
-                    path.unlink()
-                except Exception:
-                    pass
-                raise RuntimeError(f"Checkpoint verification failed: {e}") from e
-            
-            _logger.info(f"DFM model saved to {path}")
-            
-        except Exception as e:
-            if temp_path.exists():
-                try:
-                    temp_path.unlink()
-                except Exception:
-                    pass
-            _logger.error(f"Failed to save DFM model to {path}: {e}")
-            raise
-    
-    @classmethod
-    def load(cls, path: Union[str, Path], config: Optional[_DFMEngineConfig] = None, dataset: Optional[DFMDataset] = None) -> 'DFMEngine':
-        """Load DFM model from checkpoint file.
-        
-        Parameters
-        ----------
-        path : str or Path
-            Path to the checkpoint file
-        config : _DFMEngineConfig, optional
-            Configuration (if None, loaded from checkpoint)
-        dataset : DFMDataset, optional
-            DFMDataset instance (required)
-            
-        Returns
-        -------
-        DFM
-            Loaded DFM model instance
-        """
-        path = Path(path)
-        
-        if not path.exists():
-            raise FileNotFoundError(f"Checkpoint file not found: {path}")
-        
-        # Try joblib first, fallback to pickle
-        try:
-            import joblib
-            checkpoint = joblib.load(path)
-        except Exception:
-            try:
-                with open(path, 'rb') as f:
-                    checkpoint = pickle.load(f)
-            except (pickle.UnpicklingError, EOFError, ValueError) as e:
-                raise RuntimeError(
-                    f"Failed to load checkpoint from {path}. "
-                    f"The file may be corrupted. Error: {e}"
-                ) from e
-        
-        if config is None:
-            config = checkpoint.get('config')
-        
-        if dataset is None:
-            raise ModelNotInitializedError(
-                "DFM.load(): dataset is required. "
-                "Please provide a DFMDataset instance when loading a model."
-            )
-        
-        # Get model state
-        model_state = checkpoint.get('model_state')
-        if model_state is None:
-            raise RuntimeError("Checkpoint missing 'model_state'. Invalid checkpoint format.")
-        
-        if isinstance(model_state, dict):
-            model_state = DFMModelState(**{k: v for k, v in model_state.items() if v is not None})
-        
-        # Create model instance
-        model = cls(config=config, dataset=dataset)
-        
-        # Apply model state
-        model_state.apply_to_model(model)
-        model.training_state = model_state
-        
-        # Restore state
-        model.scaler = checkpoint.get('scaler')
-        model.data_processed = checkpoint.get('data_processed')
-        model._training_loglik = checkpoint.get('training_loglik')
-        model._training_num_iter = checkpoint.get('training_num_iter')
-        model._training_converged = checkpoint.get('training_converged')
-        
-        if checkpoint.get('result') is not None:
-            model._result = checkpoint['result']
-        
-        # Restore checkpoint metadata
-        if hasattr(model, '_checkpoint_metadata'):
-            model._checkpoint_metadata = {'dataset_metadata': checkpoint.get('dataset_metadata')}
-        
-        _logger.info(f"DFM model loaded from {path}")
-        return model
-    
-    def reset(self) -> 'DFMEngine':
-        """Reset model state."""
-        super().reset()
-        return self
-

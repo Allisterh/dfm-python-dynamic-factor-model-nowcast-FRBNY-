@@ -40,8 +40,8 @@ class _Child(_DummyForecaster):
 
 
 def test_top_level_base_is_the_estimator_base():
-    # Of the model engines, only DFM (unmigrated) and the AFM engine still inherit the old base
-    # from models.base; the iVDFM and DDFM engines no longer do.
+    # Of the model engines, only the AFM engine still inherits the old base from models.base;
+    # the iVDFM, DDFM and DFM engines no longer do.
     assert dfm_python.BaseFactorModel is BaseFactorModel
     assert BaseFactorModel is not EngineBaseFactorModel
     assert "BaseFactorModel" in dfm_python.__all__

@@ -95,7 +95,7 @@ class DFMModelState:
         # Get state-space parameters from training_state if available
         A = C = Q = R = Z_0 = V_0 = None
         if hasattr(model, 'training_state') and model.training_state is not None:
-            # Handle both old DFMStateSpaceParams format and new DFMModelState format
+            # Read the state-space parameters from the engine's DFMModelState
             ts = model.training_state
             if hasattr(ts, 'A'):
                 A = ts.A
@@ -509,10 +509,6 @@ class iVDFMModelState:
                 
                 if self.f0 is not None and hasattr(ssm, 'f0'):
                     ssm.f0.data = torch.from_numpy(self.f0).to(ssm.f0.device)
-
-# Backward compatibility alias
-DFMStateSpaceParams = DFMModelState
-
 
 @dataclass
 class AFMModelState:

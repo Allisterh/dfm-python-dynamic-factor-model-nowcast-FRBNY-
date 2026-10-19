@@ -32,7 +32,6 @@ import torch
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 MACRO_CSV = REPO_ROOT / "data" / "macro.csv"
-CONFIG_DIR = REPO_ROOT / "config"
 
 # Global RNGs are reset to this value before every case, so a case never depends
 # on what ran before it. The models then seed themselves as they do today.
@@ -135,11 +134,6 @@ def force_cpu() -> Iterator[None]:
     """Make today's ``cuda if available else cpu`` device choice resolve to CPU."""
     with mock.patch.object(torch.cuda, "is_available", return_value=False):
         yield
-
-
-def _load_yaml(name: str) -> dict[str, Any]:
-    from omegaconf import OmegaConf
-    return OmegaConf.to_container(OmegaConf.load(CONFIG_DIR / name), resolve=True)
 
 
 def _macro_tail(n_rows: int) -> pd.DataFrame:
@@ -249,7 +243,7 @@ def dfm_fit_outputs(model: Any, X: Any, Z: Any) -> dict[str, np.ndarray]:
     data, the covariance ``update()`` starts from (it equals the smoothed
     covariance at ``T``).
     """
-    result = model.result
+    result = model.get_result()
     filtered_cov = model._create_kalman_filter().filter(np.ma.masked_invalid(model.data_processed))[1]
     outputs = {
         "A": model.A, "C": model.C, "Q": model.Q, "R": model.R, "Z_0": model.Z_0, "V_0": model.V_0,
@@ -281,7 +275,7 @@ def _dfm_update_outputs(model: Any, new: np.ndarray) -> dict[str, np.ndarray]:
     upd.update(new)
     X_u, Z_u = upd.predict(horizon=DFM_HORIZON)
     outputs.update({
-        "update_Z": upd.result.Z, "update_data_processed": upd.data_processed,
+        "update_Z": upd.get_result().Z, "update_data_processed": upd.data_processed,
         "update_predict_X": X_u, "update_predict_Z": Z_u,
     })
 
@@ -291,10 +285,10 @@ def _dfm_update_outputs(model: Any, new: np.ndarray) -> dict[str, np.ndarray]:
     outputs.update({
         "refit_A": refit.A, "refit_C": refit.C, "refit_Q": refit.Q, "refit_R": refit.R,
         "refit_Z_0": refit.Z_0, "refit_V_0": refit.V_0,
-        "refit_loglik": np.float64(refit.result.loglik),
-        "refit_num_iter": np.int64(refit.result.num_iter),
-        "refit_converged": np.bool_(refit.result.converged),
-        "refit_result_Z": refit.result.Z,
+        "refit_loglik": np.float64(refit.get_result().loglik),
+        "refit_num_iter": np.int64(refit.get_result().num_iter),
+        "refit_converged": np.bool_(refit.get_result().converged),
+        "refit_result_Z": refit.get_result().Z,
         "refit_predict_X": X_r, "refit_predict_Z": Z_r,
     })
     return {k: np.asarray(v) for k, v in outputs.items()}
@@ -387,11 +381,42 @@ def _dfm_synthetic() -> CaseRun:
 
 _DFM_WM_ROWS = 400
 
+# The values of the flat config/dfm_macro.yaml (as OmegaConf loaded it, key
+# order kept) that the dfm_macro_* fixtures were captured with, through the
+# old DFMConfig.from_dict (now _DFMEngineConfig.from_dict). The shipped file is
+# now in the model:/data: layout with the canonical names, and DFMConfig is the
+# estimator's mirror, so the cases keep their captured values here. The
+# engine config never reads clip_ar_coefficients, ar_clip_min/max,
+# use_regularization, regularization_scale, augment_idio*, idio_rho0,
+# idio_min_var or scaler (ar_clip and regularization ran as None); they are
+# kept so the dict the engine config is built from is the captured one.
+# The data recipes still name the file the values came from.
+_DFM_MACRO_FLAT_CONFIG: dict[str, Any] = {
+    "threshold": 1e-05, "max_iter": 10, "clip_ar_coefficients": True, "ar_clip_min": -0.99,
+    "ar_clip_max": 0.99, "use_regularization": True, "regularization_scale": 1e-05, "augment_idio": True,
+    "augment_idio_slow": True, "idio_rho0": 0.1, "idio_min_var": 1e-08, "clock": "w", "scaler": "standard",
+    "tent_weights": {"m:w": [1, 2, 1]},
+    "blocks": {"Block_Global": {"num_factors": 3, "series": [
+        "KORFBEV", "KORWHLS", "KORMCMP", "KORELEC", "KORCNST", "KORMACH", "KOROCOINF", "KOEMPTOTO",
+        "KOHWRWEMP", "KOWRCDURE", "KOCONPRCF", "KOEQUIPTE", "KOWRCCNSE", "KOIMPCONA"]}},
+    "frequency": {
+        "m": ["KOEMPTOTO", "KOHWRWEMP", "KOWRCDURE", "KOCONPRCF", "KOEQUIPTE", "KOWRCCNSE", "KOIMPCONA"],
+        "w": ["KORFBEV", "KORWHLS", "KORMCMP", "KORELEC", "KORCNST", "KORMACH", "KOROCOINF"],
+    },
+}
+
+
+def _dfm_macro_flat_config() -> dict[str, Any]:
+    """A deep copy of :data:`_DFM_MACRO_FLAT_CONFIG` (the cases mutate their copy)."""
+    import copy
+
+    return copy.deepcopy(_DFM_MACRO_FLAT_CONFIG)
+
 
 def _dfm_macro_weekly_monthly() -> CaseRun:
-    # tutorial_macro_dfm.py on the last rows of data/macro.csv: weekly clock with
-    # monthly series, config/dfm_macro.yaml unchanged.
-    config = _load_yaml("dfm_macro.yaml")
+    # The old tutorial_macro_dfm.py on the last rows of data/macro.csv: weekly
+    # clock with monthly series, the flat config/dfm_macro.yaml values unchanged.
+    config = _dfm_macro_flat_config()
     df = _macro_tail(_DFM_WM_ROWS)
     data = _macro_recipe(rows=f"last {_DFM_WM_ROWS} rows", config="config/dfm_macro.yaml",
                          input_sha256=_digest(df))
@@ -418,7 +443,7 @@ def _mq_panel() -> pd.DataFrame:
 
 
 def _mq_config() -> dict[str, Any]:
-    config = _load_yaml("dfm_macro.yaml")
+    config = _dfm_macro_flat_config()
     config.update({
         "clock": "m",
         "tent_weights": {"q:m": [1, 2, 3, 2, 1]},

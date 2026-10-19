@@ -142,7 +142,7 @@ def _check_update_path(model: DFM, new: PanelData, case: str, fixture) -> None:
     assert updated.result_ is result and updated.factors_.equals(factors)
     assert updated.conditioning_index_.equals(model.conditioning_index_.append(new.index))
     _assert_outputs({
-        "update_Z": updated.engine_.result.Z,
+        "update_Z": updated.engine_.get_result().Z,
         "update_data_processed": updated.engine_.data_processed,
         "update_predict_X": _internal(updated.predict(DFM_HORIZON), columns),
         "update_predict_Z": updated.predict_factors(DFM_HORIZON).to_numpy(),
@@ -154,9 +154,9 @@ def _check_update_path(model: DFM, new: PanelData, case: str, fixture) -> None:
     _assert_outputs({
         "refit_A": engine.A, "refit_C": engine.C, "refit_Q": engine.Q, "refit_R": engine.R,
         "refit_Z_0": engine.Z_0, "refit_V_0": engine.V_0,
-        "refit_loglik": np.float64(engine.result.loglik),
-        "refit_num_iter": np.int64(engine.result.num_iter),
-        "refit_converged": np.bool_(engine.result.converged),
+        "refit_loglik": np.float64(engine.get_result().loglik),
+        "refit_num_iter": np.int64(engine.get_result().num_iter),
+        "refit_converged": np.bool_(engine.get_result().converged),
         "refit_result_Z": refitted.result_.Z,
         "refit_predict_X": _internal(refitted.predict(DFM_HORIZON), columns),
         "refit_predict_Z": refitted.predict_factors(DFM_HORIZON).to_numpy(),
@@ -245,7 +245,7 @@ def test_golden_dfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
 
     # result_ is a copy of the engine's result, in the internal order.
     result = model.result_
-    assert result is not engine.result
+    assert result is not engine.get_result()
     for name in ("A", "C", "Q", "R", "Z_0", "V_0"):
         np.testing.assert_array_equal(getattr(result, name), fixture[name], strict=True)
     np.testing.assert_array_equal(result.Z, fixture["result_Z"], strict=True)

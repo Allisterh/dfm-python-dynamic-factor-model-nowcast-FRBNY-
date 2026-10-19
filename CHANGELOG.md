@@ -97,6 +97,80 @@
       `decoder_type: mlp` (it ran linear) differ.
     - `config/ddfm_exchange.yaml`: `window_size: 200` (100), `max_iter: 10`
       (200). The old tutorial passed every value and ran these.
+- **Breaking (DFM):** `DFM` is now an estimator with sklearn conventions
+  that takes `PanelData`: `DFM(*, n_factors=None, blocks=None, clock="m",
+  tent_weights=None, max_iter=5000, tol=1e-5, ar_clip=None, data_clip=None,
+  regularization=None, damping_factor=None, scaler=None, verbose=0)`, then
+  `fit(data, *, checkpoint_callback=None)`, `predict(h, data=None)`,
+  `predict_factors(h, data=None)`, `update(data, *, refit=False)`,
+  `save(path)` and `DFM.load(path)` (or `dfm_python.load`), with no dataset.
+  The series are the panel's `y` and their frequencies its `freq`
+  (`{"gdp": "q"}` or `{"q": ["gdp"]}`; unlisted series use the clock).
+  `DFMConfig` now mirrors the constructor (`DFM.from_config`, `get_config`)
+  and reads the `model:`/`data:` YAML layout. The numbers are unchanged: the
+  same data and hyperparameters give the same parameters, smoothed states,
+  forecasts and log-likelihood.
+
+  | Old | New |
+  |---|---|
+  | `DFM(dataset, config=None, scaler=None, **kwargs)` (kwargs mutated the caller's config); `DFMDataset(config, data, time_index)` | `DFM(*, n_factors, blocks=None, clock, tent_weights, max_iter, tol, ..., scaler=None, verbose=0)`; `PanelData(y, freq=...)` |
+  | `fit(X=None, checkpoint_callback=None) -> DFMModelState`; series not in `[clock \| slower]` order raised | `fit(data, *, checkpoint_callback=None) -> self`; any column order (a stable reorder inside, results in your order) |
+  | `predict(horizon=None, *, data=None) -> (X, Z)` | `predict(h, data=None)` and `predict_factors(h, data=None)`, both DataFrames; `h` is required |
+  | `update(data, rescale=False, retrain=False) -> None` | `update(data, *, refit=False) -> self` |
+  | `training_state`, `_result`, `get_result()`, `result` | `result_`, `n_iter_`, `converged_`, `loglik_`, `factors_`, `scaler_`, `engine_` |
+  | pickle file; `load(path, config=None, dataset=<required>)`; `load_config` (broken) | a directory; `DFM.load(path)`; `from_config` |
+  | `threshold`, `num_factors` (in a block), `frequency` | `tol`, `n_factors`, `PanelData.freq` |
+
+  - Removed: the `DFM(dataset, config, ...)` constructor and its
+    keyword-over-config merge, `get_result`, `result`, `training_state`,
+    `reset`, `load_config` (it called a missing `_load_config_common` and could
+    not run), the pickle `save` and the pickle/joblib `load` (a single-file
+    checkpoint raises `ConfigurationError`; refit and save with this
+    release), `update`'s `rescale` flag, `predict`'s `horizon=None` default
+    (one year of clock periods) with `utils.misc.compute_default_horizon`, the
+    `DFMDataset` export (from `dfm_python` and `dfm_python.dataset`; it is the
+    estimator's private adapter in `dfm_python.dataset.dfm_dataset`), the
+    `DFMStateSpaceParams` alias and its exports, and the `dfm_python.models.dfm`
+    re-exports of the engine helpers (`initialize_parameters`,
+    `setup_mixed_frequency_params`, `find_slower_frequency`, ...; import them
+    from their submodules). The old `DFMConfig` (the engine's config) is
+    private, and its never-read `idio_rho0` and `idio_min_var` are gone.
+  - Fixed: `update()` always raised `ModuleNotFoundError` (it imported a
+    validator from a module path that does not exist); it now runs, through
+    `DFM.update(data)`.
+  - Mixed frequency: one frequency slower than the clock; a series faster
+    than the clock or a second slower frequency raises
+    `UnsupportedInputError`. `tent_weights` is required for the slower
+    frequency (there is no default kernel; mixed-frequency data without it
+    raised `DataValidationError`): `fit` raises `ConfigurationError` naming
+    the symmetric kernel to pass, for example
+    `tent_weights={"q:m": [1, 2, 3, 2, 1]}`. Forecasts report every series at
+    every clock date, slower series included, as before.
+  - `scaler=None` stays the default (the value that ran when the argument was
+    omitted); the engine rejects series with a standard deviation above 100
+    or below 1e-4, so pass `scaler="standard"` for raw data. Forecasts are in
+    data units.
+  - The engine orders the series `[clock | slower]` internally;
+    `internal_feature_names_` gives that order, which is the order of the
+    series-indexed matrices of `result_` (`C`, `R`, `x_sm`). Forecasts and
+    `freq_` are in your order.
+  - `predict(h, data=new_rows)` (the old `predict(horizon, data=)`: a filter
+    from `V_0` on a copy) and `update(new_rows)` (a filter and smoother from
+    the last filtered covariance) take only the rows after the last
+    conditioning date; an overlap raises `DataValidationError`. They give
+    different numbers, as before. `update(data, refit=True)` is the old
+    `retrain=True` (one EM iteration on all rows).
+  - Shipped YAMLs: `config/dfm_{macro,finance,exchange}.yaml` use the
+    `model:`/`data:` layout with the canonical names (`threshold` -> `tol`,
+    `num_factors` -> `n_factors`, `frequency` -> `data: freq`). No value that
+    ran changes: the dropped keys `clip_ar_coefficients`, `ar_clip_min`,
+    `ar_clip_max`, `use_regularization`, `regularization_scale`,
+    `augment_idio`, `augment_idio_slow`, `idio_rho0`, `idio_min_var` and
+    `scaler` were never read (`ar_clip` and `regularization` ran as None,
+    the default), and `scaler: standard` is the `StandardScaler` the tutorials
+    passed. `dfm_finance.yaml` lists its series in the CSV's column order;
+    the old tutorial ordered them by iterating over a set, which varied from
+    run to run. The DFM tutorials no longer use Hydra.
 - `__version__` is read from the installed package metadata.
 - The package ships a `py.typed` marker.
 - Fixed: `compute_cov_safe` with listwise deletion raised on every

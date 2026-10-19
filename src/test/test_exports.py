@@ -190,3 +190,45 @@ def test_dfm_config_is_the_estimator_mirror():
     assert dfm_python.DFMConfig is not _DFMEngineConfig
     for namespace in (dfm_python, dfm_python.config, dfm_python.config.schema):
         assert "_DFMEngineConfig" not in getattr(namespace, "__all__", ()), namespace.__name__
+
+
+def test_dfm_dataset_is_not_public():
+    # The DFM dataset is the estimator's private adapter (dfm_python.dataset.dfm_dataset).
+    import dfm_python.dataset
+    from dfm_python.dataset.dfm_dataset import DFMDataset
+
+    for namespace in (dfm_python, dfm_python.dataset):
+        assert "DFMDataset" not in namespace.__all__, namespace.__name__
+        assert not hasattr(namespace, "DFMDataset"), namespace.__name__
+    assert DFMDataset.__module__ == "dfm_python.dataset.dfm_dataset"
+
+
+def test_dfm_state_space_params_alias_is_gone():
+    import dfm_python.config.schema as schema
+    import dfm_python.config.schema.params as params
+
+    for namespace in (dfm_python, dfm_python.config, schema):
+        assert "DFMStateSpaceParams" not in namespace.__all__, namespace.__name__
+        assert not hasattr(namespace, "DFMStateSpaceParams"), namespace.__name__
+    assert not hasattr(params, "DFMStateSpaceParams") and hasattr(params, "DFMModelState")
+
+
+def test_dfm_engine_is_not_public_and_has_no_old_entry_points():
+    import dfm_python.models
+    import dfm_python.models.dfm as dfm_pkg
+    from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
+    from dfm_python.models.dfm._engine import DFMEngine
+
+    for namespace in (dfm_python, dfm_python.models, dfm_pkg, dfm_python.config):
+        assert "DFMEngine" not in getattr(namespace, "__all__", ()), namespace.__name__
+        assert not hasattr(namespace, "DFMEngine"), namespace.__name__
+    for name in ("save", "load", "load_config", "reset", "result"):
+        assert not hasattr(DFMEngine, name), name
+    assert not issubclass(DFMEngine, EngineBaseFactorModel)
+    # The DFM package exports the estimator only; the engine helpers stay in their submodules.
+    assert dfm_pkg.__all__ == ["DFM"]
+    from dfm_python.models.dfm.initialization import initialize_parameters  # noqa: F401
+    from dfm_python.models.dfm.mixed_freq import find_slower_frequency, setup_mixed_frequency_params  # noqa: F401
+    for name in ("find_slower_frequency", "setup_mixed_frequency_params", "initialize_parameters",
+                 "build_dfm_structure", "log_blocks_diagnostics"):
+        assert name not in dfm_pkg.__all__, name

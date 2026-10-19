@@ -921,8 +921,12 @@ class DFM(BaseFactorModel):
           smoothed state, update rows included, which ``update`` extends),
           ``data/last_smoothed_state`` (its last row) and
           ``data/last_smoothed_cov`` (the last filtered state covariance
-          P_T|T, from the filter call ``update`` starts from); plus the
-          ``scaler/`` entries. Every array keeps its memory order.
+          P_T|T, from the filter call ``update`` starts from; all NaN, with a
+          ``RuntimeWarning``, when that filter is not finite with the fitted
+          parameters, as on some mixed-frequency panels: ``update`` then
+          raises on the fitted and on the loaded model alike, and ``load``
+          does not read it); plus the ``scaler/`` entries. Every array keeps
+          its memory order.
         - ``state.json``: the engine config dict, ``num_factors``, ``p``,
           ``n_slower_freq``, ``n_clock_freq``, ``max_lag_size``,
           ``mixed_freq``, ``tent_weights_dict`` (lists), the series
@@ -937,7 +941,26 @@ class DFM(BaseFactorModel):
         smoothed = engine._result.Z
         with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
             # The filter call update() starts from: its last covariance is P_T|T.
-            _, filtered_cov = engine._create_kalman_filter().filter(np.ma.masked_invalid(engine.data_processed))
+            try:
+                with np.errstate(all="ignore"):
+                    _, filtered_cov = engine._create_kalman_filter().filter(
+                        np.ma.masked_invalid(engine.data_processed))
+                last_cov = filtered_cov[-1]
+            except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+                # The fitted parameters can make this filter non-finite (EM on some
+                # mixed-frequency panels); update() then raises the same error on the
+                # fitted and the loaded model. The covariance is informational (load
+                # does not read it), so the run is still saved.
+                state_dim = engine.training_state.A.shape[0]
+                last_cov = np.full((state_dim, state_dim), np.nan)
+                warnings.warn(
+                    f"DFM.save: the Kalman filter over the training data is not finite with the fitted parameters "
+                    f"({type(exc).__name__}: {exc}); data/last_smoothed_cov is saved as NaN. Forecasts and the "
+                    "result are saved unchanged; update() runs this filter and raises the same error, on the fitted and "
+                    "on the loaded model.",
+                    RuntimeWarning,
+                    stacklevel=5,  # _save_state < write < atomic_save_dir < BaseFactorModel.save < caller
+                )
         arrays = {
             **{f"ssm/{name}": getattr(state, name) for name in _SSM_FIELDS},
             **{f"mixed_freq/{name}": getattr(state, name) for name in _MIXED_FREQ_ARRAYS
@@ -947,7 +970,7 @@ class DFM(BaseFactorModel):
             "data/data_processed": engine.data_processed,
             "data/smoothed_state": smoothed,
             "data/last_smoothed_state": smoothed[-1],
-            "data/last_smoothed_cov": filtered_cov[-1],
+            "data/last_smoothed_cov": last_cov,
         }
         # Keep each array's memory order (data_processed is column-major), so
         # a loaded model filters and forecasts bitwise like the fitted one.

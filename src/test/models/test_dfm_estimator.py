@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import importlib.util
 import inspect
+import io
 import json
 import logging
+import warnings
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -447,8 +451,8 @@ def test_fitted_attributes(fitted):
     assert list(fitted.freq_) == user
     assert list(fitted.exog_names_in_) == []
     assert isinstance(fitted.engine_, DFMEngine) and fitted.engine_._dataset is None
-    assert isinstance(fitted.result_, DFMResult) and fitted.result_ is not fitted.engine_.result
-    np.testing.assert_array_equal(fitted.result_.Z, fitted.engine_.result.Z, strict=True)
+    assert isinstance(fitted.result_, DFMResult) and fitted.result_ is not fitted.engine_.get_result()
+    np.testing.assert_array_equal(fitted.result_.Z, fitted.engine_.get_result().Z, strict=True)
     assert fitted.n_iter_ == fitted.result_.num_iter and isinstance(fitted.n_iter_, int)
     assert fitted.converged_ == bool(fitted.result_.converged) and isinstance(fitted.converged_, bool)
     assert fitted.loglik_ == fitted.result_.loglik and isinstance(fitted.loglik_, float)
@@ -697,9 +701,9 @@ def test_update_filters_the_new_rows_with_fixed_parameters(split_fit):
     assert model.update(new) is model
 
     engine.update(_internal_rows(new))
-    np.testing.assert_array_equal(model.engine_.result.Z, engine.result.Z, strict=True)
+    np.testing.assert_array_equal(model.engine_.get_result().Z, engine.get_result().Z, strict=True)
     np.testing.assert_array_equal(model.engine_.data_processed, engine.data_processed, strict=True)
-    assert model.engine_.result.Z.shape[0] == 60 and model.engine_.data_processed.shape[0] == 60
+    assert model.engine_.get_result().Z.shape[0] == 60 and model.engine_.data_processed.shape[0] == 60
     for name, value in params.items():
         np.testing.assert_array_equal(getattr(model.engine_, name), value, strict=True)
     # result_, factors_ and the training diagnostics are unchanged; the conditioning index grows.
@@ -725,7 +729,7 @@ def test_update_one_row_then_more(split_fit):
     model.update(PanelData(y=new.y.iloc[1:], freq={"gdp": "q"}))
     engine.update(rows[:1])
     engine.update(rows[1:])
-    np.testing.assert_array_equal(model.engine_.result.Z, engine.result.Z, strict=True)
+    np.testing.assert_array_equal(model.engine_.get_result().Z, engine.get_result().Z, strict=True)
     assert model.predict(2).equals(model.predict(2)) and model.conditioning_index_.equals(_frame().index)
     with pytest.raises(DataValidationError, match="overlaps"):
         model.update(new)
@@ -740,7 +744,7 @@ def test_update_refit_runs_one_em_iteration_on_all_rows(split_fit):
     result = engine.get_result()
     for name in ("A", "C", "Q", "R", "Z_0", "V_0", "Z", "x_sm"):
         np.testing.assert_array_equal(getattr(model.result_, name), getattr(result, name), err_msg=name, strict=True)
-    assert model.result_ is not model.engine_.result
+    assert model.result_ is not model.engine_.get_result()
     assert model.n_iter_ == result.num_iter == 1 and model.converged_ == bool(result.converged)
     assert model.loglik_ == float(result.loglik)
     assert model.factors_.index.equals(model.conditioning_index_) and model.factors_.shape[0] == 60
@@ -787,7 +791,7 @@ def _assert_same_model(loaded: DFM, model: DFM, new: PanelData | None = None) ->
     assert loaded.factors_.equals(model.factors_)
     assert loaded.get_params() == model.get_params()
     np.testing.assert_array_equal(loaded.engine_.data_processed, model.engine_.data_processed, strict=True)
-    np.testing.assert_array_equal(loaded.engine_.result.Z, model.engine_.result.Z, strict=True)
+    np.testing.assert_array_equal(loaded.engine_.get_result().Z, model.engine_.get_result().Z, strict=True)
 
 
 def test_save_writes_the_numpy_layout(split_fit, tmp_path):
@@ -799,7 +803,7 @@ def test_save_writes_the_numpy_layout(split_fit, tmp_path):
     with np.load(tmp_path / "run" / "state.npz", allow_pickle=False) as npz:
         keys = set(npz.files)
         assert npz["data/data_processed"].flags.f_contiguous == model.engine_.data_processed.flags.f_contiguous
-        np.testing.assert_array_equal(npz["data/last_smoothed_state"], model.engine_.result.Z[-1], strict=True)
+        np.testing.assert_array_equal(npz["data/last_smoothed_state"], model.engine_.get_result().Z[-1], strict=True)
         filtered = model.engine_._create_kalman_filter().filter(np.ma.masked_invalid(model.engine_.data_processed))[1]
         np.testing.assert_array_equal(npz["data/last_smoothed_cov"], filtered[-1], strict=True)
     assert {key for key in keys if not key.startswith("scaler/")} == {
@@ -848,7 +852,7 @@ def test_save_load_after_update_and_refit(split_fit, tmp_path):
     loaded = DFM.load(tmp_path / "extended")
     _assert_same_model(loaded, extended)
     assert loaded.factors_.index.equals(extended.factors_.index) and len(loaded.factors_) == 60
-    np.testing.assert_array_equal(loaded.engine_.result.x_sm, extended.engine_.result.x_sm, strict=True)
+    np.testing.assert_array_equal(loaded.engine_.get_result().x_sm, extended.engine_.get_result().x_sm, strict=True)
 
 
 def test_save_load_keeps_the_block_order_and_needs_no_data(tmp_path):
@@ -876,6 +880,39 @@ def test_save_load_single_frequency_and_range_index(tmp_path):
     assert type(loaded.index_) is pd.RangeIndex
 
 
+def test_save_when_the_training_filter_is_not_finite(split_fit, tmp_path, monkeypatch):
+    """Some mixed-frequency fits leave parameters under which the Kalman filter over the training data is not
+    finite (pykalman raises ValueError); save stores the informational last covariance as NaN and warns."""
+    from dfm_python.ssm.kalman import DFMKalmanFilter
+
+    model, _, _ = split_fit
+
+    def not_finite(self, *args, **kwargs):
+        raise ValueError("array must not contain infs or NaNs")
+
+    monkeypatch.setattr(DFMKalmanFilter, "filter", not_finite)
+    with pytest.warns(RuntimeWarning, match="last_smoothed_cov is saved as NaN") as record:
+        model.save(tmp_path / "run")
+    assert record[0].filename == __file__
+    with np.load(tmp_path / "run" / "state.npz", allow_pickle=False) as npz:
+        m = model.result_.Z.shape[1]
+        assert npz["data/last_smoothed_cov"].shape == (m, m) and np.isnan(npz["data/last_smoothed_cov"]).all()
+    monkeypatch.undo()
+    _assert_same_model(DFM.load(tmp_path / "run"), model)
+
+
+def test_single_file_pickle_checkpoint_is_rejected(tmp_path):
+    """The engine's pickle save/load is gone: a single-file checkpoint of an earlier release is refused, not read."""
+    import pickle
+
+    path = tmp_path / "old_dfm_model.pkl"
+    path.write_bytes(pickle.dumps({"model_state": None, "config": None}))
+    with pytest.raises(ConfigurationError, match="single-file"):
+        DFM.load(path)
+    with pytest.raises(ConfigurationError, match="single-file"):
+        dfm_python.load(path)
+
+
 def test_load_rejects_an_inconsistent_run(split_fit, tmp_path):
     model, _, _ = split_fit
     model.save(tmp_path / "run")
@@ -885,3 +922,297 @@ def test_load_rejects_an_inconsistent_run(split_fit, tmp_path):
     path.write_text(json.dumps(state))
     with pytest.raises(ConfigurationError, match="inconsistent"):
         DFM.load(tmp_path / "run")
+
+
+# -- the adapter --------------------------------------------------------------------
+
+
+def test_adapter_is_the_stable_partition_and_dfm_dataset_keeps_it():
+    """Replaces src/test/dataset/test_dfm_dataset.py: the adapter orders the series [clock | slower]
+    (stable: the user's relative order within each group), and DFMDataset's own reorder is then the identity."""
+    order = ["m2", "gdp", "m0", "m3", "m1"]
+    data = _mixed(order)
+    est = DFM(**TINY)
+    freq = est._series_frequencies(data)
+    assert list(freq) == order and freq["gdp"] == "q"
+    internal = est._internal_order(freq)
+    assert internal == ["m2", "m0", "m3", "m1", "gdp"]
+    config, dataset = est._adapter(data, freq, internal)
+    assert list(dataset.variables.columns) == internal
+    assert list(config.frequency) == internal
+    np.testing.assert_array_equal(dataset.variables.to_numpy(), data.y[internal].to_numpy(), strict=True)
+    # DFMDataset applies the same rule to the user's order: the adapter's order is a fixed point of it.
+    frame = data.y.reset_index(drop=True)
+    frame.insert(0, "t", np.arange(len(frame)))
+    assert list(DFMDataset(config=config, data=frame, time_index="t").variables.columns) == internal
+    # Ordered input is the identity permutation.
+    ordered = _mixed(_MONTHLY + ["gdp"])
+    assert est._internal_order(est._series_frequencies(ordered)) == _MONTHLY + ["gdp"]
+
+
+# -- ported from src/test/models/test_dfm.py (the pre-estimator DFM tests) ---------------
+
+
+_WEEKLY = ["series_0", "series_1", "series_2"]
+_WEEKLY_BLOCKS = {"block1": {"n_factors": 1, "series": _WEEKLY}}
+
+
+def _weekly_panel() -> PanelData:
+    """test_dfm.py's sample dataset: three weekly N(0, 1) series (seed 42), 50 weeks from 2020-01-05."""
+    values = np.random.RandomState(42).randn(50, 3)
+    index = pd.date_range(start="2020-01-01", periods=50, freq="W", name="date")
+    return PanelData(y=pd.DataFrame(values, index=index, columns=_WEEKLY), freq={name: "w" for name in _WEEKLY})
+
+
+def _weekly_model() -> DFM:
+    """The sample dataset's config: one block of one factor over the three series, weekly clock."""
+    return DFM(blocks=_WEEKLY_BLOCKS, clock="w")
+
+
+def test_ported_construction_needs_no_dataset():
+    """Was test_dfm_initialization_requires_dataset: the estimator is built from hyperparameters alone."""
+    model = _weekly_model()
+    assert vars(model) == model.get_params() and model.blocks is _WEEKLY_BLOCKS
+    assert not hasattr(model, "engine_")
+    DFM()  # no argument is required
+    with pytest.raises(TypeError):
+        DFM(dataset=_weekly_panel())  # noqa
+
+
+def test_ported_fit():
+    """Was test_dfm_fit: fit returns the model, and the fitted state space is in result_ and the engine."""
+    model = _weekly_model()
+    assert model.fit(_weekly_panel()) is model
+    for name in ("A", "C", "Q", "R"):
+        assert getattr(model.result_, name) is not None
+        np.testing.assert_array_equal(getattr(model.result_, name), getattr(model.engine_.training_state, name))
+    assert model.result_.C.shape[0] == 3 and model.n_factors_ == 1
+
+
+def test_ported_predict_before_fit_raises_not_fitted():
+    """Was test_dfm_predict_not_trained."""
+    model = _weekly_model()
+    for call in (lambda: model.predict(5), lambda: model.predict_factors(5)):
+        with pytest.raises(NotFittedError):
+            call()
+
+
+def test_ported_predict():
+    """Was test_dfm_predict_with_data: predict(horizon=5) returned (X, Z) with 5 rows each."""
+    model = _weekly_model().fit(_weekly_panel())
+    forecast, factors = model.predict(5), model.predict_factors(5)
+    assert forecast.shape == (5, 3) and list(forecast.columns) == _WEEKLY
+    assert factors.shape == (5, model.result_.Z.shape[1])
+    assert forecast.index[0] == _weekly_panel().index[-1] + pd.offsets.Week(weekday=6)
+
+
+def test_ported_result_before_fit():
+    """Was test_dfm_get_result_not_trained: there is no result before fit."""
+    model = _weekly_model()
+    assert not hasattr(model, "result_")
+    with pytest.raises(NotFittedError):
+        model.result_  # noqa: B018
+    assert not hasattr(model, "get_result")
+
+
+def _sparse_monthly_frame() -> pd.DataFrame:
+    """test_dfm.py's sparse monthly panel: 200 weeks, 3 weekly series and 2 monthly series observed on 30 weeks."""
+    rng = np.random.RandomState(42)
+    T, n_weekly, n_monthly = 200, 3, 2
+    weekly = rng.randn(T, n_weekly)
+    monthly = np.full((T, n_monthly), np.nan)
+    observed = np.arange(0, T, step=4)[: int(T * 0.15)]  # every 4 weeks, the first 30 such weeks
+    monthly[observed, :] = rng.randn(len(observed), n_monthly)
+    columns = [f"weekly_{i}" for i in range(n_weekly)] + [f"monthly_{i}" for i in range(n_monthly)]
+    index = pd.date_range(start="2020-01-01", periods=T, freq="W", name="date")
+    return pd.DataFrame(np.hstack([weekly, monthly]), columns=columns, index=index)
+
+
+@pytest.mark.filterwarnings("ignore::RuntimeWarning")
+@pytest.mark.filterwarnings("ignore::scipy.linalg.LinAlgWarning")
+def test_ported_mixed_freq_initialization_sparse_monthly():
+    """Was test_mixed_freq_initialization_sparse_monthly: monthly series on a weekly clock with ~85% NaN.
+
+    The frequencies come from PanelData.freq (grouped form) and the tent kernel from tent_weights={'m:w': ...};
+    the engine's state space is checked as the old test checked the state fit returned, and equals the
+    old dataset-and-config engine call bitwise.
+    """
+    df = _sparse_monthly_frame()
+    columns = list(df.columns)
+    monthly = [c for c in columns if c.startswith("monthly_")]
+    for col in monthly:
+        assert df[col].isna().mean() > 0.7
+    data = PanelData(y=df, freq={"m": monthly})
+    model = DFM(blocks={"Block_Global": {"n_factors": 2, "series": columns}}, clock="w",
+                tent_weights={"m:w": [1, 2, 1]})
+    model.fit(data)
+    state = model.engine_.training_state
+    internal = list(model.internal_feature_names_)
+    assert internal == columns  # already [weekly | monthly]
+    for name in monthly:
+        loadings = state.C[internal.index(name), :]
+        assert np.any(np.abs(loadings) > 1e-10), f"{name} has all-zero loadings"
+    assert state.A.shape[0] == state.A.shape[1] and state.Q.shape == state.A.shape
+    assert state.C.shape[0] == len(columns) and state.R.shape[0] == len(columns)
+    for name in ("A", "C", "Q", "R"):
+        assert np.all(np.isfinite(getattr(state, name))), name
+
+    # The same numbers as the old engine call (DFMDataset with a per-series frequency config, scaler None).
+    config = _DFMEngineConfig(
+        blocks={"Block_Global": {"num_factors": 2, "series": columns}},
+        frequency={c: ("m" if c in monthly else "w") for c in columns}, clock="w", tent_weights={"m:w": [1, 2, 1]},
+    )
+    frame = df.reset_index()
+    engine = DFMEngine(dataset=DFMDataset(config=config, data=frame, time_index="date"), config=config)
+    old_state = engine.fit()
+    for name in ("A", "C", "Q", "R", "Z_0", "V_0"):
+        np.testing.assert_array_equal(getattr(state, name), getattr(old_state, name), err_msg=name, strict=True)
+
+
+def test_ported_save_and_load(tmp_path):
+    """Was test_dfm_save_and_load: the forecasts, the result and the state space survive a save and a load.
+
+    The old test pickled the engine to one file and needed the dataset to load it; DFM.load needs only the
+    directory, and the loaded model is bitwise equal (the old test compared to a tolerance).
+    """
+    model = _weekly_model().fit(_weekly_panel())
+    forecast, factors = model.predict(5), model.predict_factors(5)
+    model.save(tmp_path / "run")
+    assert (tmp_path / "run").is_dir() and not any(p.suffix == ".pkl" for p in (tmp_path / "run").iterdir())
+    loaded = DFM.load(tmp_path / "run")
+    assert loaded.predict(5).equals(forecast) and loaded.predict_factors(5).equals(factors)
+    assert loaded.result_.converged == model.result_.converged and loaded.result_.num_iter == model.result_.num_iter
+    assert loaded.result_.loglik == model.result_.loglik
+    for name in ("A", "C", "Q"):
+        np.testing.assert_array_equal(getattr(loaded.engine_.training_state, name),
+                                      getattr(model.engine_.training_state, name), strict=True)
+
+
+def test_ported_load_without_dataset(tmp_path):
+    """Was test_dfm_save_and_load_without_dataset: loading needs no data and no config argument."""
+    model = _weekly_model().fit(_weekly_panel())
+    model.save(tmp_path / "run")
+    for loaded in (DFM.load(tmp_path / "run"), dfm_python.load(tmp_path / "run")):
+        assert type(loaded) is DFM and loaded.engine_._dataset is None
+        assert loaded.get_params() == model.get_params()
+        assert loaded.predict(5).equals(model.predict(5))
+    with pytest.raises(TypeError):
+        DFM.load(tmp_path / "run", dataset=_weekly_panel())  # noqa
+    with pytest.raises(TypeError):
+        DFM.load(tmp_path / "run", config=model.get_config())  # noqa
+
+
+# -- shipped YAMLs and tutorials -------------------------------------------------
+
+_REPO = Path(__file__).resolve().parents[3]
+_MACRO_WEEKLY = ["KORFBEV", "KORWHLS", "KORMCMP", "KORELEC", "KORCNST", "KORMACH", "KOROCOINF"]
+_MACRO_MONTHLY = ["KOEMPTOTO", "KOHWRWEMP", "KOWRCDURE", "KOCONPRCF", "KOEQUIPTE", "KOWRCCNSE", "KOIMPCONA"]
+_EXCHANGE = ["AUD_USD", "GBP_USD", "CAD_USD", "CHF_USD", "CNY_USD", "JPY_USD", "SGD_USD", "NZD_USD"]
+_FINANCE_BLOCKS = {
+    "Block_ALL": ["E1", "E5", "E10", "E15", "E20", "I1", "I5", "I9", "M1", "M5", "M10", "M15", "M18", "D1", "D5",
+                  "D9", "P1", "P5", "P10", "P13", "S1", "S5", "S10", "V1", "V5", "V10",
+                  "market_forward_excess_returns"],
+    "Block_EI": ["E1", "E5", "E10", "E15", "E20", "I1", "I5", "I9"],
+    "Block_MD": ["M1", "M5", "M10", "M15", "M18", "D1", "D5", "D9"],
+    "Block_PSV": ["P1", "P5", "P10", "P13", "S1", "S5", "S10", "V1", "V5", "V10", "market_forward_excess_returns"],
+}
+
+
+def _finance_targets() -> list[str]:
+    """Block_ALL's series (every block's series) in finance.csv's column order."""
+    header = pd.read_csv(_REPO / "data" / "finance.csv", nrows=0).columns
+    return [c for c in header if c in set(_FINANCE_BLOCKS["Block_ALL"])]
+
+
+_SHIPPED = {
+    "macro": {
+        "model": {"blocks": {"Block_Global": {"n_factors": 3, "series": _MACRO_WEEKLY + _MACRO_MONTHLY}},
+                  "clock": "w", "tent_weights": {"m:w": [1, 2, 1]}, "max_iter": 10, "tol": 1e-5,
+                  "scaler": "standard"},
+        "data": {"time_col": "date", "target_cols": _MACRO_WEEKLY + _MACRO_MONTHLY,
+                 "freq": {"w": _MACRO_WEEKLY, "m": _MACRO_MONTHLY}},
+        "csv": "macro.csv",
+    },
+    "exchange": {
+        "model": {"n_factors": 2, "clock": "d", "max_iter": 10, "tol": 1e-4, "scaler": "standard"},
+        "data": {"time_col": "date", "target_cols": _EXCHANGE},
+        "csv": "exchange_rate.csv",
+    },
+    "finance": {
+        "model": {"blocks": {name: {"n_factors": 2, "series": series} for name, series in _FINANCE_BLOCKS.items()},
+                  "clock": "d", "max_iter": 10, "tol": 1e-5, "scaler": "standard"},
+        "data": {"time_col": "date", "target_cols": _finance_targets()},
+        "csv": "finance.csv",
+    },
+}
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+@pytest.mark.parametrize("name", sorted(_SHIPPED))
+def test_shipped_yaml_builds_the_estimator(name):
+    path = _REPO / "config" / f"dfm_{name}.yaml"
+    expected = {**DFM().get_params(), **_SHIPPED[name]["model"]}
+    cfg = DFMConfig.from_yaml(path)
+    assert cfg.to_dict() == expected
+    model = DFM.from_config(cfg)
+    assert model.get_params() == expected
+    if model.blocks is not None:
+        assert list(model.blocks) == list(_SHIPPED[name]["model"]["blocks"])  # the block (factor) order
+    sections = load_yaml(path)
+    assert sections["data"] == _SHIPPED[name]["data"]
+    # Every column the data: section names is in the shipped CSV (finance.csv gets its 'date' in the tutorial).
+    header = set(pd.read_csv(_REPO / "data" / _SHIPPED[name]["csv"], nrows=0).columns) | {"date"}
+    assert set(sections["data"]["target_cols"]) <= header
+    assert set(sections["data"].get("freq", {}).get("m", [])) <= header
+    # The blocks name only series the data: section selects.
+    for spec in (model.blocks or {}).values():
+        assert set(spec["series"]) <= set(sections["data"]["target_cols"])
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+def test_shipped_macro_yaml_runs_the_values_of_the_flat_file():
+    """The model: values and the data: frequencies are the flat dfm_macro.yaml values the golden cases ran."""
+    from ..parity._cases import _DFM_MACRO_FLAT_CONFIG as flat
+
+    path = _REPO / "config" / "dfm_macro.yaml"
+    model = DFM.from_config(DFMConfig.from_yaml(path))
+    assert model.blocks == {name: {"n_factors": block["num_factors"], "series": block["series"]}
+                            for name, block in flat["blocks"].items()}
+    assert model.clock == flat["clock"] and model.tent_weights == flat["tent_weights"]
+    assert model.max_iter == flat["max_iter"] and model.tol == flat["threshold"]
+    # Never read by the old config, so they ran as None: the estimator's defaults.
+    assert model.ar_clip is None and model.regularization is None
+    assert model.scaler == flat["scaler"] == "standard"  # the tutorial's StandardScaler
+    freq = load_yaml(path)["data"]["freq"]
+    per_series = {name: code for code, names in freq.items() for name in names}
+    assert per_series == {name: code for code, names in flat["frequency"].items() for name in names}
+    # The golden weekly/monthly case ran these values (its manifest records the engine config).
+    manifest = json.loads((_REPO / "src" / "test" / "parity" / "fixtures" / "dfm_macro_weekly_monthly.json").read_text())
+    engine_config = manifest["hyperparameters"]["config"]
+    assert engine_config["max_iter"] == model.max_iter and engine_config["threshold"] == model.tol
+    assert engine_config["tent_weights"] == model.tent_weights and engine_config["clock"] == model.clock
+    assert engine_config["ar_clip"] is None and engine_config["regularization"] is None
+    assert engine_config["frequency"] == per_series
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+@pytest.mark.parametrize("name", sorted(_SHIPPED))
+def test_tutorial_runs_on_truncated_data(name, tmp_path):
+    """The tutorial runs end to end on 120 rows with one EM iteration: YAML, PanelData.from_wide, fit,
+    predict, predict_factors, save and load."""
+    path = _REPO / "tutorial" / f"tutorial_{name}_dfm.py"
+    spec = importlib.util.spec_from_file_location(f"_tutorial_{name}_dfm", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    out = io.StringIO()
+    with contextlib.redirect_stdout(out), warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        module.main(["--rows", "120", "--max-iter", "1", "--run-dir", str(tmp_path / "run")])
+    text = out.getvalue()
+    assert "6-step forecast (data units)" in text and "reloaded forecast is identical" in text
+    loaded = DFM.load(tmp_path / "run")
+    expected = {**_SHIPPED[name]["model"], "max_iter": 1}
+    assert {k: loaded.get_params()[k] for k in expected} == expected
+    assert loaded.n_iter_ == 1 and loaded.index_.size == 120
+    assert list(loaded.feature_names_in_) == _SHIPPED[name]["data"]["target_cols"]
+    assert np.isfinite(loaded.predict(6).to_numpy()).all()

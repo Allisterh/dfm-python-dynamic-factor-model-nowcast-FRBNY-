@@ -6,7 +6,7 @@ import yaml
 from pathlib import Path
 from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.config.adapter import YamlSource
-from dfm_python.dataset import DFMDataset
+from dfm_python.dataset.dfm_dataset import DFMDataset
 from dfm_python.models.dfm.tent import get_agg_structure
 
 

@@ -40,10 +40,18 @@ pip install "dfm-python[yaml,tune]"
 
 ## DFM
 
-DFM is an estimator on `PanelData`: the series in `y`, in any column order,
-and the sampling frequency of the slower ones in `freq` (unlisted series use
-the clock). One frequency slower than the clock is supported; its tent kernel
-is required.
+DFM, the linear dynamic factor model, is estimated by EM with Kalman filtering
+and smoothing. It is an estimator on `PanelData`: the series in `y`, in any
+column order, and each series' sampling frequency in `freq`, either per series
+(`{"gdp": "q"}`) or grouped by frequency (`{"q": ["gdp"], "m": ["s0", "s1"]}`);
+unlisted series use the clock. Latent factors evolve at the `clock` frequency.
+Every series is sampled at the clock or at one slower frequency: a series
+faster than the clock, or a second slower frequency, raises
+`UnsupportedInputError`. A slower series is NaN at the clock dates between its
+observations and loads on the factors through a tent kernel, which you give in
+`tent_weights` under the key `"f:clock"`; there is no default kernel, and the
+error for a missing one names the symmetric kernel to pass
+(`{"q:m": [1, 2, 3, 2, 1]}` for quarterly series on a monthly clock).
 
 ```python
 import numpy as np
@@ -55,45 +63,76 @@ df = pd.DataFrame(np.random.default_rng(0).standard_normal((120, 4)),
                   index=idx, columns=["gdp", "s0", "s1", "s2"])
 df.loc[df.index.month % 3 != 0, "gdp"] = np.nan        # quarterly series, any column position
 
-data = PanelData(y=df.iloc[:-6], freq={"gdp": "q"})
-new = PanelData(y=df.iloc[-6:], freq={"gdp": "q"})     # rows after the last fitted date
+data = PanelData(y=df.iloc[:-6], freq={"gdp": "q"})     # or freq={"q": ["gdp"]}
+new = PanelData(y=df.iloc[-6:-3], freq={"gdp": "q"})   # rows after the last fitted date
+more = PanelData(y=df.iloc[-3:], freq={"gdp": "q"})    # rows after those
 model = DFM(n_factors=1, clock="m", tent_weights={"q:m": [1, 2, 3, 2, 1]},
-            max_iter=50, scaler="standard")             # blocks=None: one global block
-model.fit(data)                                         # EM + Kalman smoother
-fc = model.predict(6)                                   # DataFrame 6 x 4, columns in your order
-zf = model.predict_factors(6)                           # DataFrame 6 x state dim
+            max_iter=50, tol=1e-5, scaler="standard")   # blocks=None: one global block
+model.fit(data)                                         # initialization, then EM; returns model
 model.result_.loglik, model.n_iter_, model.converged_
+fc = model.predict(6)                                   # DataFrame 6 x 4, data units, columns in your order
+zf = model.predict_factors(6)                           # DataFrame 6 x state dim (state_0, ...)
 fc_new = model.predict(6, data=new)                     # filters the new rows; model unchanged
 model.update(new)                                       # Kalman update, fixed parameters; returns model
+model.update(more, refit=True)                          # one EM iteration on all rows; refreshes result_
 model.save("runs/dfm")
 model = DFM.load("runs/dfm")                            # or dfm_python.load("runs/dfm"); no data needed
 ```
 
-`scaler=None` (the default) fits on the data as given; pass
-`scaler="standard"` to standardize the series. Forecasts are in data units and
-report every series at every clock date, slower series included. The engine
-orders the series `[clock | slower]` internally (`internal_feature_names_`),
-and the series-indexed matrices of `result_` (`C`, `R`, `x_sm`) are in that
-order. `blocks={"name": {"n_factors": 2, "series": [...]}, ...}` replaces the
-single global block.
+The constructor takes hyperparameters only: `n_factors` is the size of the
+single global block used when `blocks` is None (None means 1), and
+`blocks={"name": {"n_factors": 2, "series": [...]}, ...}` replaces it (set one
+of the two, not both; the block order is the factor order). `max_iter` and
+`tol` control EM; `ar_clip`, `data_clip`, `regularization` and
+`damping_factor` are the engine's optional stabilizers (None leaves them off).
+
+`scaler=None` is the default and fits on the data as given; the engine then
+rejects series whose standard deviation is above 100 or below 1e-4, so pass
+`scaler="standard"` (or another scaler name or transformer) unless the data is
+already standardized. Forecasts are always in data units and report every
+series at every clock date, slower series included: a quarterly series on a
+monthly clock gets a value for each forecast month (the tent-weighted
+combination of the factor forecasts).
+
+The engine orders the series `[clock | slower]` internally, a stable
+partition of your order (`internal_feature_names_`); forecasts follow your
+order, while the series-indexed matrices of `result_` (`C`, `R`, `x_sm`) are
+in the internal order. `freq_` holds every series' frequency.
 
 `predict(h, data=new)` and `update(new)` take only the rows after the last
-conditioning date (tag `predict_data="new_rows"`; an overlap raises). They are
-today's two engine paths and give different numbers: `predict(h, data=)`
+conditioning date (tag `predict_data="new_rows"`; an overlap raises
+`DataValidationError`), with the training series and frequencies. They are
+the engine's two paths and give different numbers: `predict(h, data=)`
 filters the new rows from the initial covariance and forecasts from the last
-filtered state, while `update` filters and smooths from the last filtered
-covariance and appends the smoothed states, keeping `result_` and the
+filtered state, on a copy, while `update` filters and smooths from the last
+filtered covariance and appends the smoothed states, keeping `result_` and the
 parameters. `update(new, refit=True)` runs one EM iteration on all rows and
-refreshes `result_`. `save` writes a pickle-free directory (no `weights.pt`);
-`DFMConfig` mirrors the constructor (`DFM.from_config`, `DFMConfig.from_yaml`).
+refreshes `result_`, `n_iter_`, `converged_`, `loglik_` and `factors_`.
+`save` writes a pickle-free directory (no `weights.pt`; the scaled data and the
+smoothed state are in `state.npz`), and `DFM.load` needs no data.
+
+`DFMConfig` mirrors the constructor. The shipped YAMLs (`config/dfm_macro.yaml`,
+`dfm_finance.yaml`, `dfm_exchange.yaml`) hold a `model:` section with the
+constructor parameters and a `data:` section with the `PanelData.from_wide`
+arguments, frequencies included:
+
+```python
+from dfm_python.config import DFMConfig, load_yaml
+
+model = DFM.from_config(DFMConfig.from_yaml("config/dfm_macro.yaml"))   # weekly clock, monthly series
+sections = load_yaml("config/dfm_macro.yaml")
+data = PanelData.from_wide(pd.read_csv("data/macro.csv"), **sections["data"])
+```
+
+`tutorial/tutorial_{macro,finance,exchange}_dfm.py` run these configurations
+end to end (`--rows` and `--max-iter` shorten a run).
 
 AFM, iVDFM and DDFM below are estimators on the same `PanelData` container.
 Every model and config class is importable from `dfm_python`. YAML
 configurations for each model are in
 [`config/`](https://github.com/minkeymouse/dfm-python/tree/main/config) and
 end-to-end scripts in
-[`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial)
-(the DFM scripts use Hydra: install the `examples` extra to run them).
+[`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial).
 
 ## AFM
 
@@ -295,13 +334,13 @@ end to end (`--rows` and `--max-iter` shorten a run).
 ```
 src/dfm_python/
   models/      dfm/, ddfm/, ivdfm/, afm/ model classes
-  dataset/     PanelData, DFMDataset, and the private data adapters of DDFM, iVDFM and AFM
+  dataset/     PanelData, and the private data adapters of DFM, DDFM, iVDFM and AFM
   config/      model configs (DFMConfig, ..., AFMConfig), YAML adapter, results
   ssm/         state-space form and Kalman filtering
   functional/  EM algorithm
   numeric/, layer/, utils/, logger/   shared numerics, network layers, helpers
 src/test/      pytest suite
-config/        example YAML configurations (model: and data: sections; DFM's are flat Hydra files)
+config/        example YAML configurations (model: and data: sections)
 data/          example datasets used by the tutorials
 tutorial/      end-to-end scripts per model and dataset
 ```

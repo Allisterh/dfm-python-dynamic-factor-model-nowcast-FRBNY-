@@ -154,41 +154,6 @@ def get_clock_frequency(config: Optional["_DFMEngineConfig"], default: Optional[
     return get_config_attr(config, 'clock', default or DEFAULT_CLOCK_FREQUENCY)
 
 
-def compute_default_horizon(
-    config: Optional["_DFMEngineConfig"] = None,
-    default: Optional[int] = None
-) -> int:
-    """Compute default forecast horizon from clock frequency.
-    
-    Parameters
-    ----------
-    config : _DFMEngineConfig, optional
-        Configuration object to extract clock frequency from
-    default : int, optional
-        Default value to use if clock frequency cannot be determined.
-        If None, uses DEFAULT_FORECAST_HORIZON constant.
-        
-    Returns
-    -------
-    int
-        Default horizon in periods (typically 1 year worth of periods)
-    """
-    from ..config.constants import DEFAULT_FORECAST_HORIZON
-    from ..config import get_periods_per_year
-    
-    if default is None:
-        default = DEFAULT_FORECAST_HORIZON
-    
-    try:
-        if config is not None:
-            clock = get_clock_frequency(config)
-            return get_periods_per_year(clock)
-    except (AttributeError, ImportError, ValueError):
-        _logger.debug(f"Could not determine horizon from clock frequency, using default={default}")
-    
-    return default
-
-
 def resolve_target_series(
     dataset: Optional[Any],
     series_ids: Optional[List[str]] = None,

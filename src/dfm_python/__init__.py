@@ -75,11 +75,8 @@ from .dataset.panel import PanelData
 # Saved runs
 from .io.loading import load
 
-# Datasets
-from .dataset.dfm_dataset import DFMDataset
-
-# Models (BaseFactorModel is the estimator base; the DFM and AFM engines
-# still inherit the old one from dfm_python.models.base)
+# Models (BaseFactorModel is the estimator base; the AFM engine still
+# inherits the old one from dfm_python.models.base)
 from .base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.estimator import DDFM
@@ -98,8 +95,6 @@ __all__ = [
     'PanelData',
     # Saved runs
     'load',
-    # Datasets
-    'DFMDataset',
     # Results and metrics
     'BaseResult', 'DFMResult', 'DDFMResult', 'calculate_rmse',
     # Errors

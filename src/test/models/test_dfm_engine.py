@@ -5,11 +5,15 @@ fixed: ``update()`` imported ``..numeric.validator`` (the non-existent
 ``dfm_python.models.numeric``) and always raised ``ModuleNotFoundError``.
 These tests cover ``update()`` without any import shim (several rows, through
 the filter-and-smooth branch, and one row, through pykalman's
-``filter_update``), the purity of ``predict(horizon, data=)``, and that the public
-``DFM`` names the estimator, not the engine.
+``filter_update``), the purity of ``predict(horizon, data=)``, that the public
+``DFM`` names the estimator, not the engine, the engine's surface after the
+removal of its old entry points (``load_config``, the pickle ``save``/``load``,
+``reset``, ``result``, the default horizon and the old base class), and the
+``mixed_freq.find_slower_frequency`` helper (ported from ``test_dfm.py``).
 """
 
 import copy
+import inspect
 import sys
 from unittest import mock
 
@@ -21,8 +25,11 @@ from sklearn.preprocessing import StandardScaler
 import dfm_python
 from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.dataset.dfm_dataset import DFMDataset
+from dfm_python.config.schema.results import DFMResult
 from dfm_python.models.dfm._engine import DFMEngine
+from dfm_python.models.dfm.mixed_freq import find_slower_frequency
 from dfm_python.ssm.kalman import DFMKalmanFilter
+from dfm_python.utils.errors import ConfigurationError, ModelNotTrainedError
 
 _PARAMS = ("A", "C", "Q", "R", "Z_0", "V_0")
 
@@ -64,7 +71,7 @@ def _new_rows(n: int) -> np.ndarray:
 def _start_state(model: DFMEngine) -> tuple[np.ndarray, np.ndarray]:
     """The state update() starts from: last smoothed mean, last filtered covariance."""
     cov = model._create_kalman_filter().filter(np.ma.masked_invalid(model.data_processed))[1]
-    return model.result.Z[-1].copy(), cov[-1].copy()
+    return model.get_result().Z[-1].copy(), cov[-1].copy()
 
 
 def _params(model: DFMEngine) -> dict[str, np.ndarray]:
@@ -79,7 +86,7 @@ def _assert_params_unchanged(model: DFMEngine, before: dict[str, np.ndarray]) ->
 def test_update_multiple_rows(fitted):
     model = fitted
     params = _params(model)
-    Z_before = model.result.Z.copy()
+    Z_before = model.get_result().Z.copy()
     data_before = model.data_processed.copy()
     Z_last, V_last = _start_state(model)
     new = _new_rows(4)
@@ -89,7 +96,7 @@ def test_update_multiple_rows(fitted):
 
     assert model.update(new) is None
 
-    result = model.result
+    result = model.get_result()
     assert result.Z.shape == (Z_before.shape[0] + 4, Z_before.shape[1])
     np.testing.assert_array_equal(result.Z[:-4], Z_before, strict=True)
     np.testing.assert_array_equal(result.Z[-4:], expected, strict=True)
@@ -103,7 +110,7 @@ def test_update_multiple_rows(fitted):
 def test_update_single_row_uses_filter_update(fitted):
     model = fitted
     params = _params(model)
-    Z_before = model.result.Z.copy()
+    Z_before = model.get_result().Z.copy()
     Z_last, V_last = _start_state(model)
     new = _new_rows(1)
     new_std = model.scaler.transform(new)
@@ -115,7 +122,7 @@ def test_update_single_row_uses_filter_update(fitted):
                            side_effect=AssertionError("one row must not use filter_and_smooth")):
         model.update(new)
 
-    Z = model.result.Z
+    Z = model.get_result().Z
     assert Z.shape == (Z_before.shape[0] + 1, Z_before.shape[1])
     np.testing.assert_array_equal(Z[:-1], Z_before, strict=True)
     np.testing.assert_array_equal(Z[-1], np.asarray(expected, dtype=np.float64), strict=True)
@@ -129,8 +136,8 @@ def test_update_retrain_runs_em_on_all_rows(fitted):
     T = model.data_processed.shape[0]
     model.update(_new_rows(4), retrain=True)
     assert model.data_processed.shape[0] == T + 4
-    assert model.result.Z.shape[0] == T + 4
-    assert model.result.num_iter == 1
+    assert model.get_result().Z.shape[0] == T + 4
+    assert model.get_result().num_iter == 1
     assert not np.array_equal(model.A, params["A"])
 
 
@@ -138,7 +145,7 @@ def test_predict_with_data_leaves_the_model_unchanged(fitted):
     model = fitted
     state = copy.deepcopy(model.training_state)
     data_before = model.data_processed.copy()
-    Z_before = model.result.Z.copy()
+    Z_before = model.get_result().Z.copy()
     X0, Z0 = model.predict(horizon=3)
 
     X_d, Z_d = model.predict(horizon=3, data=_new_rows(4))
@@ -163,3 +170,80 @@ def test_public_dfm_is_the_estimator_not_the_engine():
     assert dfm_python.models.DFM is DFM
     assert dfm_python.models.dfm.DFM is DFM
     assert DFM is not DFMEngine
+
+
+# -- ported from test_dfm.py: find_slower_frequency ----------------------------------------
+
+
+def test_find_slower_frequency_from_tent_weights_dict():
+    """The one slower frequency is read from the tent weights (weekly series on a daily clock)."""
+    assert find_slower_frequency("d", {"w": np.array([1.0, 2.0, 1.0])}) == "w"
+
+
+def test_find_slower_frequency_rejects_multiple_slower_frequencies():
+    """DFM supports one frequency slower than the clock."""
+    with pytest.raises(ConfigurationError, match="Multiple slower frequencies"):
+        find_slower_frequency("d", {"w": np.array([1.0, 2.0]), "m": np.array([5.0, 6.0])})
+
+
+def test_find_slower_frequency_from_hierarchy():
+    slower = find_slower_frequency("d", None)
+    assert slower is None or isinstance(slower, str)
+
+
+# -- the engine's surface -----------------------------------------------------------------
+
+
+class TestEngineSurface:
+    """What the engine keeps and what was removed with the old public entry points (DDFM precedent)."""
+
+    @pytest.mark.parametrize("name", ["load_config", "save", "load", "reset", "result"])
+    def test_old_entry_points_are_gone(self, fitted, name):
+        assert not hasattr(DFMEngine, name)
+        assert not hasattr(fitted, name)
+
+    def test_no_old_base_class(self):
+        from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
+
+        assert not issubclass(DFMEngine, EngineBaseFactorModel)
+        assert DFMEngine.__mro__ == (DFMEngine, object)
+
+    def test_init_sets_the_old_base_attributes(self):
+        df = _panel(30, seed=0)
+        cols = [c for c in df.columns if c != "date"]
+        config = _DFMEngineConfig.from_dict({"blocks": {"b": {"num_factors": 1, "series": cols}},
+                                             "frequency": {c: "m" for c in cols}, "clock": "m"})
+        engine = DFMEngine(dataset=DFMDataset(config=config, data=df, time_index="date"), config=config)
+        assert engine._result is None and engine.data_processed is None
+        assert engine._config is config and engine._dataset is not None
+        assert engine.training_state is not None and engine.training_state.A is None
+
+    def test_result_before_fit_raises(self):
+        df = _panel(30, seed=0)
+        cols = [c for c in df.columns if c != "date"]
+        config = _DFMEngineConfig.from_dict({"blocks": {"b": {"num_factors": 1, "series": cols}},
+                                             "frequency": {c: "m" for c in cols}, "clock": "m"})
+        engine = DFMEngine(dataset=DFMDataset(config=config, data=df, time_index="date"), config=config)
+        with pytest.raises(ModelNotTrainedError):
+            engine.get_result()
+        engine.training_state = None
+        with pytest.raises(ModelNotTrainedError):
+            engine._ensure_result()
+
+    def test_ensure_result_caches_get_result(self, fitted):
+        result = fitted.get_result()
+        assert isinstance(result, DFMResult)
+        assert fitted._ensure_result() is result and fitted.get_result() is result
+
+    def test_predict_requires_the_horizon(self, fitted):
+        assert inspect.signature(DFMEngine.predict).parameters["horizon"].default is inspect.Parameter.empty
+        with pytest.raises(TypeError):
+            fitted.predict()  # noqa
+        X, Z = fitted.predict(4)
+        assert X.shape == (4, 4) and Z.shape[0] == 4
+
+    def test_compute_default_horizon_is_gone(self):
+        import dfm_python.utils.misc as misc
+
+        assert not hasattr(misc, "compute_default_horizon")
+

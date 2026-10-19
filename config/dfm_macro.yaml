@@ -1,84 +1,49 @@
-# DFM Configuration for Macroeconomic Datasets
-# Based on Korean economic indicators (KO* series)
-# Data: 101 series, mixed weekly/monthly frequency (1985-04-05 to 2025-11-21)
-# Clock: Weekly (w) - base frequency for latent factors
-# Target: KOEQUIPTE (Investment, Equipment, Estimation, SA)
+# DFM on the Korean macro panel (data/macro.csv, 1985-04-05 to 2025-11-21):
+# 7 weekly retail series and 7 monthly series (employment, hours, durable
+# consumption, production, equipment and construction investment,
+# consumption), on a weekly clock. A monthly series is observed on one week
+# of its month and NaN on the others.
+#
+#   from dfm_python import DFM, PanelData
+#   from dfm_python.config import DFMConfig, load_yaml
+#   sections = load_yaml("config/dfm_macro.yaml")
+#   data = PanelData.from_wide(df, **sections["data"])
+#   model = DFM.from_config(DFMConfig.from_dict(sections["model"]))
+#
+# The model: section holds DFM's constructor parameters and is exactly what
+# runs. No value changes from the flat file of earlier releases: this file
+# runs the same model as the old DFM(dataset, config=...) with that file.
+# Renamed: threshold -> tol, num_factors (in a block) -> n_factors, and the
+# flat frequency mapping moved to data: freq (PanelData.freq). Gone, because
+# the old config never read them: clip_ar_coefficients, ar_clip_min,
+# ar_clip_max, use_regularization, regularization_scale, augment_idio,
+# augment_idio_slow, idio_rho0 and idio_min_var (ar_clip and regularization
+# ran as null, which is the default here), and the flat file's scaler, which
+# the old config did not read either: the tutorial passed StandardScaler, which
+# is scaler: standard here.
+#
+# A monthly series on a weekly clock needs the tent kernel of the monthly
+# frequency (there is no default); one frequency slower than the clock is
+# supported. The series may be in any column order: DFM orders them
+# [weekly | monthly] internally and reports in the data's order.
+model:
+  blocks:
+    Block_Global:
+      n_factors: 3
+      series: [KORFBEV, KORWHLS, KORMCMP, KORELEC, KORCNST, KORMACH, KOROCOINF,
+               KOEMPTOTO, KOHWRWEMP, KOWRCDURE, KOCONPRCF, KOEQUIPTE, KOWRCCNSE, KOIMPCONA]
+  clock: w                       # frequency of the latent factors
+  tent_weights:
+    m:w: [1, 2, 1]               # monthly series on the weekly clock
+  max_iter: 10                   # EM iterations
+  tol: 1.0e-5                    # EM convergence threshold
+  scaler: standard
 
-# EM Algorithm Parameters
-threshold: 1.0e-05  # EM convergence threshold
-max_iter: 10  # Maximum EM iterations
-
-# Numerical Stability Parameters
-clip_ar_coefficients: true
-ar_clip_min: -0.99
-ar_clip_max: 0.99
-use_regularization: true
-regularization_scale: 1.0e-05
-
-# Idiosyncratic Component Parameters
-augment_idio: true
-augment_idio_slow: true  # Important for mixed-frequency macro data (weekly clock, monthly indicators)
-idio_rho0: 0.1
-idio_min_var: 1.0e-08
-
-# Data Handling
-clock: w  # Weekly clock frequency (base frequency for latent factors)
-scaler: standard  # Scaler for all series: 'standard', 'robust', 'minmax', 'maxabs', 'quantile', or null
-# Note: scaler is handled internally by the model, not set on config object
-# Note: nan_method and nan_k are internal constants (not user-configurable)
-
-# Tent weights for mixed-frequency aggregation
-# 3-period tent kernel for monthly->weekly aggregation
-tent_weights:
-  m:w: [1, 2, 1]  # 3-period tent kernel for monthly->weekly aggregation
-
-# Block Structure for Macroeconomic Data
-# Single global block for all series
-# Series order: clock-frequency (weekly) first, then slower-frequency (monthly)
-blocks:
-  Block_Global:
-    num_factors: 3  # Number of factors for global block
-    series:
-      # Weekly series (clock frequency) - must come first
-      - KORFBEV  # Retail, Food & Beverages (weekly)
-      - KORWHLS  # Retail, Wholesale (weekly)
-      - KORMCMP  # Retail, Miscellaneous & Comparison (weekly)
-      - KORELEC  # Retail, Electronics (weekly)
-      - KORCNST  # Retail, Construction (weekly)
-      - KORMACH  # Retail, Machinery (weekly)
-      - KOROCOINF  # Retail, Other Consumer & Information (weekly)
-      # Monthly series (slower than clock) - must come after clock-frequency series
-      - KOEMPTOTO  # Total employment (monthly)
-      - KOHWRWEMP  # Hours worked (monthly)
-      - KOWRCDURE  # Durable goods consumption (monthly)
-      - KOCONPRCF  # Production (monthly)
-      - KOEQUIPTE  # Investment, Equipment (monthly, target series)
-      - KOWRCCNSE  # Consumption (monthly, target series)
-      - KOIMPCONA  # Investment, Construction (monthly, target series)
-
-# Frequency mapping for mixed-frequency macro data
-# Clock is weekly (w), so monthly series are slower frequency
-# Grouped format: frequencies are specified as lists grouped by frequency code
-frequency:
-  # Monthly series (slower than weekly clock) - typically end-of-month observations
-  # These are the series used in the tutorial
-  m:
-    - KOEMPTOTO  # Total employment (monthly)
-    - KOHWRWEMP  # Hours worked (monthly)
-    - KOWRCDURE  # Durable goods consumption (monthly)
-    - KOCONPRCF  # Production (monthly)
-    - KOEQUIPTE  # Investment, Equipment (monthly, target series)
-    - KOWRCCNSE  # Consumption (monthly, target series)
-    - KOIMPCONA  # Investment, Construction (monthly, target series)
-  # Weekly series (same as clock frequency - these appear every week like the clock)
-  # This is a mixed-frequency example: clock is weekly, but monthly series are slower
-  # The tutorial now respects YAML frequencies for proper mixed-frequency handling
-  # These weekly series are available in the data at clock frequency
-  w:
-    - KORFBEV  # Retail, Food & Beverages (weekly)
-    - KORWHLS  # Retail, Wholesale (weekly)
-    - KORMCMP  # Retail, Miscellaneous & Comparison (weekly)
-    - KORELEC  # Retail, Electronics (weekly)
-    - KORCNST  # Retail, Construction (weekly)
-    - KORMACH  # Retail, Machinery (weekly)
-    - KOROCOINF  # Retail, Other Consumer & Information (weekly)
+# PanelData.from_wide arguments.
+data:
+  time_col: date
+  target_cols: [KORFBEV, KORWHLS, KORMCMP, KORELEC, KORCNST, KORMACH, KOROCOINF,
+                KOEMPTOTO, KOHWRWEMP, KOWRCDURE, KOCONPRCF, KOEQUIPTE, KOWRCCNSE, KOIMPCONA]
+  freq:                          # grouped form; unlisted series use the clock
+    w: [KORFBEV, KORWHLS, KORMCMP, KORELEC, KORCNST, KORMACH, KOROCOINF]
+    m: [KOEMPTOTO, KOHWRWEMP, KOWRCDURE, KOCONPRCF, KOEQUIPTE, KOWRCCNSE, KOIMPCONA]
