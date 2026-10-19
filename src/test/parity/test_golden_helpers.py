@@ -111,3 +111,16 @@ class TestAssertGolden:
         _write_fixture(fixture_dir, "case", ARRAYS, fingerprint())
         with pytest.raises(AssertionError):
             assert_golden(actual, "case")
+
+    def test_exclude_leaves_fixture_outputs_out(self, fixture_dir):
+        _write_fixture(fixture_dir, "case", ARRAYS, fingerprint())
+        partial = {k: v for k, v in ARRAYS.items() if k != "i"}
+        assert_golden(partial, "case", exclude=["i"])
+        with pytest.raises(AssertionError):  # the remaining outputs are still compared
+            assert_golden(dict(partial, f64=np.nextafter(ARRAYS["f64"], np.inf)), "case", exclude=["i"])
+
+    @pytest.mark.parametrize("exclude", [["nope"], ["i"]], ids=["not-a-fixture-key", "also-given"])
+    def test_exclude_must_name_absent_fixture_outputs(self, fixture_dir, exclude):
+        _write_fixture(fixture_dir, "case", ARRAYS, fingerprint())
+        with pytest.raises(AssertionError, match="excluded"):
+            assert_golden(dict(ARRAYS), "case", exclude=exclude)

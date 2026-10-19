@@ -66,9 +66,10 @@ X_forecast, Z_forecast = model.predict(horizon=6)
 print(X_forecast.shape, Z_forecast.shape)       # (6, 4) series, (6, state dim)
 ```
 
-`DDFM` (`from dfm_python import DDFM, DDFMDataset`) follows the same
-dataset-then-model pattern; every model and config class is importable from
-`dfm_python`. Hydra YAML configurations for each model are in
+`DDFM` is an estimator like iVDFM and AFM below: `DDFM(n_factors=4,
+encoder_layers=(16,), scaler="standard").fit(PanelData(y=targets, exog=covariates))`,
+then `predict(h)` and `predict_factors(h)`. Every model and config class is
+importable from `dfm_python`. Hydra YAML configurations for each model are in
 [`config/`](https://github.com/minkeymouse/dfm-python/tree/main/config) and
 end-to-end scripts in
 [`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial)

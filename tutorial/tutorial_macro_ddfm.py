@@ -15,7 +15,8 @@ sys.path.insert(0, str(project_root / "src"))
 
 import pandas as pd
 import numpy as np
-from dfm_python import DDFM, DDFMDataset
+from dfm_python import DDFMDataset
+from dfm_python.models.ddfm._engine import DDFMEngine as DDFM  # until this tutorial moves to the estimator
 from dfm_python.config import DDFMConfig
 from sklearn.preprocessing import StandardScaler
 import hydra

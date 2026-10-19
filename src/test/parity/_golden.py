@@ -21,7 +21,7 @@ import contextlib
 import json
 import platform
 import warnings
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -107,16 +107,26 @@ def _normalize_fingerprint(fp: Mapping[str, Any]) -> Any:
 
 
 def assert_golden(actual: Mapping[str, Any], name: str, *, rtol_f64: float = 1e-10,
-                  rtol_f32: float = 1e-5, atol: float = 1e-8) -> None:
+                  rtol_f32: float = 1e-5, atol: float = 1e-8, exclude: Iterable[str] = ()) -> None:
     """Compare ``actual`` arrays with the golden fixture ``name``.
 
     Bitwise on the fingerprinted platform; otherwise ``assert_allclose`` with
     ``rtol_f64`` for float64 arrays, ``rtol_f32`` for other floating arrays and
     exact equality for integer and boolean arrays, plus a
     :class:`GoldenToleranceWarning`.
+
+    ``exclude`` names fixture outputs that this comparison leaves out; each
+    must exist in the fixture and be absent from ``actual``. Every other
+    fixture output must be in ``actual``.
     """
     manifest, expected = load_golden(name)
     actual = {k: np.asarray(v) for k, v in actual.items()}
+    exclude = set(exclude)
+    unknown = sorted(exclude - set(expected))
+    assert not unknown, f"golden '{name}': excluded keys {unknown} are not fixture outputs"
+    overlap = sorted(exclude & set(actual))
+    assert not overlap, f"golden '{name}': keys {overlap} are both excluded and given"
+    expected = {k: v for k, v in expected.items() if k not in exclude}
 
     missing = sorted(set(expected) - set(actual))
     extra = sorted(set(actual) - set(expected))

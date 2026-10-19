@@ -47,6 +47,21 @@ def test_ivdfm_is_the_estimator():
     assert issubclass(dfm_python.iVDFM, BaseFactorModel) and dfm_python.iVDFM is not iVDFMEngine
 
 
+def test_ddfm_is_the_estimator():
+    import dfm_python.models
+    import dfm_python.models.ddfm as ddfm_pkg
+    from dfm_python.models.ddfm._engine import DDFMEngine
+    from dfm_python.models.ddfm.estimator import DDFM
+
+    assert dfm_python.DDFM is DDFM and "DDFM" in dfm_python.__all__
+    assert dfm_python.models.DDFM is DDFM and "DDFM" in dfm_python.models.__all__
+    assert ddfm_pkg.DDFM is DDFM and "DDFM" in ddfm_pkg.__all__
+    assert issubclass(DDFM, BaseFactorModel) and DDFM is not DDFMEngine
+    for namespace in (dfm_python, dfm_python.models, ddfm_pkg):
+        assert "DDFMEngine" not in getattr(namespace, "__all__", ()), namespace.__name__
+        assert not hasattr(namespace, "DDFMEngine"), namespace.__name__
+
+
 def test_ivdfm_dataset_is_not_public():
     # The iVDFM dataset is the estimator's private adapter base (dfm_python.dataset.ivdfm_dataset).
     import dfm_python.dataset

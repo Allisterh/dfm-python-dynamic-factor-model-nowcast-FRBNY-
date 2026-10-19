@@ -378,6 +378,16 @@ def _ddfm_hyper(model: Any) -> dict[str, Any]:
     return hyper
 
 
+def ddfm_engine_outputs(model: Any) -> dict[str, np.ndarray]:
+    """The fitted engine's numbers: ``predict(horizon=6)`` (no data, so no update), then :func:`_ddfm_fit_outputs`.
+
+    ``model`` is an engine after ``fit`` and ``build_state_space``: the one a
+    case builds, or the ``network_`` of a fitted DDFM estimator.
+    """
+    X, Z = model.predict(horizon=_DDFM_HORIZON)
+    return _ddfm_fit_outputs(model, X, Z)
+
+
 def _ddfm_fit_outputs(model: Any, X: Any, Z: Any) -> dict[str, np.ndarray]:
     """The fitted engine's numbers, read after ``fit``, ``build_state_space`` and ``predict``."""
     st = model.training_state
@@ -393,8 +403,8 @@ def _ddfm_fit_outputs(model: Any, X: Any, Z: Any) -> dict[str, np.ndarray]:
         "loss_now": np.float64(model.loss_now),
         "converged": np.bool_(getattr(model, "_converged", False)),
         "last_neurons": _np(model.last_neurons),
-        # result C is not pinned: its orientation changes with the estimator,
-        # and it is H (pinned above), transposed.
+        # result C is not pinned: it is H (pinned above). It was H transposed
+        # when the fixtures were captured; the estimator uses the DFM orientation.
         "result_Z": _np(result.Z),
         "result_x_sm": _np(result.x_sm),
         # The training dataset's target scaler; the engine's update refits
@@ -405,6 +415,11 @@ def _ddfm_fit_outputs(model: Any, X: Any, Z: Any) -> dict[str, np.ndarray]:
     for k, v in model.state_dict().items():
         outputs[f"sd/{k}"] = _np(v)
     return outputs
+
+
+#: Outputs of the update path (``_ddfm_update_outputs``), which mutates the engine.
+DDFM_UPDATE_KEYS = ("update_predict_X", "update_predict_Z", "update_factors", "update_scaler_mean",
+                    "update_scaler_scale")
 
 
 def _ddfm_update_outputs(model: Any, upd: Any) -> dict[str, np.ndarray]:
@@ -457,8 +472,7 @@ def _ddfm_macro() -> CaseRun:
         hyper = _ddfm_hyper(model)
         model.fit()
         model.build_state_space()
-        X, Z = model.predict(horizon=_DDFM_HORIZON)
-        outputs = _ddfm_fit_outputs(model, X, Z)
+        outputs = ddfm_engine_outputs(model)
         # No rows newer than the fitted ones: the update panel is the same 400
         # rows, in a dataset with a fresh scaler (DDFMDataset fits the scaler it
         # is given, so passing the training scaler would refit that one).
@@ -495,8 +509,7 @@ def _ddfm_fit_and_update(panel: pd.DataFrame, time_idx: str, covariates: list[st
         hyper = _ddfm_hyper(model)
         model.fit()
         model.build_state_space()
-        X, Z = model.predict(horizon=_DDFM_HORIZON)
-        outputs = _ddfm_fit_outputs(model, X, Z)
+        outputs = ddfm_engine_outputs(model)
         upd = DDFMDataset(data=panel, time_idx=time_idx, covariates=covariates, scaler=StandardScaler())
         outputs.update(_ddfm_update_outputs(model, upd))
     return outputs, hyper

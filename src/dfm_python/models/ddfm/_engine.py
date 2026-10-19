@@ -17,6 +17,9 @@ change no math and no RNG order:
 (c) ``target_series`` and ``covariates`` are copied from the dataset in
     ``__init__``, and ``_update`` and ``_refit_scalers_with_new_data`` read
     them instead of ``self._dataset``, so an engine needs no dataset to update.
+
+``get_result`` reports ``C = H`` (series x factors, the ``DFMResult.C``
+orientation) instead of ``H.T``; nothing else reads it.
 """
 
 import time
@@ -930,7 +933,9 @@ class DDFMEngine(BaseFactorModel, nn.Module):
         return DDFMResult(
             x_sm=x_sm,
             Z=Z,
-            C=H.T,  # Transpose H to get (num_target_series x num_factors) loading matrix
+            # H is (num_target_series x num_factors), the DFMResult.C orientation
+            # (it was H.T, factors x series, before the estimator).
+            C=H,
             R=R,
             A=F,
             Q=Q,

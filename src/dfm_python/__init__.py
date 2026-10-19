@@ -23,9 +23,11 @@ pickle-free save directory::
 
 ``iVDFM`` is an estimator on the same API: ``iVDFM(n_factors=3, window=200,
 scaler="standard").fit(data)``, then ``predict(h, futr_exog=...)`` (data
-units) and ``predict_factors(h)``. ``DFM`` and ``DDFM`` are still built from a
-dataset and a config until they are migrated; see README.md for complete
-examples of every model.
+units) and ``predict_factors(h)``. So is ``DDFM``: ``DDFM(n_factors=4,
+encoder_layers=(16,), scaler="standard").fit(data)`` with encoder covariates
+in ``exog``, then ``predict(h)`` and ``predict_factors(h)``. ``DFM`` is still
+built from a dataset and a config until it is migrated; see README.md for
+complete examples of every model.
 """
 
 import logging as _logging
@@ -75,11 +77,11 @@ from .io.loading import load
 from .dataset.dfm_dataset import DFMDataset
 from .dataset.ddfm_dataset import DDFMDataset
 
-# Models (BaseFactorModel is the estimator base; the unmigrated engines (DFM,
-# DDFM) and the AFM engine still inherit the old one from dfm_python.models.base)
+# Models (BaseFactorModel is the estimator base; the unmigrated DFM and the
+# DDFM and AFM engines still inherit the old one from dfm_python.models.base)
 from .base import BaseFactorModel
 from .models.dfm import DFM
-from .models.ddfm._engine import DDFMEngine as DDFM
+from .models.ddfm.estimator import DDFM
 from .models.ivdfm.estimator import iVDFM
 from .models.afm.estimator import AFM
 

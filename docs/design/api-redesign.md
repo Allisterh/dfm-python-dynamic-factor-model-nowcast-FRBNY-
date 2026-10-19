@@ -192,7 +192,7 @@ Today's names are in parentheses for reference only; they are not accepted. A de
 | Model | Parameters |
 |---|---|
 | DFM | `n_factors` (used when `blocks=None`), `blocks` (block key `n_factors`), `clock`, `tent_weights`, `max_iter`, `tol` (`threshold`), `ar_clip`, `data_clip`, `regularization`, `damping_factor`, `idio_rho0`, `idio_min_var`, `scaler`, `verbose` |
-| DDFM | `n_factors`, `encoder_layers` (hidden widths; today's `encoder_size` is `(*encoder_layers, n_factors)`), `decoder_type`, `activation`, `learning_rate`, `optimizer`, `n_mc_samples`, `window_size`, `pretrain_epochs` (`max_epoch_pre_train`), `max_iter`, `tol` (`tolerance`), `min_target_interpolate_ratio` (misspelled today), `interpolation_method`/`_limit`/`_limit_direction`, `scaler`, `random_state` (`seed`), `device`, `verbose` (`disp`) |
+| DDFM | `n_factors`, `encoder_layers` (hidden widths; today's `encoder_size` is `(*encoder_layers, n_factors)`), `decoder_type`, `activation`, `learning_rate`, `optimizer`, `n_mc_samples`, `window_size`, `max_iter`, `tol` (`tolerance`), `interpolation_method`/`_limit`/`_limit_direction`, `scaler`, `random_state` (`seed`), `device`, `verbose` (`disp`; the engine always gets `disp=10`) |
 | iVDFM | `n_factors` (`num_factors`), `window`, `stride`, `time_context`, encoder/decoder/prior `*_hidden_dim` and `*_n_hidden_layers`, `decoder_type`, `activation`, `slope`, `factor_order`, `innovation_distribution`, `decoder_var`, `n_regimes` (`num_regimes`), `regime_temperature`, `beta_kl`, `use_layer_norm`, `mixing`, `learning_rate`, `optimizer`, `optimizer_weight_decay`, `optimizer_momentum`, `batch_size`, `max_epochs`, `tol` (`tolerance`), `patience`, six `scheduler_*`, `scaler`, `random_state` (`seed`), `device`, `verbose` |
 | AFM | `n_factors` (`num_factors`), `factor_model`, `trading`, `embed_dim`, `hist_len`, `n_kernels`, `ridge`, `squash_lambda`, `pca_window`, `reestim`, `lambda_var`, `turnover_cost`, `short_cost`, `risk_free`, `learning_rate`, `max_epochs`, `patience`, `random_state` (`seed`), `device`, `verbose` |
 
@@ -206,7 +206,8 @@ Naming rules:
 Removed parameters:
 
 - Inferred in `fit`: `data_dim`, `context_dim`, `n_char`.
-- Never read: `DDFMConfig.use_batch_norm`, `use_idiosyncratic`, `min_obs_idio` and `lags_input`; `DDFMConfig.num_factors`, which can contradict `encoder_size[-1]`; `iVDFMConfig.covariates`.
+- Never read: `DDFMConfig.use_batch_norm`, `use_idiosyncratic`, `min_obs_idio` and `lags_input`; `DDFMConfig.num_factors`, which can contradict `encoder_size[-1]`; `iVDFMConfig.covariates`; DDFM's `max_epoch_pre_train` and `min_target_interporate_ratio`, which the engine stores but never reads (pre-training runs `n_mc_samples` epochs).
+- Replaced: DDFM's `encoder_size` by `n_factors` plus `encoder_layers`; DDFM's `dataset` and `config` by `fit(data)` and the constructor.
 - Moved: `target_scaler` and `frequency` become `scaler` and `PanelData.freq`; `iVDFMConfig.context` becomes `PanelData.exog`.
 - Deleted outright: `DFM.load_config`, which calls a missing `_load_config_common` and cannot run.
 
@@ -477,5 +478,5 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
 3. **DFM tent-weight default.** If today's path fails without `tent_weights`, should the symmetric `generate_tent_weights` kernel become the documented default? It would affect only inputs that fail today.
 4. **DFM default scaler.** Keep `None` as the code does, and correct the README's claim of internal standardization (proposed), or change the default?
 5. **Mixed-frequency output.** Keep reporting slower series at every clock date, or mask them to observation dates?
-6. **`DDFMResult.C` orientation.** It is factors x N, unlike DFM's N x state. Transpose it when DDFM is migrated, or leave it?
+6. **`DDFMResult.C` orientation.** Decided: `result_.C` is the loading matrix H, N x r, the DFM orientation (it was H transposed, factors x N). The change is one line in the engine's `get_result`, and no code read the old orientation.
 7. **sklearn coupling.** Rely on sklearn's `BaseEstimator` (and its private `_get_param_names`), or vendor about 60 lines?
