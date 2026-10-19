@@ -26,8 +26,9 @@
 # n_factors is 1, the number of targets (earlier files said 5). With more
 # factors than targets and factor_order > 1, the engine's initialization of the
 # AR coefficients (OLS on zero-padded PCA factors) makes the ELBO NaN in the
-# first batch, so training fails; 5 factors only ran because factor_order was
-# silently 1.
+# first batch, so fit rejects that combination with a ConfigurationError; 5
+# factors only ran because factor_order was silently 1. The spec's n_factors=5
+# needs at least 5 targets, factor_order=1 or n_regimes > 1.
 model:
   # Latent structure
   n_factors: 1                   # at most the number of targets when factor_order > 1

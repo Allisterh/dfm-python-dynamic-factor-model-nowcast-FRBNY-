@@ -297,6 +297,55 @@ class TestTuneHyperparameters:
         assert conditioning_index[-1] == data.index[-7]
         assert conditioning_index.equals(data.index[-6 - len(conditioning_index):-6])
 
+    @staticmethod
+    def _spy_fit(monkeypatch):
+        calls = []
+        fit = iVDFM.fit
+
+        def spy(self, data, **kwargs):
+            calls.append((self.get_params(), data))
+            return fit(self, data, **kwargs)
+
+        monkeypatch.setattr(iVDFM, "fit", spy)
+        return calls
+
+    def test_batch_size_comes_from_min_batch_size_fixed_or_the_estimator(self, monkeypatch):
+        calls = self._spy_fit(monkeypatch)
+        search = {k: v for k, v in _TINY_SEARCH.items() if k != "min_batch_size"}
+        est = iVDFM(batch_size=16, random_state=0, device="cpu")
+        best = tune_hyperparameters(est, _panel(), n_trials=1, fixed=dict(_TINY_FIXED), **search)
+        assert best and calls[-1][0]["batch_size"] == 16 and "batch_size" not in best
+        best = tune_hyperparameters(est, _panel(), n_trials=1, fixed={**_TINY_FIXED, "batch_size": 4}, **search)
+        assert calls[-1][0]["batch_size"] == 4 and best["batch_size"] == 4
+        best = tune_hyperparameters(est, _panel(), n_trials=1, fixed=dict(_TINY_FIXED), min_batch_size=8, **search)
+        assert calls[-1][0]["batch_size"] == 8 and best["batch_size"] == 8
+        with pytest.raises(ValueError, match="conflicts"):
+            tune_hyperparameters(est, _panel(), n_trials=1, fixed={**_TINY_FIXED, "batch_size": 4}, min_batch_size=8,
+                                 **search)
+
+    def test_trials_train_on_targets_scaled_on_the_full_series(self, monkeypatch):
+        from sklearn.preprocessing import StandardScaler
+
+        calls = self._spy_fit(monkeypatch)
+        data = _panel()
+        best = tune_hyperparameters(
+            iVDFM(scaler="standard", random_state=0, device="cpu"), data, n_trials=1, fixed=dict(_TINY_FIXED),
+            **_TINY_SEARCH,
+        )
+        assert best and "scaler" not in best
+        params, train = calls[-1]
+        assert params["scaler"] is None
+        scaled = StandardScaler().fit_transform(data.y.to_numpy())
+        rows = data.index.get_indexer(train.index)
+        np.testing.assert_allclose(train.y.to_numpy(), scaled[rows], rtol=1e-6, atol=1e-6)
+        # fixed["scaler"] replaces the estimator's scaler for the scaling, and comes back in best.
+        best = tune_hyperparameters(
+            iVDFM(random_state=0, device="cpu"), data, n_trials=1, fixed={**_TINY_FIXED, "scaler": "standard"},
+            **_TINY_SEARCH,
+        )
+        assert best["scaler"] == "standard" and calls[-1][0]["scaler"] is None
+        np.testing.assert_allclose(calls[-1][1].y.to_numpy(), scaled[rows], rtol=1e-6, atol=1e-6)
+
     def test_no_completed_trial_returns_empty_with_warning(self):
         with pytest.warns(UserWarning, match="no trial completed"):
             best = tune_hyperparameters(

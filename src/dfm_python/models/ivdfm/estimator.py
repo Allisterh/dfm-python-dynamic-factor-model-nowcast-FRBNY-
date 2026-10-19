@@ -183,7 +183,12 @@ class iVDFM(BaseFactorModel):
     slope : float, default 0.1
         Leaky ReLU slope.
     factor_order : int, default 1
-        AR order p of the factor dynamics.
+        AR order p of the factor dynamics. With ``factor_order > 1`` and
+        ``n_regimes=1``, ``n_factors`` must not exceed the number of targets
+        (``fit`` raises ``ConfigurationError``): the engine initializes the
+        AR coefficients from PCA factors, zero-pads the factors beyond the
+        number of targets, and the normalization of an all-zero coefficient
+        row makes the loss NaN in the first batch.
     innovation_distribution : str, default "laplace"
         One of "laplace", "gaussian", "student_t", "gamma", "beta",
         "exponential".
@@ -652,7 +657,9 @@ class iVDFM(BaseFactorModel):
         Raises
         ------
         ConfigurationError
-            For an invalid hyperparameter.
+            For an invalid hyperparameter, or ``n_factors`` greater than the
+            number of targets with ``factor_order > 1`` and ``n_regimes=1``
+            (see ``factor_order``).
         UnsupportedInputError
             For ``series_exog`` or a mixed-frequency panel.
 
@@ -667,10 +674,27 @@ class iVDFM(BaseFactorModel):
         """
         return super().fit(data, **fit_kwargs)
 
+    def _check_factor_count(self, n_targets: int) -> None:
+        """Reject the factor count the engine's AR initialization cannot train.
+
+        With ``factor_order > 1`` and one regime, the engine's OLS
+        initialization zero-pads the PCA factors beyond ``n_targets``; their
+        all-zero AR coefficient rows are then L1-normalized by zero
+        (``iVDFMCompanionSSM.norm``), so the loss is NaN in the first batch.
+        """
+        if self.factor_order > 1 and self.n_regimes == 1 and self.n_factors > n_targets:
+            raise ConfigurationError(
+                f"{type(self).__name__}: n_factors={self.n_factors} exceeds the {n_targets} target series, which "
+                f"the engine cannot train with factor_order={self.factor_order} > 1 and n_regimes=1 (its AR "
+                "initialization zero-pads the extra PCA factors and the loss becomes NaN). Use n_factors <= "
+                f"{n_targets}, factor_order=1 or n_regimes > 1."
+            )
+
     def _fit(self, data: PanelData, **fit_kwargs: Any) -> None:
         if fit_kwargs:
             raise TypeError(f"iVDFM.fit() got unexpected keyword arguments {sorted(fit_kwargs)}.")
         self._validate_params()
+        self._check_factor_count(len(data.series_names))
         device = self._resolve_device()
         dataset = self._adapter(data, device)
         params = self._engine_params(dataset.window, dataset.stride)
@@ -809,8 +833,13 @@ class iVDFM(BaseFactorModel):
 
     # -- forecasting ---------------------------------------------------------
 
-    def _futr_exog_values(self, h: int, futr_exog: Any) -> Optional[np.ndarray]:
-        """``futr_exog`` validated as a float64 (h, n_exog) array, or None."""
+    def _futr_exog_values(self, h: int, futr_exog: Any, origin_index: pd.Index) -> Optional[np.ndarray]:
+        """``futr_exog`` validated as a float64 (h, n_exog) array, or None.
+
+        A DataFrame is matched by column name, and its index must be the
+        forecast index (the ``h`` steps after ``origin_index[-1]``); a default
+        ``RangeIndex`` (0 to h-1) is taken by position, like an array.
+        """
         exog_names = list(self.exog_names_in_)
         if futr_exog is None:
             if exog_names:
@@ -841,6 +870,18 @@ class iVDFM(BaseFactorModel):
             )
         if not np.isfinite(values).all():
             raise DataValidationError("futr_exog contains NaN or infinite values.")
+        if isinstance(futr_exog, pd.DataFrame):
+            index = futr_exog.index
+            positional = isinstance(index, pd.RangeIndex) and index.start == 0 and index.step == 1
+            if not positional:
+                expected = self._forecast_index(origin_index, h)
+                if not index.equals(expected):
+                    raise DataValidationError(
+                        f"futr_exog index runs {index[0]!r} to {index[-1]!r}, but the forecast index runs "
+                        f"{expected[0]!r} to {expected[-1]!r} (the {h} steps after {origin_index[-1]!r}). Pass the "
+                        "rows of the forecast period, or an array (or a frame with a default RangeIndex) to "
+                        "match them by position."
+                    )
         return values
 
     def _engine_forecast(
@@ -868,7 +909,7 @@ class iVDFM(BaseFactorModel):
             raise TypeError(f"deterministic must be True or False, got {deterministic!r}.")
         if not _is_int(n_samples) or n_samples < 1:
             raise ValueError(f"n_samples must be a positive integer, got {n_samples!r}.")
-        futr = self._futr_exog_values(h, futr_exog)
+        futr = self._futr_exog_values(h, futr_exog, self.conditioning_index_ if panel is None else panel.index)
         if panel is None:
             factors, y_pred = self._engine_forecast(self.network_, h, futr, bool(deterministic), int(n_samples))
             return factors, y_pred, h, self.conditioning_index_
@@ -917,7 +958,9 @@ class iVDFM(BaseFactorModel):
             unchanged. Same series and exog as in training.
         futr_exog : DataFrame or array of shape (h, n_exog), optional
             Future values of the exog columns (a DataFrame is matched by column
-            name). They follow the generated time features in the context u_t.
+            name, and its index must be the forecast index unless it is a
+            default ``RangeIndex``, which is taken by position). They follow
+            the generated time features in the context u_t.
             None generates time features for every context column, as the
             engine does without context; that warns for a model with exog.
         deterministic : bool, default True

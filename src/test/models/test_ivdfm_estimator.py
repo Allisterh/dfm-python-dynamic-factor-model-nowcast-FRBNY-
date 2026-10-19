@@ -130,6 +130,29 @@ def test_invalid_parameters_raise_configuration_error(params):
     assert not hasattr(est, "result_")
 
 
+def test_more_factors_than_targets_with_ar_order_above_one_is_rejected(monkeypatch):
+    # The engine's AR initialization zero-pads the PCA factors beyond the targets and its
+    # L1 normalization of the all-zero coefficient rows made the loss NaN in the first batch.
+    def no_engine(*args, **kwargs):
+        raise AssertionError("the engine must not be built")
+
+    monkeypatch.setattr("dfm_python.models.ivdfm.estimator.iVDFMEngine", no_engine)
+    for params in ({"n_factors": 4, "factor_order": 2}, {"n_factors": 5, "factor_order": 3}):
+        est = iVDFM(**{**TINY, **params})
+        with pytest.raises(ConfigurationError, match=r"n_factors=\d exceeds the 3 target series"):
+            est.fit(_panel(N=3))
+        assert not hasattr(est, "result_")
+
+
+@pytest.mark.parametrize(
+    "params", [{"n_factors": 4, "factor_order": 1}, {"n_factors": 3, "factor_order": 2},
+               {"n_factors": 4, "factor_order": 2, "n_regimes": 2}],
+)
+def test_factor_counts_the_engine_trains(params):
+    est = iVDFM(**{**TINY, **params}).fit(_panel(N=3))
+    assert est.n_factors_ == params["n_factors"] and np.isfinite(est.result_.training_elbo)
+
+
 def test_unsupported_inputs():
     panel = _panel()
     series_exog = pd.DataFrame(
@@ -468,6 +491,30 @@ def test_futr_exog_missing_warns_and_uses_time_features(fitted_exog):
 def test_bad_futr_exog_raises(fitted_exog, futr_exog, match):
     with pytest.raises(DataValidationError, match=match):
         fitted_exog.predict(6, futr_exog=futr_exog)
+
+
+def test_futr_exog_frame_index_must_be_the_forecast_index(fitted_exog):
+    future = np.arange(12, dtype=np.float64).reshape(6, 2) / 10
+    expected = fitted_exog._forecast_index(fitted_exog.conditioning_index_, 6)
+    forecast = fitted_exog.predict(6, futr_exog=future)
+    dated = pd.DataFrame(future, index=expected, columns=["u0", "u1"])
+    assert fitted_exog.predict(6, futr_exog=dated).equals(forecast)
+    wrong = pd.DataFrame(future, index=_panel(K=2).index[:6], columns=["u0", "u1"])  # the first 6 training dates
+    with pytest.raises(DataValidationError, match="forecast index"):
+        fitted_exog.predict(6, futr_exog=wrong)
+    with pytest.raises(DataValidationError, match="forecast index"):
+        fitted_exog.predict(6, futr_exog=dated.shift(1, freq="ME"))
+    with pytest.raises(DataValidationError, match="forecast index"):
+        fitted_exog.predict(6, futr_exog=pd.DataFrame(future, index=range(1, 7), columns=["u0", "u1"]))
+    # predict(data=...) forecasts after data's last stamp.
+    new = _extended(K=2)
+    after_new = pd.DataFrame(future[:3], index=fitted_exog._forecast_index(new.index, 3), columns=["u0", "u1"])
+    state = torch.get_rng_state()
+    by_index = fitted_exog.predict(3, data=new, futr_exog=after_new)
+    torch.set_rng_state(state)
+    assert by_index.equals(fitted_exog.predict(3, data=new, futr_exog=future[:3]))
+    with pytest.raises(DataValidationError, match="forecast index"):
+        fitted_exog.predict(3, data=new, futr_exog=dated.iloc[:3])
 
 
 def test_futr_exog_without_exog_raises(fitted):

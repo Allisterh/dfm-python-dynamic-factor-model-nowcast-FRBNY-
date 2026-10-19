@@ -165,7 +165,11 @@ model = iVDFM.load("runs/ivdfm")            # or dfm_python.load("runs/ivdfm"); 
 
 `update(data)` never trains: `update(data, refit=True)` raises
 `UnsupportedInputError`, so call `fit` to retrain. Without `futr_exog`, a model
-fitted with exog warns and fills the future context with time features.
+fitted with exog warns and fills the future context with time features. A
+`futr_exog` DataFrame is matched by column name and its index must be the
+forecast dates (a default `RangeIndex` or an array is taken by position). With
+`factor_order > 1` and one regime, `n_factors` cannot exceed the number of
+targets: `fit` raises `ConfigurationError`.
 
 Hyperparameter search uses optuna (the `tune` extra). It fits clones of the
 estimator on a holdout split and returns the best values under the estimator's

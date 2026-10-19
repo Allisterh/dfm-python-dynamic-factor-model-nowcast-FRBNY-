@@ -3,7 +3,8 @@
 Trials train on a subset of the latest windows of the data. The subset size is
 controlled by train_window_ratio (proportion of available windows to use;
 1.0 = full data). The last `horizon` steps are held out for the forecasting
-objective (sMSE, sMAE or MSE), computed in data units.
+objective (sMSE, sMAE or MSE), computed, as before, on the targets scaled by the
+estimator's scaler fitted on the full series (data units without a scaler).
 
 optuna is imported lazily, when a search function runs.
 """
@@ -407,12 +408,15 @@ _METRICS = ("MSE", "SMSE", "SMAE")
 
 
 def _imputed_arrays(estimator: iVDFM, panel: PanelData) -> Tuple[np.ndarray, Optional[np.ndarray]]:
-    """Targets (T, N) and exog (T, K) or None in data units, gap-filled as ``fit`` fills them.
+    """Targets (T, N) and exog (T, K) or None, gap-filled as ``fit`` fills them.
 
-    Built through the estimator's dataset adapter without a scaler: linear
-    interpolation, then forward/backward fill, then zeros.
+    Built through the estimator's dataset adapter: linear interpolation, then
+    forward/backward fill, then zeros. The targets are scaled by (a clone of)
+    the estimator's scaler fitted on the whole series, as the old
+    ``hyperparameter_optimization`` took them from its dataset; the exog is
+    never scaled.
     """
-    dataset = clone(estimator).set_params(scaler=None)._adapter(panel, torch.device("cpu"))
+    dataset = clone(estimator)._adapter(panel, torch.device("cpu"))
     targets = np.asarray(dataset.target, dtype=np.float64)
     exog = dataset.aux_context_data
     return targets, (None if exog is None else np.asarray(exog, dtype=np.float64))
@@ -431,7 +435,6 @@ def _make_objective(
     max_regimes: int,
     max_epochs_per_trial: Optional[int],
     fixed: Dict[str, Any],
-    batch_size: int,
     max_hidden_dim: Optional[int],
     search_scope: Optional[str],
 ) -> Callable[[optuna.Trial], float]:
@@ -468,7 +471,8 @@ def _make_objective(
 
         # Drop meta keys and dropout so the estimator does not receive them
         model_params = {k: v for k, v in params.items() if k not in _META_KEYS and k not in _NOT_PARAMS}
-        model_params.update(window=window, stride=stride, max_epochs=max_epochs, batch_size=batch_size, verbose=0)
+        # The targets are already scaled (see _imputed_arrays), so the trials fit no scaler of their own.
+        model_params.update(window=window, stride=stride, max_epochs=max_epochs, scaler=None, verbose=0)
         try:
             model = clone(estimator).set_params(**model_params)
         except Exception as e:
@@ -528,17 +532,21 @@ def tune_hyperparameters(
     into training rows and a holdout of the last ``horizon`` steps. Each
     trial fits ``clone(estimator)`` with the suggested hyperparameters
     (:func:`suggest_ivdfm_hyperparameters`) on the training rows, forecasts
-    the holdout with ``predict(horizon, futr_exog=<holdout exog>)`` in data
-    units and scores it with :func:`compute_forecast_metric`. Trials that
-    fail or score NaN are pruned. ``estimator`` and ``data`` are not changed
-    and nothing is fitted in place: refit with
-    ``estimator.set_params(**best).fit(data)``.
+    the holdout with ``predict(horizon, futr_exog=<holdout exog>)`` and
+    scores it with :func:`compute_forecast_metric`. Trials that fail or score
+    NaN are pruned. ``estimator`` and ``data`` are not changed and nothing is
+    fitted in place: refit with ``estimator.set_params(**best).fit(data)``.
 
     Missing values are filled once, as ``fit`` fills them (linear
     interpolation, then forward/backward fill, then zeros), in targets and
-    exog. The trial estimators inherit every hyperparameter of ``estimator``
-    that is not suggested or fixed, including ``scaler``, ``random_state``
-    and ``device``; ``batch_size`` is ``min_batch_size`` and ``verbose`` 0.
+    exog. As in the old ``hyperparameter_optimization``, the targets are then
+    scaled once by the estimator's ``scaler`` (or ``fixed["scaler"]``) fitted
+    on the whole series; the trials train on these scaled targets without a
+    scaler of their own, and the metric compares forecasts and holdout in
+    these scaled units (data units when the scaler is None). The trial
+    estimators inherit every other hyperparameter of ``estimator`` that is
+    not suggested or fixed, including ``batch_size``, ``random_state`` and
+    ``device``; ``verbose`` is 0.
 
     Parameters
     ----------
@@ -577,7 +585,10 @@ def tune_hyperparameters(
     subset_max_steps : int, optional
         If set, use at least this many time steps for the subset.
     min_batch_size : int, optional
-        Batch size of every trial (default 1024); not suggested.
+        Batch size of every trial, returned in ``best``; not suggested. The
+        same as ``fixed={"batch_size": ...}`` (passing both with different
+        values raises ValueError). None trains the trials with
+        ``fixed["batch_size"]`` if given, else ``estimator.batch_size``.
     initial_params : dict, optional
         Enqueued as the first trial; keys of the suggest space (n_factors,
         window, stride, n_regimes, regime_temperature, mixing, factor_order,
@@ -612,7 +623,8 @@ def tune_hyperparameters(
         If optuna is not installed (``pip install 'dfm-python[tune]'``).
     ValueError
         For an unknown metric, a ``fixed`` key that is not an iVDFM
-        hyperparameter, or data too short for ``horizon``.
+        hyperparameter, ``min_batch_size`` different from
+        ``fixed["batch_size"]``, or data too short for ``horizon``.
     """
     from ..models.ivdfm.estimator import iVDFM
 
@@ -630,11 +642,17 @@ def tune_hyperparameters(
     if unknown:
         raise ValueError(f"fixed has keys that are not iVDFM hyperparameters: {unknown}.")
     fixed.setdefault("time_context", estimator.time_context)
-    batch_size = 1024 if min_batch_size is None else min_batch_size
-    fixed["batch_size"] = batch_size
+    if min_batch_size is not None:
+        if "batch_size" in fixed and fixed["batch_size"] != min_batch_size:
+            raise ValueError(
+                f"min_batch_size={min_batch_size} conflicts with fixed['batch_size']={fixed['batch_size']}; "
+                "pass one of them."
+            )
+        fixed["batch_size"] = min_batch_size
 
     panel = estimator._validate_data(data)
-    targets, exog = _imputed_arrays(estimator, panel)
+    scaled_by = clone(estimator).set_params(scaler=fixed["scaler"]) if "scaler" in fixed else estimator
+    targets, exog = _imputed_arrays(scaled_by, panel)
     T_total = targets.shape[0]
     effective_max_window = T_total if (max_window is None or max_window <= 0) else max_window
 
@@ -669,7 +687,6 @@ def tune_hyperparameters(
         max_regimes=max_regimes,
         max_epochs_per_trial=max_epochs_per_trial,
         fixed=fixed,
-        batch_size=batch_size,
         max_hidden_dim=max_hidden_dim,
         search_scope=search_scope,
     )
