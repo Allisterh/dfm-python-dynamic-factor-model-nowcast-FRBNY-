@@ -6,8 +6,9 @@
 the constructor and from a YAML file, on the same data with the recorded
 hyperparameters (mapped to the canonical names, ``device="cpu"``). The engine
 it builds must hold the recorded hyperparameters when training starts,
-reproduce every golden output, and the estimator's ``predict`` must equal the
-fixture's model-space forecast inverse-transformed with ``scaler_``, bitwise.
+reproduce every golden output (bitwise on the capture platform, within the
+``_golden`` tolerances elsewhere), and the estimator's ``predict`` must equal
+that engine's model-space forecast inverse-transformed with ``scaler_``, bitwise.
 ``test_golden_ivdfm_save_load`` fits the estimator, saves it, loads it back
 (``iVDFM.load`` and ``dfm_python.load``) and requires the loaded model to
 report the same numbers: ``predict`` bitwise equal to the fitted model's, and
@@ -158,7 +159,7 @@ def _engine_outputs(engine: iVDFMEngine, hyper: dict, x_future: Any) -> dict:
 @pytest.mark.parametrize("build", ["constructor", "yaml"])
 @pytest.mark.parametrize("case", cases_for("ivdfm"), ids=repr)
 def test_golden_ivdfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
-    manifest, fixture = load_golden(case.name)
+    manifest, _ = load_golden(case.name)
     hyper = manifest["hyperparameters"]
     params = _estimator_params(hyper)
     data, x_future = _panel(case.name, manifest)
@@ -172,9 +173,10 @@ def test_golden_ivdfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     # Every hyperparameter reached the engine unchanged (read when its training starts).
     assert engine_at_fit == [hyper]
 
-    assert_golden(_engine_outputs(model.network_, hyper, x_future), case.name)
+    outputs = _engine_outputs(model.network_, hyper, x_future)
+    assert_golden(outputs, case.name)
 
-    # The estimator's forecasts are the engine's, in data units.
+    # The estimator's forecasts are the engine's (compared with the fixture above), in data units.
     def data_units(model_space: np.ndarray) -> np.ndarray:
         values = model_space.astype(np.float64)
         return values if model.scaler_ is None else model.scaler_.inverse_transform(values)
@@ -185,26 +187,26 @@ def test_golden_ivdfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
         with pytest.warns(UserWarning, match="futr_exog"):
             forecast = model.predict(IVDFM_EXOG_HORIZON)
         futr = model.predict(IVDFM_EXOG_HORIZON, futr_exog=pd.DataFrame(x_future, columns=["x0", "x1"]))
-        assert futr.to_numpy().tobytes() == data_units(fixture["predict_futr"]).tobytes()
+        assert futr.to_numpy().tobytes() == data_units(outputs["predict_futr"]).tobytes()
         np.testing.assert_array_equal(
             model.predict(IVDFM_EXOG_HORIZON, futr_exog=x_future).to_numpy(), futr.to_numpy(), strict=True
         )
-    assert forecast.to_numpy().tobytes() == data_units(fixture["predict"]).tobytes()
+    assert forecast.to_numpy().tobytes() == data_units(outputs["predict"]).tobytes()
     assert list(forecast.columns) == list(data.series_names)
     assert all(dtype == np.float64 for dtype in forecast.dtypes)
 
     # Fitted attributes come from the same run.
-    assert model.n_iter_ == int(fixture["num_iter"])
-    assert model.converged_ == bool(fixture["converged"])
+    assert model.n_iter_ == int(outputs["num_iter"])
+    assert model.converged_ == bool(outputs["converged"])
     assert model.n_factors_ == hyper["latent_dim"]
     assert (model.window_, model.stride_) == (hyper["dataset"]["window"], hyper["dataset"]["stride"])
     assert model.context_dim_ == hyper["dataset"]["context_dim"]
     assert model.time_context_ == hyper["time_context"]
-    n_windows, window, r = fixture["factors"].shape
+    n_windows, window, r = outputs["factors"].shape
     assert model.factors_.shape == (n_windows * window, r)
     # factors_ holds the engine's windows, reordered chronologically.
     rows = model.factors_.to_numpy().reshape(n_windows, window, r)
-    engine_rows = {fixture["factors"][k].astype(np.float64).tobytes() for k in range(n_windows)}
+    engine_rows = {outputs["factors"][k].astype(np.float64).tobytes() for k in range(n_windows)}
     assert {rows[w].tobytes() for w in range(n_windows)} == engine_rows
 
 

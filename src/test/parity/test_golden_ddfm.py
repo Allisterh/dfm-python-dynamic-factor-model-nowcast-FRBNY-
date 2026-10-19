@@ -10,8 +10,9 @@ the constructor and from a YAML file, on the same data as ``PanelData``
 (covariates in ``exog``) with the recorded hyperparameters mapped to the
 canonical names (``device="cpu"``). The engine it builds must hold the
 recorded hyperparameters when training starts and reproduce every golden
-output of the fit bitwise; the estimator's ``predict``, ``predict_factors``,
-``result_.C`` and ``factors_`` must equal the fixture's forecasts, loadings and
+output of the fit (bitwise on the capture platform, within the ``_golden``
+tolerances elsewhere); the estimator's ``predict``, ``predict_factors``,
+``result_.C`` and ``factors_`` must equal that engine's forecasts, loadings and
 factors bitwise. The fixture's update path (today's mutating
 ``predict(data=...)`` on the full panel) is reproduced twice: by the pure
 ``predict(h, data=full_panel)``, which leaves the model unchanged, and by
@@ -188,46 +189,49 @@ def test_golden_ddfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
 
     # The engine reproduces every pinned output of the fit; the update outputs
     # (an engine _update, which mutates it) are left out here.
-    assert_golden(ddfm_engine_outputs(model.network_), case.name, exclude=DDFM_UPDATE_KEYS)
+    outputs = ddfm_engine_outputs(model.network_)
+    assert_golden(outputs, case.name, exclude=DDFM_UPDATE_KEYS)
 
-    # The estimator's forecasts are the engine's, in data units.
+    # The estimator's forecasts are the engine's (compared with the fixture above), in data units.
     forecast = model.predict(_DDFM_HORIZON)
-    assert forecast.to_numpy().tobytes() == fixture["predict_X"].astype(np.float64).tobytes()
+    assert forecast.to_numpy().tobytes() == _as_float64_bytes(outputs["predict_X"])
     assert forecast.shape == fixture["predict_X"].shape
     assert list(forecast.columns) == list(data.series_names)
     assert all(dtype == np.float64 for dtype in forecast.dtypes)
     factors = model.predict_factors(_DDFM_HORIZON)
-    assert factors.to_numpy().tobytes() == fixture["predict_Z"].astype(np.float64).tobytes()
+    assert factors.to_numpy().tobytes() == _as_float64_bytes(outputs["predict_Z"])
     assert factors.shape == fixture["predict_Z"].shape
     assert forecast.index.equals(factors.index) and forecast.index[0] > data.index[-1]
 
     # result_ and the fitted attributes come from the same run.
-    np.testing.assert_array_equal(model.result_.C, fixture["H"], strict=True)
-    np.testing.assert_array_equal(model.result_.Z, fixture["result_Z"], strict=True)
+    np.testing.assert_array_equal(model.result_.C, outputs["H"], strict=True)
+    np.testing.assert_array_equal(model.result_.Z, outputs["result_Z"], strict=True)
     np.testing.assert_array_equal(
-        model.factors_.to_numpy(), fixture["result_Z"].astype(np.float64), strict=True
+        model.factors_.to_numpy(), outputs["result_Z"].astype(np.float64), strict=True
     )
     assert model.factors_.index.equals(data.index)
-    assert model.n_iter_ == int(fixture["num_iter"])
-    assert model.converged_ == bool(fixture["converged"])
+    assert model.n_iter_ == int(outputs["num_iter"])
+    assert model.converged_ == bool(outputs["converged"])
     assert model.n_factors_ == hyper["encoder_size"][-1]
-    np.testing.assert_array_equal(model.scaler_.mean_, fixture["scaler_mean"], strict=True)
-    np.testing.assert_array_equal(model.scaler_.scale_, fixture["scaler_scale"], strict=True)
+    np.testing.assert_array_equal(model.scaler_.mean_, outputs["scaler_mean"], strict=True)
+    np.testing.assert_array_equal(model.scaler_.scale_, outputs["scaler_scale"], strict=True)
 
     # The fixture's update path, without mutating the model: predict(h, data=full panel).
     before = _state_hash(model)
     conditioned = model.predict(_DDFM_HORIZON, data=full)
     conditioned_factors = model.predict_factors(_DDFM_HORIZON, data=full)
     assert _state_hash(model) == before
-    assert conditioned.to_numpy().tobytes() == _as_float64_bytes(fixture["update_predict_X"])
-    assert conditioned_factors.to_numpy().tobytes() == _as_float64_bytes(fixture["update_predict_Z"])
     assert conditioned.index[0] > full.index[-1] and conditioned.index.equals(conditioned_factors.index)
-    np.testing.assert_array_equal(model.scaler_.mean_, fixture["scaler_mean"], strict=True)
+    np.testing.assert_array_equal(model.scaler_.mean_, outputs["scaler_mean"], strict=True)
 
-    # ... and with it: update(full panel), then predict(h).
+    # ... and with it: update(full panel), then predict(h). The pure predict(data=)
+    # above gave the same numbers, bitwise, as the update compared with the fixture.
     result, factors = model.result_, model.factors_.copy()
     assert model.update(full) is model
-    assert_golden(_update_outputs(model), case.name, exclude=_fit_keys(fixture))
+    updated = _update_outputs(model)
+    assert_golden(updated, case.name, exclude=_fit_keys(fixture))
+    assert conditioned.to_numpy().tobytes() == _as_float64_bytes(updated["update_predict_X"])
+    assert conditioned_factors.to_numpy().tobytes() == _as_float64_bytes(updated["update_predict_Z"])
     assert model.predict(_DDFM_HORIZON).equals(conditioned)
     assert model.predict_factors(_DDFM_HORIZON).equals(conditioned_factors)
     assert model.result_ is result and model.result_.target_scaler is model.scaler_

@@ -125,9 +125,12 @@
         "version": "0.3.30"
       }
     ],
+    "cpu_capability": "AVX512",
+    "cpu_model": "Intel(R) Xeon(R) Processor",
     "machine": "x86_64",
     "numpy": "2.3.5",
     "processor": "x86_64",
+    "python": "3.12",
     "torch": "2.9.1+cu128"
   },
   "git_commit": "d8c432b9e9d68ce21b7022da213c43c87133c59b",

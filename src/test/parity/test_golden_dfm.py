@@ -12,10 +12,11 @@ frequencies in ``freq``), built from the constructor and from a YAML file with
 the recorded hyperparameters under the canonical names. The engine it builds
 must hold the recorded engine config (every field, the EM config, the block
 structure) when EM starts and reproduce every golden output of the fit
-bitwise; the estimator's ``result_``, ``factors_``, ``scaler_`` and
-``internal_feature_names_`` must equal the fixture's, ``predict(6)`` must equal
-the fixture's forecast reordered to the user's columns, and
-``predict_factors(6)`` the fixture's state forecast. The permuted case passes
+(bitwise on the capture platform, within the ``_golden`` tolerances
+elsewhere); the estimator's ``result_``, ``factors_``, ``scaler_`` and
+diagnostics must equal that engine's numbers bitwise, ``internal_feature_names_``
+the fixture's columns, ``predict(6)`` the engine's forecast reordered to the
+user's columns, and ``predict_factors(6)`` its state forecast. The permuted case passes
 the series in the permuted order of its fixture; the estimator's internal
 order is the fixture's dataset order. For the cases with update rows, the
 fixture's update path is reproduced through the estimator: ``predict(6,
@@ -31,6 +32,10 @@ model to report the same numbers: ``predict``, ``predict_factors``,
 golden output of the fit reproduced from the loaded engine alone, the saved
 last smoothed covariance equal to the fixture's last filtered covariance, and
 the golden update and refit outputs from the loaded model.
+
+``dfm_macro_weekly_monthly`` and ``dfm_macro_monthly_quarterly_update`` are
+registered with ``cross_platform=False``: every test here skips them off the
+capture platform (see ``_golden``).
 """
 
 from __future__ import annotations
@@ -151,18 +156,20 @@ def _check_update_path(model: DFM, new: PanelData, case: str, fixture) -> None:
     refitted = copy.deepcopy(model)
     assert refitted.update(new, refit=True) is refitted
     engine = refitted.engine_
+    refit = engine.get_result()
     _assert_outputs({
         "refit_A": engine.A, "refit_C": engine.C, "refit_Q": engine.Q, "refit_R": engine.R,
         "refit_Z_0": engine.Z_0, "refit_V_0": engine.V_0,
-        "refit_loglik": np.float64(engine.get_result().loglik),
-        "refit_num_iter": np.int64(engine.get_result().num_iter),
-        "refit_converged": np.bool_(engine.get_result().converged),
+        "refit_loglik": np.float64(refit.loglik),
+        "refit_num_iter": np.int64(refit.num_iter),
+        "refit_converged": np.bool_(refit.converged),
         "refit_result_Z": refitted.result_.Z,
         "refit_predict_X": _internal(refitted.predict(DFM_HORIZON), columns),
         "refit_predict_Z": refitted.predict_factors(DFM_HORIZON).to_numpy(),
     }, case, fixture)
-    assert refitted.n_iter_ == int(fixture["refit_num_iter"]) and refitted.converged_ == bool(fixture["refit_converged"])
-    assert np.float64(refitted.loglik_).tobytes() == fixture["refit_loglik"].tobytes()
+    # The estimator reports the refitted engine's diagnostics (compared with the fixture above).
+    assert refitted.n_iter_ == refit.num_iter and refitted.converged_ == refit.converged
+    assert np.float64(refitted.loglik_).tobytes() == np.float64(refit.loglik).tobytes()
     assert refitted.factors_.index.equals(refitted.conditioning_index_)
 
 
@@ -243,35 +250,36 @@ def test_golden_dfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     assert list(model.internal_feature_names_) == columns
     assert list(model.feature_names_in_) == user_order
 
-    # result_ is a copy of the engine's result, in the internal order.
+    # result_ is a copy of the engine's result, in the internal order: the same
+    # numbers, bitwise, as the engine outputs compared with the fixture above.
     result = model.result_
     assert result is not engine.get_result()
     for name in ("A", "C", "Q", "R", "Z_0", "V_0"):
-        np.testing.assert_array_equal(getattr(result, name), fixture[name], strict=True)
-    np.testing.assert_array_equal(result.Z, fixture["result_Z"], strict=True)
-    np.testing.assert_array_equal(result.x_sm, fixture["result_x_sm"], strict=True)
-    assert np.float64(result.loglik).tobytes() == fixture["loglik"].tobytes()
-    np.testing.assert_array_equal(model.factors_.to_numpy(), fixture["result_Z"].astype(np.float64), strict=True)
+        np.testing.assert_array_equal(getattr(result, name), outputs[name], strict=True)
+    np.testing.assert_array_equal(result.Z, outputs["result_Z"], strict=True)
+    np.testing.assert_array_equal(result.x_sm, outputs["result_x_sm"], strict=True)
+    assert np.float64(result.loglik).tobytes() == outputs["loglik"].tobytes()
+    np.testing.assert_array_equal(model.factors_.to_numpy(), outputs["result_Z"].astype(np.float64), strict=True)
     assert list(model.factors_.columns) == [f"state_{i}" for i in range(fixture["result_Z"].shape[1])]
     assert model.factors_.index.equals(data.index)
-    np.testing.assert_array_equal(model.scaler_.mean_, fixture["scaler_mean"], strict=True)
-    np.testing.assert_array_equal(model.scaler_.scale_, fixture["scaler_scale"], strict=True)
-    assert model.n_iter_ == int(fixture["num_iter"])
-    assert model.converged_ == bool(fixture["converged"])
-    assert np.float64(model.loglik_).tobytes() == fixture["loglik"].tobytes()
+    np.testing.assert_array_equal(model.scaler_.mean_, outputs["scaler_mean"], strict=True)
+    np.testing.assert_array_equal(model.scaler_.scale_, outputs["scaler_scale"], strict=True)
+    assert model.n_iter_ == int(outputs["num_iter"])
+    assert model.converged_ == bool(outputs["converged"])
+    assert np.float64(model.loglik_).tobytes() == outputs["loglik"].tobytes()
     assert model.n_factors_ == hyper["num_factors"]
     assert model.freq_ == {name: hyper["config"]["frequency"][name] for name in user_order}
 
-    # predict(h): the engine's forecast with the columns in the user's order.
+    # predict(h): the engine's forecast (compared with the fixture above) with the columns in the user's order.
     forecast = model.predict(DFM_HORIZON)
-    expected = pd.DataFrame(fixture["predict_X"], columns=columns)[user_order]
+    expected = pd.DataFrame(outputs["predict_X"], columns=columns)[user_order]
     assert list(forecast.columns) == user_order
     assert forecast.to_numpy().tobytes() == expected.to_numpy().tobytes()
     assert all(dtype == np.float64 for dtype in forecast.dtypes)
     assert forecast.index[0] > data.index[-1] and len(forecast.index) == DFM_HORIZON
 
     factors = model.predict_factors(DFM_HORIZON)
-    np.testing.assert_array_equal(factors.to_numpy(), fixture["predict_Z"], strict=True)
+    np.testing.assert_array_equal(factors.to_numpy(), outputs["predict_Z"], strict=True)
     assert list(factors.columns) == list(model.factors_.columns)
     assert factors.index.equals(forecast.index)
 

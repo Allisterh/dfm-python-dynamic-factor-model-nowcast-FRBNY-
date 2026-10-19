@@ -1,6 +1,7 @@
 """Unit tests for the golden-suite helpers (pinning, fingerprint, comparison)."""
 
 import json
+import sys
 
 import numpy as np
 import pytest
@@ -8,7 +9,17 @@ import threadpoolctl
 import torch
 
 from . import _golden
-from ._golden import GoldenToleranceWarning, assert_golden, fingerprint, load_golden, pinned
+from ._cases import CASES
+from ._golden import (
+    TOLERANCES,
+    GoldenToleranceWarning,
+    assert_golden,
+    fingerprint,
+    load_golden,
+    matches_capture_platform,
+    pinned,
+    skip_unless_comparable,
+)
 
 
 def _write_fixture(directory, name, arrays, fp):
@@ -21,6 +32,10 @@ def fixture_dir(tmp_path, monkeypatch):
     monkeypatch.setattr(_golden, "FIXTURES_DIR", tmp_path)
     return tmp_path
 
+
+PINNED_TO_CAPTURE_PLATFORM = {"dfm_macro_weekly_monthly", "dfm_macro_monthly_quarterly_update"}
+RTOL_F32, ATOL_F32 = TOLERANCES[np.dtype(np.float32)]
+RTOL_F64, ATOL_F64 = TOLERANCES[np.dtype(np.float64)]
 
 ARRAYS = {
     "f64": np.array([1.0, 2.0, 3.0]),
@@ -56,9 +71,13 @@ class TestPinned:
 class TestFingerprint:
     def test_keys(self):
         fp = fingerprint()
-        assert set(fp) == {"machine", "processor", "numpy", "torch", "blas"}
+        assert set(fp) == {"machine", "processor", "cpu_model", "cpu_capability", "python", "numpy", "torch",
+                           "blas"}
         assert fp["numpy"] == np.__version__
         assert fp["torch"] == torch.__version__
+        assert fp["python"] == f"{sys.version_info.major}.{sys.version_info.minor}"
+        assert fp["cpu_capability"] == torch.backends.cpu.get_cpu_capability()
+        assert isinstance(fp["cpu_model"], str)
         assert all(e["internal_api"] for e in fp["blas"])
 
     def test_independent_of_thread_count(self):
@@ -86,15 +105,26 @@ class TestAssertGolden:
 
     def test_fallback_warns_and_uses_tolerance(self, fixture_dir):
         _write_fixture(fixture_dir, "case", ARRAYS, {"machine": "elsewhere"})
-        actual = dict(ARRAYS, f64=ARRAYS["f64"] * (1 + 1e-12), f32=ARRAYS["f32"] * np.float32(1 + 1e-6))
+        actual = dict(ARRAYS, f64=ARRAYS["f64"] * (1 + RTOL_F64 / 2), f32=ARRAYS["f32"] * np.float32(1 + RTOL_F32 / 2))
         with pytest.warns(GoldenToleranceWarning, match="assert_allclose"):
             assert_golden(actual, "case")
 
-    def test_fallback_rejects_beyond_tolerance(self, fixture_dir):
+    @pytest.mark.parametrize("key, factor", [("f64", 1 + 2 * RTOL_F64), ("f32", np.float32(1 + 2 * RTOL_F32))])
+    def test_fallback_rejects_beyond_tolerance(self, fixture_dir, key, factor):
         _write_fixture(fixture_dir, "case", ARRAYS, {"machine": "elsewhere"})
-        actual = dict(ARRAYS, f64=ARRAYS["f64"] * (1 + 1e-8))
+        actual = dict(ARRAYS, **{key: ARRAYS[key] * factor})
         with pytest.warns(GoldenToleranceWarning), pytest.raises(AssertionError):
             assert_golden(actual, "case")
+
+    @pytest.mark.parametrize("dtype, atol", [(np.float64, ATOL_F64), (np.float32, ATOL_F32)])
+    def test_fallback_atol_covers_entries_near_zero(self, fixture_dir, dtype, atol):
+        key = "f64" if dtype is np.float64 else "f32"
+        arrays = dict(ARRAYS, **{key: np.array([0.0, 1e-9, 1.0], dtype=dtype)})
+        _write_fixture(fixture_dir, "case", arrays, {"machine": "elsewhere"})
+        with pytest.warns(GoldenToleranceWarning):
+            assert_golden(dict(arrays, **{key: np.array([atol / 2, -1e-9, 1.0], dtype=dtype)}), "case")
+        with pytest.warns(GoldenToleranceWarning), pytest.raises(AssertionError):
+            assert_golden(dict(arrays, **{key: np.array([2 * atol, 1e-9, 1.0], dtype=dtype)}), "case")
 
     def test_fallback_keeps_integers_exact(self, fixture_dir):
         _write_fixture(fixture_dir, "case", ARRAYS, {"machine": "elsewhere"})
@@ -124,3 +154,34 @@ class TestAssertGolden:
         _write_fixture(fixture_dir, "case", ARRAYS, fingerprint())
         with pytest.raises(AssertionError, match="excluded"):
             assert_golden(dict(ARRAYS), "case", exclude=exclude)
+
+
+class TestCrossPlatformOptOut:
+    def test_ill_conditioned_cases_are_pinned_to_the_capture_platform(self):
+        assert {name for name, case in CASES.items() if not case.cross_platform} == PINNED_TO_CAPTURE_PLATFORM
+
+    def test_matches_capture_platform(self, fixture_dir):
+        _write_fixture(fixture_dir, "here", ARRAYS, fingerprint())
+        _write_fixture(fixture_dir, "elsewhere", ARRAYS, dict(fingerprint(), cpu_model="another CPU"))
+        assert matches_capture_platform("here")
+        assert not matches_capture_platform("elsewhere")
+
+    @pytest.mark.parametrize("name", sorted(PINNED_TO_CAPTURE_PLATFORM))
+    def test_skips_off_the_capture_platform(self, fixture_dir, name):
+        _write_fixture(fixture_dir, name, ARRAYS, dict(fingerprint(), python="0.0"))
+        with pytest.raises(pytest.skip.Exception, match=f"golden '{name}' is pinned bitwise on the capture platform"):
+            skip_unless_comparable(name)
+        with pytest.raises(pytest.skip.Exception):  # assert_golden skips instead of comparing
+            assert_golden(dict(ARRAYS, f64=ARRAYS["f64"] + 1), name)
+
+    def test_compared_bitwise_on_the_capture_platform(self, fixture_dir):
+        name = "dfm_macro_weekly_monthly"
+        _write_fixture(fixture_dir, name, ARRAYS, fingerprint())
+        skip_unless_comparable(name)  # no skip
+        with pytest.raises(AssertionError):
+            assert_golden(dict(ARRAYS, f64=np.nextafter(ARRAYS["f64"], np.inf)), name)
+
+    def test_other_cases_and_names_are_never_skipped(self, fixture_dir):
+        for name in ("dfm_synthetic", "case"):
+            _write_fixture(fixture_dir, name, ARRAYS, {"machine": "elsewhere"})
+            skip_unless_comparable(name)

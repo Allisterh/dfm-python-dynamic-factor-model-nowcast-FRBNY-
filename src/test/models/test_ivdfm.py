@@ -245,8 +245,9 @@ class TestiVDFM:
         """Every ``name : type, default value`` line of the class docstring matches get_params()."""
         params = iVDFM().get_params()
         documented = {}
-        for line in iVDFM.__doc__.splitlines():
-            match = re.match(r"^    (\w+) : .*\bdefault (.+)$", line)
+        # cleandoc: Python >= 3.13 strips the common indentation at compile time, earlier versions keep it.
+        for line in inspect.cleandoc(iVDFM.__doc__).splitlines():
+            match = re.match(r"^(\w+) : .*\bdefault (.+)$", line)
             if match:
                 documented[match.group(1)] = ast.literal_eval(match.group(2))
         assert len(documented) >= 25
