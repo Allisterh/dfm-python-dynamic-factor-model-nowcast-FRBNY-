@@ -1,7 +1,21 @@
-"""Linear Dynamic Factor Model (DFM) implementation.
+"""Linear Dynamic Factor Model (DFM) engine: EM with NumPy and pykalman.
 
-This module contains the linear DFM implementation using EM algorithm.
-DFM inherits from BaseFactorModel since all calculations are performed in NumPy using pykalman.
+``DFMEngine`` is the private engine of the linear DFM. Its code is the
+pre-redesign ``DFM`` class (``models/dfm/dfm.py``) moved here unchanged,
+apart from these edits, none of which changes math or numbers:
+
+(a) the class is renamed from ``DFM`` to ``DFMEngine`` (with the return
+    annotations that named it);
+(b) ``update()`` imports ``validate_and_convert_update_data`` from
+    ``dfm_python.numeric.validator`` (``...numeric.validator``). The old
+    ``..numeric.validator`` resolved to the non-existent
+    ``dfm_python.models.numeric``, so ``update()`` always raised
+    ``ModuleNotFoundError``.
+
+The ``dataset=``/``config=`` constructor, the pickle ``save``/``load``,
+``load_config``, ``result`` and the old ``models.base.BaseFactorModel`` base
+class stay until the estimator replaces them. ``dfm_python.DFM`` and
+``dfm_python.models.DFM`` name this class until the estimator exists.
 """
 
 # Standard library imports
@@ -66,7 +80,7 @@ from ...numeric.validator import validate_column_order
 _logger = get_logger(__name__)
 
 
-class DFM(BaseFactorModel):
+class DFMEngine(BaseFactorModel):
     """Linear Dynamic Factor Model using EM algorithm with NumPy and pykalman."""
     
     def __init__(
@@ -674,7 +688,7 @@ class DFM(BaseFactorModel):
         validate_column_order(data, self.scaler)
         
         # Validate and convert data
-        from ..numeric.validator import validate_and_convert_update_data
+        from ...numeric.validator import validate_and_convert_update_data
         data_new = validate_and_convert_update_data(
             data, 
             self.data_processed, 
@@ -794,7 +808,7 @@ class DFM(BaseFactorModel):
         yaml: Optional[Union[str, Path]] = None,
         mapping: Optional[Dict[str, Any]] = None,
         hydra: Optional[Union[Dict[str, Any], Any]] = None,
-    ) -> 'DFM':
+    ) -> 'DFMEngine':
         """Load configuration from various sources.
         
         After loading config, the model needs to be re-initialized with the new config.
@@ -1033,7 +1047,7 @@ class DFM(BaseFactorModel):
             raise
     
     @classmethod
-    def load(cls, path: Union[str, Path], config: Optional[DFMConfig] = None, dataset: Optional[DFMDataset] = None) -> 'DFM':
+    def load(cls, path: Union[str, Path], config: Optional[DFMConfig] = None, dataset: Optional[DFMDataset] = None) -> 'DFMEngine':
         """Load DFM model from checkpoint file.
         
         Parameters
@@ -1110,7 +1124,7 @@ class DFM(BaseFactorModel):
         _logger.info(f"DFM model loaded from {path}")
         return model
     
-    def reset(self) -> 'DFM':
+    def reset(self) -> 'DFMEngine':
         """Reset model state."""
         super().reset()
         return self

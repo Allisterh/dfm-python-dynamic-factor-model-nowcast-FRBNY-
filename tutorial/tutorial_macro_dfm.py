@@ -15,7 +15,8 @@ sys.path.insert(0, str(project_root / "src"))
 
 import pandas as pd
 import numpy as np
-from dfm_python import DFM, DFMDataset
+from dfm_python import DFMDataset
+from dfm_python.models.dfm._engine import DFMEngine as DFM
 from dfm_python.config import DFMConfig
 from sklearn.preprocessing import StandardScaler
 import hydra

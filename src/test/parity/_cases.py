@@ -265,24 +265,6 @@ def dfm_fit_outputs(model: Any, X: Any, Z: Any) -> dict[str, np.ndarray]:
     return {k: np.asarray(v) for k, v in outputs.items()}
 
 
-@contextlib.contextmanager
-def _update_import_shim() -> Iterator[None]:
-    # Test-only bridge: DFM.update() runs ``from ..numeric.validator import ...``,
-    # which resolves to the non-existent dfm_python.models.numeric, so update()
-    # raises ModuleNotFoundError at the capture commit. Map that name onto the
-    # real dfm_python.numeric for the update calls only; no engine code changes.
-    import sys
-
-    import dfm_python.numeric
-    import dfm_python.numeric.validator
-
-    with mock.patch.dict(sys.modules, {
-        "dfm_python.models.numeric": dfm_python.numeric,
-        "dfm_python.models.numeric.validator": dfm_python.numeric.validator,
-    }):
-        yield
-
-
 def _dfm_update_outputs(model: Any, new: np.ndarray) -> dict[str, np.ndarray]:
     """The update path on new rows ``new`` (float64, dataset column order).
 
@@ -296,8 +278,7 @@ def _dfm_update_outputs(model: Any, new: np.ndarray) -> dict[str, np.ndarray]:
     outputs: dict[str, Any] = {"predict_data_X": X_d, "predict_data_Z": Z_d}
 
     upd = copy.deepcopy(model)
-    with _update_import_shim():
-        upd.update(new)
+    upd.update(new)
     X_u, Z_u = upd.predict(horizon=DFM_HORIZON)
     outputs.update({
         "update_Z": upd.result.Z, "update_data_processed": upd.data_processed,
@@ -305,8 +286,7 @@ def _dfm_update_outputs(model: Any, new: np.ndarray) -> dict[str, np.ndarray]:
     })
 
     refit = copy.deepcopy(model)
-    with _update_import_shim():
-        refit.update(new, retrain=True)
+    refit.update(new, retrain=True)
     X_r, Z_r = refit.predict(horizon=DFM_HORIZON)
     outputs.update({
         "refit_A": refit.A, "refit_C": refit.C, "refit_Q": refit.Q, "refit_R": refit.R,
@@ -325,14 +305,16 @@ def _dfm_fit(config_dict: dict[str, Any], df: pd.DataFrame,
     """Fit DFM on ``df``; with ``new_rows`` (same columns as ``df``) also run the update path."""
     from sklearn.preprocessing import StandardScaler
 
-    from dfm_python import DFM, DFMDataset
     from dfm_python.config import DFMConfig
+    from dfm_python.dataset.dfm_dataset import DFMDataset
+    from dfm_python.models.dfm._engine import DFMEngine
 
-    # Same calls as tutorial/tutorial_macro_dfm.py.
+    # The engine path: the pre-redesign DFM class, now the private DFMEngine,
+    # called as tutorial/tutorial_macro_dfm.py called the old public class.
     _reset_global_rngs()
     config = DFMConfig.from_dict(dict(config_dict))
     dataset = DFMDataset(config=config, data=df, time_index="date")
-    model = DFM(dataset=dataset, config=config, scaler=StandardScaler())
+    model = DFMEngine(dataset=dataset, config=config, scaler=StandardScaler())
     hyper = _dfm_hyper(model)
     model.fit()
     X, Z = model.predict(horizon=DFM_HORIZON)

@@ -3,7 +3,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-from dfm_python.models.dfm import DFM
+from dfm_python.models.dfm._engine import DFMEngine as DFM
 from dfm_python.models.dfm.mixed_freq import find_slower_frequency
 from dfm_python.config import DFMConfig
 from dfm_python.dataset.dfm_dataset import DFMDataset
