@@ -231,7 +231,98 @@ def _dfm_hyper(model: Any) -> dict[str, Any]:
     }
 
 
-def _dfm_fit(config_dict: dict[str, Any], df: pd.DataFrame) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+#: Forecast horizon of every DFM predict call in the golden cases.
+DFM_HORIZON = 6
+#: Outputs of the update path (``_dfm_update_outputs``), pinned by the cases that pass new rows.
+DFM_UPDATE_KEYS = (
+    "predict_data_X", "predict_data_Z",
+    "update_Z", "update_data_processed", "update_predict_X", "update_predict_Z",
+    "refit_A", "refit_C", "refit_Q", "refit_R", "refit_Z_0", "refit_V_0", "refit_loglik",
+    "refit_num_iter", "refit_converged", "refit_result_Z", "refit_predict_X", "refit_predict_Z",
+)
+
+
+def dfm_fit_outputs(model: Any, X: Any, Z: Any) -> dict[str, np.ndarray]:
+    """The fitted engine's numbers, given its ``predict(horizon=6)`` forecast ``(X, Z)``.
+
+    ``last_filtered_cov`` is the last filtered state covariance on the training
+    data, the covariance ``update()`` starts from (it equals the smoothed
+    covariance at ``T``).
+    """
+    result = model.result
+    filtered_cov = model._create_kalman_filter().filter(np.ma.masked_invalid(model.data_processed))[1]
+    outputs = {
+        "A": model.A, "C": model.C, "Q": model.Q, "R": model.R, "Z_0": model.Z_0, "V_0": model.V_0,
+        "loglik": np.float64(result.loglik),
+        "num_iter": np.int64(result.num_iter),
+        "converged": np.bool_(result.converged),
+        "predict_X": X, "predict_Z": Z,
+        "result_Z": result.Z, "result_x_sm": result.x_sm,
+        "data_processed": model.data_processed,
+        "scaler_mean": model.scaler.mean_, "scaler_scale": model.scaler.scale_,
+        "last_filtered_cov": filtered_cov[-1],
+    }
+    return {k: np.asarray(v) for k, v in outputs.items()}
+
+
+@contextlib.contextmanager
+def _update_import_shim() -> Iterator[None]:
+    # Test-only bridge: DFM.update() runs ``from ..numeric.validator import ...``,
+    # which resolves to the non-existent dfm_python.models.numeric, so update()
+    # raises ModuleNotFoundError at the capture commit. Map that name onto the
+    # real dfm_python.numeric for the update calls only; no engine code changes.
+    import sys
+
+    import dfm_python.numeric
+    import dfm_python.numeric.validator
+
+    with mock.patch.dict(sys.modules, {
+        "dfm_python.models.numeric": dfm_python.numeric,
+        "dfm_python.models.numeric.validator": dfm_python.numeric.validator,
+    }):
+        yield
+
+
+def _dfm_update_outputs(model: Any, new: np.ndarray) -> dict[str, np.ndarray]:
+    """The update path on new rows ``new`` (float64, dataset column order).
+
+    ``predict(horizon=6, data=new)`` on the fitted model (it does not mutate the
+    model), then ``update(new)`` and ``update(new, retrain=True)`` each on a deep
+    copy of it, each followed by ``predict(horizon=6)``.
+    """
+    import copy
+
+    X_d, Z_d = model.predict(horizon=DFM_HORIZON, data=new)
+    outputs: dict[str, Any] = {"predict_data_X": X_d, "predict_data_Z": Z_d}
+
+    upd = copy.deepcopy(model)
+    with _update_import_shim():
+        upd.update(new)
+    X_u, Z_u = upd.predict(horizon=DFM_HORIZON)
+    outputs.update({
+        "update_Z": upd.result.Z, "update_data_processed": upd.data_processed,
+        "update_predict_X": X_u, "update_predict_Z": Z_u,
+    })
+
+    refit = copy.deepcopy(model)
+    with _update_import_shim():
+        refit.update(new, retrain=True)
+    X_r, Z_r = refit.predict(horizon=DFM_HORIZON)
+    outputs.update({
+        "refit_A": refit.A, "refit_C": refit.C, "refit_Q": refit.Q, "refit_R": refit.R,
+        "refit_Z_0": refit.Z_0, "refit_V_0": refit.V_0,
+        "refit_loglik": np.float64(refit.result.loglik),
+        "refit_num_iter": np.int64(refit.result.num_iter),
+        "refit_converged": np.bool_(refit.result.converged),
+        "refit_result_Z": refit.result.Z,
+        "refit_predict_X": X_r, "refit_predict_Z": Z_r,
+    })
+    return {k: np.asarray(v) for k, v in outputs.items()}
+
+
+def _dfm_fit(config_dict: dict[str, Any], df: pd.DataFrame,
+             new_rows: pd.DataFrame | None = None) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """Fit DFM on ``df``; with ``new_rows`` (same columns as ``df``) also run the update path."""
     from sklearn.preprocessing import StandardScaler
 
     from dfm_python import DFM, DFMDataset
@@ -244,16 +335,16 @@ def _dfm_fit(config_dict: dict[str, Any], df: pd.DataFrame) -> tuple[dict[str, n
     model = DFM(dataset=dataset, config=config, scaler=StandardScaler())
     hyper = _dfm_hyper(model)
     model.fit()
-    result = model.result
-    X, Z = model.predict(horizon=6)
-    outputs = {
-        "A": model.A, "C": model.C, "Q": model.Q, "R": model.R, "Z_0": model.Z_0, "V_0": model.V_0,
-        "loglik": np.float64(result.loglik),
-        "num_iter": np.int64(result.num_iter),
-        "predict_X": X, "predict_Z": Z,
-        "columns": np.array(list(dataset.variables.columns), dtype=str),
-    }
-    return {k: np.asarray(v) for k, v in outputs.items()}, hyper
+    X, Z = model.predict(horizon=DFM_HORIZON)
+    outputs = dfm_fit_outputs(model, X, Z)
+    outputs["columns"] = np.array(list(dataset.variables.columns), dtype=str)
+    if new_rows is not None:
+        new = new_rows[list(dataset.variables.columns)].to_numpy(np.float64)
+        outputs.update(_dfm_update_outputs(model, new))
+    return outputs, hyper
+
+
+_DFM_SYNTHETIC_NEW_ROWS = 6
 
 
 def _dfm_synthetic() -> CaseRun:
@@ -267,6 +358,17 @@ def _dfm_synthetic() -> CaseRun:
     cols = [f"s{i}" for i in range(N)]
     df = pd.DataFrame(y, columns=cols)
     df.insert(0, "date", pd.date_range("2010-01-31", periods=T, freq="ME"))
+    # New rows for the update path: the same process continued, from a second generator.
+    T_new, new_seed = _DFM_SYNTHETIC_NEW_ROWS, 1
+    rng_new = np.random.default_rng(new_seed)
+    f_new = np.zeros((T_new, r))
+    prev = f[-1]
+    for t in range(T_new):
+        prev = 0.7 * prev + rng_new.standard_normal(r)
+        f_new[t] = prev
+    y_new = f_new @ loadings.T + 0.5 * rng_new.standard_normal((T_new, N))
+    new_df = pd.DataFrame(y_new, columns=cols)
+    new_df.insert(0, "date", pd.date_range(df["date"].iloc[-1], periods=T_new + 1, freq="ME")[1:])
     config = {
         "blocks": {"Block_Global": {"num_factors": r, "series": cols}},
         "frequency": {c: "m" for c in cols},
@@ -282,8 +384,16 @@ def _dfm_synthetic() -> CaseRun:
         "columns": cols, "index": "pd.date_range('2010-01-31', periods=T, freq='ME') in column 'date'",
         "config_dict": config,
         "input_sha256": _digest(df),
+        "update_rows": {
+            "generator": "numpy.random.default_rng", "seed": new_seed, "T_new": T_new,
+            "recipe": ("g = f[T-1]; for t=0..T_new-1: g = 0.7 g + rng_new.standard_normal(2), f_new[t] = g; "
+                       "y_new = f_new @ loadings.T + 0.5 * rng_new.standard_normal((T_new, N)) "
+                       "(same loadings)"),
+            "index": "the next T_new month ends after the last fitted date, in column 'date'",
+            "input_sha256": _digest(new_df),
+        },
     }
-    outputs, hyper = _dfm_fit(config, df)
+    outputs, hyper = _dfm_fit(config, df, new_rows=new_df)
     return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
 
 
@@ -357,6 +467,21 @@ def _dfm_macro_monthly_quarterly_permuted() -> CaseRun:
     except Exception as exc:  # recorded, not swallowed: the test asserts the same error
         return CaseRun(outputs={}, hyperparameters={}, data=data,
                        raised={"type": type(exc).__name__, "message": str(exc)})
+    return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
+
+
+_MQ_UPDATE_ROWS = 6
+
+
+def _dfm_macro_monthly_quarterly_update() -> CaseRun:
+    # The monthly/quarterly panel minus its last rows, fitted with the same
+    # config; those last rows are then the new rows of the update path.
+    panel = _mq_panel()
+    df, new_df = panel.iloc[:-_MQ_UPDATE_ROWS], panel.iloc[-_MQ_UPDATE_ROWS:]
+    data = _mq_recipe(df, _MQ_MONTHLY + _MQ_QUARTERLY)
+    data["rows"] += f"; fit on all but the last {_MQ_UPDATE_ROWS} rows, which are the update rows"
+    data["update_input_sha256"] = _digest(new_df)
+    outputs, hyper = _dfm_fit(_mq_config(), df, new_rows=new_df)
     return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
 
 
@@ -811,6 +936,7 @@ CASES: dict[str, Case] = {c.name: c for c in [
     Case("dfm_macro_weekly_monthly", "dfm", _dfm_macro_weekly_monthly),
     Case("dfm_macro_monthly_quarterly", "dfm", _dfm_macro_monthly_quarterly),
     Case("dfm_macro_monthly_quarterly_permuted", "dfm", _dfm_macro_monthly_quarterly_permuted),
+    Case("dfm_macro_monthly_quarterly_update", "dfm", _dfm_macro_monthly_quarterly_update),
     Case("ddfm_macro", "ddfm", _ddfm_macro),
     Case("ddfm_exchange", "ddfm", _ddfm_exchange),
     Case("ddfm_finance", "ddfm", _ddfm_finance),

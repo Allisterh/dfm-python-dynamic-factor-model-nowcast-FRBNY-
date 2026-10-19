@@ -50,7 +50,7 @@
     "processor": "x86_64",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "git_commit": "23fbcadff81f47041a70bc79dce61dd4bad24ccc",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "blocks": [
@@ -214,6 +214,24 @@
         8
       ]
     },
+    "converged": {
+      "dtype": "bool",
+      "shape": []
+    },
+    "data_processed": {
+      "dtype": "float64",
+      "shape": [
+        120,
+        8
+      ]
+    },
+    "last_filtered_cov": {
+      "dtype": "float64",
+      "shape": [
+        28,
+        28
+      ]
+    },
     "loglik": {
       "dtype": "float64",
       "shape": []
@@ -234,6 +252,32 @@
       "shape": [
         6,
         28
+      ]
+    },
+    "result_Z": {
+      "dtype": "float64",
+      "shape": [
+        120,
+        28
+      ]
+    },
+    "result_x_sm": {
+      "dtype": "float64",
+      "shape": [
+        120,
+        8
+      ]
+    },
+    "scaler_mean": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ]
+    },
+    "scaler_scale": {
+      "dtype": "float64",
+      "shape": [
+        8
       ]
     }
   },

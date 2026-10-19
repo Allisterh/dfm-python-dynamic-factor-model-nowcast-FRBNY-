@@ -37,7 +37,15 @@
     "index": "pd.date_range('2010-01-31', periods=T, freq='ME') in column 'date'",
     "input_sha256": "e21679bea33b8fc9a0170a9e82f00270421d6651682eda1f190c216cfaf63360",
     "recipe": "f[0]=0; f[t] = 0.7 f[t-1] + rng.standard_normal(2) for t=1..T-1; loadings = rng.standard_normal((N, 2)); y = f @ loadings.T + 0.5 * rng.standard_normal((T, N))",
-    "seed": 0
+    "seed": 0,
+    "update_rows": {
+      "T_new": 6,
+      "generator": "numpy.random.default_rng",
+      "index": "the next T_new month ends after the last fitted date, in column 'date'",
+      "input_sha256": "1693bc9e398abbb2ceee495d6d3789a8000e5acdc7116786bbf2b9317893f029",
+      "recipe": "g = f[T-1]; for t=0..T_new-1: g = 0.7 g + rng_new.standard_normal(2), f_new[t] = g; y_new = f_new @ loadings.T + 0.5 * rng_new.standard_normal((T_new, N)) (same loadings)",
+      "seed": 1
+    }
   },
   "fingerprint": {
     "blas": [
@@ -61,7 +69,7 @@
     "processor": "x86_64",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "git_commit": "23fbcadff81f47041a70bc79dce61dd4bad24ccc",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "blocks": [
@@ -202,6 +210,24 @@
         5
       ]
     },
+    "converged": {
+      "dtype": "bool",
+      "shape": []
+    },
+    "data_processed": {
+      "dtype": "float64",
+      "shape": [
+        80,
+        5
+      ]
+    },
+    "last_filtered_cov": {
+      "dtype": "float64",
+      "shape": [
+        9,
+        9
+      ]
+    },
     "loglik": {
       "dtype": "float64",
       "shape": []
@@ -218,6 +244,148 @@
       ]
     },
     "predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        9
+      ]
+    },
+    "predict_data_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        5
+      ]
+    },
+    "predict_data_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        9
+      ]
+    },
+    "refit_A": {
+      "dtype": "float64",
+      "shape": [
+        9,
+        9
+      ]
+    },
+    "refit_C": {
+      "dtype": "float64",
+      "shape": [
+        5,
+        9
+      ]
+    },
+    "refit_Q": {
+      "dtype": "float64",
+      "shape": [
+        9,
+        9
+      ]
+    },
+    "refit_R": {
+      "dtype": "float64",
+      "shape": [
+        5,
+        5
+      ]
+    },
+    "refit_V_0": {
+      "dtype": "float64",
+      "shape": [
+        9,
+        9
+      ]
+    },
+    "refit_Z_0": {
+      "dtype": "float64",
+      "shape": [
+        9
+      ]
+    },
+    "refit_converged": {
+      "dtype": "bool",
+      "shape": []
+    },
+    "refit_loglik": {
+      "dtype": "float64",
+      "shape": []
+    },
+    "refit_num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "refit_predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        5
+      ]
+    },
+    "refit_predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        9
+      ]
+    },
+    "refit_result_Z": {
+      "dtype": "float64",
+      "shape": [
+        86,
+        9
+      ]
+    },
+    "result_Z": {
+      "dtype": "float64",
+      "shape": [
+        80,
+        9
+      ]
+    },
+    "result_x_sm": {
+      "dtype": "float64",
+      "shape": [
+        80,
+        5
+      ]
+    },
+    "scaler_mean": {
+      "dtype": "float64",
+      "shape": [
+        5
+      ]
+    },
+    "scaler_scale": {
+      "dtype": "float64",
+      "shape": [
+        5
+      ]
+    },
+    "update_Z": {
+      "dtype": "float64",
+      "shape": [
+        86,
+        9
+      ]
+    },
+    "update_data_processed": {
+      "dtype": "float64",
+      "shape": [
+        86,
+        5
+      ]
+    },
+    "update_predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        5
+      ]
+    },
+    "update_predict_Z": {
       "dtype": "float64",
       "shape": [
         6,
