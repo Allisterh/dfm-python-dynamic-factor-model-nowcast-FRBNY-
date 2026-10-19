@@ -16,6 +16,12 @@ Three model classes from the paper are covered by two switches:
 This is a from-the-paper implementation (no reference code exists) intended to be
 correct and runnable on modest data; it is not a reproduction of the paper's
 empirical CRSP study, which requires licensed point-in-time data.
+
+``AFMEngine`` is the private engine behind the public estimator
+:class:`dfm_python.models.afm.estimator.AFM`, which builds its inputs from
+``PanelData`` and passes every hyperparameter explicitly. The engine's code is
+the pre-redesign ``AFM`` class unchanged, apart from the ``device`` keyword and
+:meth:`AFMEngine._from_saved`.
 """
 
 from __future__ import annotations
@@ -40,8 +46,8 @@ from .baselines import avellaneda_lee_weights
 _EPS = 1e-8
 
 
-class AFM(BaseFactorModel, nn.Module):
-    """Attention Factor Model.
+class AFMEngine(BaseFactorModel, nn.Module):
+    """Attention Factor Model engine.
 
     Parameters
     ----------
@@ -58,6 +64,9 @@ class AFM(BaseFactorModel, nn.Module):
         Objective and cost parameters (defaults are the paper's 5bps/1bp).
     learning_rate, max_epochs, patience, seed
         Training controls.
+    device : torch.device or str, optional
+        Device for the network and tensors. None (default) uses CUDA if
+        available, else CPU.
     """
 
     def __init__(self, dataset: Optional[Any] = None, config: Optional[Any] = None,
@@ -71,6 +80,7 @@ class AFM(BaseFactorModel, nn.Module):
                  short_cost: Optional[float] = None, risk_free: Optional[float] = None,
                  learning_rate: Optional[float] = None, max_epochs: Optional[int] = None,
                  patience: Optional[int] = None, seed: Optional[int] = None,
+                 device: Optional[torch.device] = None,
                  **kwargs: Any) -> None:
         BaseFactorModel.__init__(self)
         nn.Module.__init__(self)
@@ -113,7 +123,10 @@ class AFM(BaseFactorModel, nn.Module):
             raise ConfigurationError(
                 f"trading must be 'longconv' or 'ou', got '{self.trading}'")
 
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if device is None:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = torch.device(device)
         if self.seed is not None:
             apply_seed(int(self.seed))
 
@@ -133,6 +146,43 @@ class AFM(BaseFactorModel, nn.Module):
         self._converged: bool = False
         self._sharpe: Optional[float] = None
         self._ev: Optional[float] = None
+
+    @classmethod
+    def _from_saved(cls, params: dict, n_char: Optional[int],
+                    device: Any) -> AFMEngine:
+        """Rebuild an engine without ``__init__``: no dataset, no seeding.
+
+        ``params`` holds the hyperparameters that ``__init__`` assigns
+        (``factor_model``, ``trading``, ``n_factors``, ``embed_dim``,
+        ``hist_len``, ``n_kernels``, ``ridge``, ``squash_lambda``,
+        ``pca_window``, ``reestim``, ``lambda_var``, ``turnover_cost``,
+        ``short_cost``, ``risk_free``, ``learning_rate``, ``max_epochs``,
+        ``patience`` and ``seed``). The components are built on ``device``
+        inside ``torch.random.fork_rng``, so their initial draws do not consume
+        the caller's CPU RNG; load the saved weights over them.
+        """
+        with torch.random.fork_rng(devices=[]):
+            self = cls.__new__(cls)
+            BaseFactorModel.__init__(self)
+            nn.Module.__init__(self)
+            self._config = None
+            for name in ("factor_model", "trading", "n_factors", "embed_dim",
+                         "hist_len", "n_kernels", "ridge", "squash_lambda",
+                         "pca_window", "reestim", "lambda_var", "turnover_cost",
+                         "short_cost", "risk_free", "learning_rate", "max_epochs",
+                         "patience", "seed"):
+                setattr(self, name, params[name])
+            self.device = torch.device(device)
+            self._dataset = None
+            self.n_char = n_char
+            self._built = False
+            self.loss_now = None
+            self._num_iter = 0
+            self._converged = False
+            self._sharpe = None
+            self._ev = None
+            self._build_components()
+        return self
 
     # ------------------------------------------------------------------ setup
     def _infer_dims(self, dataset: Any, n_char: Optional[int]) -> None:
@@ -158,7 +208,7 @@ class AFM(BaseFactorModel, nn.Module):
         self.to(self.device)
         self._built = True
 
-    def set_dataset(self, dataset: Any) -> AFM:
+    def set_dataset(self, dataset: Any) -> AFMEngine:
         """Attach a dataset and (re)build components (iVDFM pattern)."""
         self._dataset = dataset
         self._infer_dims(dataset, getattr(self, "n_char", None))
@@ -376,7 +426,7 @@ class AFM(BaseFactorModel, nn.Module):
         }, Path(path))
 
     @classmethod
-    def load(cls, path: Union[str, Path], *args: Any, **kwargs: Any) -> AFM:
+    def load(cls, path: Union[str, Path], *args: Any, **kwargs: Any) -> AFMEngine:
         ckpt = torch.load(Path(path), weights_only=False)
         model = cls(**ckpt["arch"])
         if not model._built:

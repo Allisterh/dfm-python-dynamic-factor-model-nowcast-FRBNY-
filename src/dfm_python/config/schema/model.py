@@ -5,7 +5,7 @@ This module provides model-specific configuration dataclasses:
 - DFMConfig(BaseModelConfig): Linear DFM with EM algorithm parameters and block structure
 - DDFMConfig(BaseModelConfig): Deep DFM with neural network training parameters (no blocks)
 - iVDFMConfig(BaseModelConfig): Identifiable variational DFM parameters (no blocks)
-- AFMConfig(BaseModelConfig): Attention factor model parameters (no blocks)
+- AFMConfig(EstimatorConfig): mirror of the AFM estimator's constructor
 
 The configuration hierarchy:
 - BaseModelConfig: Model structure (series, clock, data handling) - NO blocks
@@ -25,6 +25,8 @@ see the config.adapter module which provides source adapters.
 import numpy as np
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 from dataclasses import dataclass, field
+
+from ..estimator import EstimatorConfig
 
 try:
     from typing import Protocol
@@ -990,15 +992,17 @@ def validate_frequency(frequency: str) -> str:
 
 
 @dataclass
-class AFMConfig(BaseModelConfig):
-    """Attention Factor Model configuration (Epstein et al., 2025).
+class AFMConfig(EstimatorConfig):
+    """Config mirror of the :class:`~dfm_python.models.afm.estimator.AFM` estimator.
 
-    Cross-sectional conditional factor model + residual trading policy. Like
-    iVDFM, AFM does not use block structure and is constructed directly via
-    ``AFMConfig.from_dict(OmegaConf.to_container(cfg))`` rather than through the
-    block-requiring YAML adapter.
+    The fields and defaults are exactly the estimator's constructor
+    parameters, so ``AFM.from_config(cfg)`` is ``AFM(**cfg.to_dict())`` and
+    ``AFM(...).get_config()`` returns one whose fields equal ``get_params()``.
+    Values are validated when the estimator is fitted, not here. Unknown keys
+    (including the old names ``num_factors`` and ``seed``) raise
+    ``ConfigurationError`` in ``from_dict`` and ``from_yaml``.
     """
-    num_factors: Optional[int] = None      # K latent factors
+    n_factors: Optional[int] = None
     factor_model: str = DEFAULT_AFM_FACTOR_MODEL  # 'attention' (learned) | 'pca'
     trading: str = DEFAULT_AFM_TRADING     # 'longconv' (learned) | 'ou' (Avellaneda-Lee)
     embed_dim: int = DEFAULT_AFM_EMBED_DIM  # characteristic embedding dim d
@@ -1015,49 +1019,7 @@ class AFMConfig(BaseModelConfig):
     learning_rate: float = DEFAULT_LEARNING_RATE
     max_epochs: int = DEFAULT_AFM_MAX_EPOCHS
     patience: Optional[int] = None
-    seed: Optional[int] = None
-
-    def __post_init__(self):
-        super().__post_init__()
-        from ...utils.errors import ConfigurationError
-        if self.num_factors is not None and self.num_factors < 1:
-            raise ConfigurationError(f"num_factors must be >= 1, got {self.num_factors}")
-        if self.factor_model not in ('attention', 'pca'):
-            raise ConfigurationError(
-                f"factor_model must be 'attention' or 'pca', got '{self.factor_model}'")
-        if self.trading not in ('longconv', 'ou'):
-            raise ConfigurationError(
-                f"trading must be 'longconv' or 'ou', got '{self.trading}'")
-        if self.hist_len < 1:
-            raise ConfigurationError(f"hist_len must be >= 1, got {self.hist_len}")
-        if self.embed_dim < 1:
-            raise ConfigurationError(f"embed_dim must be >= 1, got {self.embed_dim}")
-
-    @classmethod
-    def _extract_afm(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract AFM-specific parameters from a config dict."""
-        return cls._extract_params(data, {
-            'num_factors': None,
-            'factor_model': DEFAULT_AFM_FACTOR_MODEL,
-            'trading': DEFAULT_AFM_TRADING,
-            'embed_dim': DEFAULT_AFM_EMBED_DIM,
-            'hist_len': DEFAULT_AFM_HIST_LEN,
-            'n_kernels': DEFAULT_AFM_N_KERNELS,
-            'ridge': DEFAULT_AFM_RIDGE,
-            'squash_lambda': DEFAULT_AFM_SQUASH_LAMBDA,
-            'pca_window': DEFAULT_AFM_PCA_WINDOW,
-            'reestim': DEFAULT_AFM_REESTIM,
-            'lambda_var': DEFAULT_AFM_LAMBDA_VAR,
-            'turnover_cost': DEFAULT_AFM_TURNOVER_COST,
-            'short_cost': DEFAULT_AFM_SHORT_COST,
-            'risk_free': 0.0, 'learning_rate': DEFAULT_LEARNING_RATE,
-            'max_epochs': DEFAULT_AFM_MAX_EPOCHS, 'patience': None, 'seed': None,
-        })
-
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'AFMConfig':
-        """Create AFMConfig from a dictionary."""
-        base_params = cls._extract_base(data)
-        afm_params = cls._extract_afm(data)
-        return cls(**base_params, **afm_params)
+    random_state: Optional[int] = None
+    device: str = "auto"
+    verbose: int = 0
 

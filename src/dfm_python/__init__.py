@@ -79,7 +79,7 @@ from .models.base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.ddfm import DDFM
 from .models.ivdfm.ivdfm import iVDFM
-from .models.afm.afm import AFM
+from .models.afm.estimator import AFM
 
 __all__ = [
     # Models

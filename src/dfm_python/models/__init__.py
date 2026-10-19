@@ -27,7 +27,7 @@ except ImportError:
 
 # AFM implementation (Attention Factor Model for statistical arbitrage)
 try:
-    from .afm.afm import AFM
+    from .afm.estimator import AFM
     __all__.extend([
         'AFM',  # High-level API
     ])

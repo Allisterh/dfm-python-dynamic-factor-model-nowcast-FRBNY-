@@ -546,6 +546,7 @@ class AFMResult(BaseResult):
     factor_model: Optional[str] = None                 # 'attention' | 'pca'
     trading: Optional[str] = None                      # 'longconv' | 'ou'
     num_factors: Optional[int] = None
+    weights: Optional[np.ndarray] = None               # (B, n_eval, N) asset weights (set by AFM.backtest)
 
     @property
     def factors(self) -> Optional[np.ndarray]:
