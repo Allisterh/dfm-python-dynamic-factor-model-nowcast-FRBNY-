@@ -1,45 +1,59 @@
-"""Tests for config.adapter module."""
+"""Tests for the config.adapter parsing helpers and their replacements for the removed config sources.
 
+``ConfigSource``, ``YamlSource``, ``DictSource`` and ``make_config_source`` were
+removed. Their tests are ported:
+
+- ``DictSource(mapping).load()`` called ``_DFMEngineConfig.from_dict(mapping)``
+  for every mapping tested here; those tests now call it directly, which runs
+  the same helpers (``_extract_frequency_dict``, ``_normalize_blocks_dict``).
+- ``YamlSource(path).load()`` read a flat file. Its tests now read the
+  ``model:``/``data:`` layout with ``load_yaml`` and ``DFMConfig.from_yaml``;
+  the frequencies live in ``data: freq``, which ``PanelData`` normalizes
+  (grouped or per-series form).
+"""
+
+import importlib.util
+
+import numpy as np
+import pandas as pd
 import pytest
-import tempfile
-import yaml
-from pathlib import Path
-from dfm_python.config.adapter import YamlSource, ConfigSource, DictSource
+
+import dfm_python
+import dfm_python.config
+import dfm_python.config.adapter as adapter
+from dfm_python import DFM, DFMConfig, PanelData
+from dfm_python.config import EstimatorConfig, load_yaml
+from dfm_python.config.schema.model import _DFMEngineConfig
+from dfm_python.utils.errors import ConfigurationError
+
+_YAML = importlib.util.find_spec("omegaconf") is not None or importlib.util.find_spec("yaml") is not None
 
 
-class TestDictSource:
-    """Test suite for DictSource."""
-    
-    def test_dict_source_initialization(self):
-        """Test DictSource can be initialized."""
+class TestEngineConfigFromDict:
+    """The former DictSource tests: ``_DFMEngineConfig.from_dict`` on the same mappings."""
+
+    def test_from_dict_keeps_the_mapping(self):
         mapping = {
             'frequency': {'series1': 'd', 'series2': 'w'},
-            'blocks': {'block1': {'num_factors': 2, 'series': ['series1', 'series2']}}
+            'blocks': {'block1': {'num_factors': 2, 'series': ['series1', 'series2']}},
+            'clock': 'd',
         }
-        source = DictSource(mapping)
-        assert source is not None
-        assert 'frequency' in source.mapping
-        assert 'blocks' in source.mapping
-    
-    def test_dict_source_loading(self):
-        """Test loading configuration from dictionary."""
-        # Provide minimal valid config with blocks (required for _DFMEngineConfig)
+        config = _DFMEngineConfig.from_dict(mapping)
+        assert config.frequency == {'series1': 'd', 'series2': 'w'}
+        assert config.blocks == {'block1': {'num_factors': 2, 'series': ['series1', 'series2']}}
+
+    def test_from_dict_loading(self):
         mapping = {
             'frequency': {'series1': 'm'},
             'blocks': {'block1': {'num_factors': 1, 'series': ['series1']}},
             'max_iter': 20
         }
-        source = DictSource(mapping)
-        config = source.load()
-        assert config is not None
-        assert hasattr(config, 'blocks')
-        assert hasattr(config, 'frequency')
+        config = _DFMEngineConfig.from_dict(mapping)
         assert config.max_iter == 20
         assert 'block1' in config.blocks
-    
-    def test_dict_source_grouped_frequency(self):
-        """Test loading configuration with grouped frequency format."""
-        # Grouped format: {'w': [...], 'm': [...]}
+        assert config.frequency == {'series1': 'm'}
+
+    def test_grouped_frequency(self):
         mapping = {
             'frequency': {
                 'w': ['series1', 'series2'],
@@ -50,21 +64,13 @@ class TestDictSource:
             'clock': 'w',
             'max_iter': 20
         }
-        source = DictSource(mapping)
-        config = source.load()
-        assert config is not None
-        assert hasattr(config, 'frequency')
-        # Verify grouped format is converted to individual format
-        assert config.frequency['series1'] == 'w'
-        assert config.frequency['series2'] == 'w'
-        assert config.frequency['series3'] == 'm'
-        assert config.frequency['series4'] == 'm'
-        assert config.frequency['series5'] == 'q'
+        config = _DFMEngineConfig.from_dict(mapping)
+        assert config.frequency == {
+            'series1': 'w', 'series2': 'w', 'series3': 'm', 'series4': 'm', 'series5': 'q',
+        }
         assert config.max_iter == 20
-    
-    def test_dict_source_grouped_frequency_duplicate_series_error(self):
-        """Test that duplicate series in grouped frequency format raises error."""
-        from dfm_python.utils.errors import ConfigurationError
+
+    def test_grouped_frequency_duplicate_series_error(self):
         mapping = {
             'frequency': {
                 'w': ['series1', 'series2'],
@@ -73,159 +79,151 @@ class TestDictSource:
             'blocks': {'block1': {'num_factors': 1, 'series': ['series1']}},
             'clock': 'w'
         }
-        source = DictSource(mapping)
         with pytest.raises(ConfigurationError, match="appears in multiple frequency groups"):
-            source.load()
-    
-    def test_dict_source_grouped_frequency_invalid_freq_code(self):
-        """Test that invalid frequency codes in grouped format are handled correctly."""
-        from dfm_python.utils.errors import ConfigurationError
+            _DFMEngineConfig.from_dict(mapping)
+
+    def test_grouped_frequency_invalid_freq_code(self):
+        # Invalid frequency keys make the mapping the per-series form; validation then rejects it.
         mapping = {
             'frequency': {
-                'invalid_freq': ['series1'],  # Invalid frequency code
+                'invalid_freq': ['series1'],
                 'm': ['series2']
             },
             'blocks': {'block1': {'num_factors': 1, 'series': ['series1']}},
             'clock': 'w'
         }
-        source = DictSource(mapping)
-        # Invalid frequency keys will cause it to be treated as individual format
-        # Then validation will catch invalid frequency values
         with pytest.raises(ConfigurationError):
-            source.load()
-    
-    def test_dict_source_grouped_frequency_backward_compat(self):
-        """Test that individual format still works (backward compatibility)."""
+            _DFMEngineConfig.from_dict(mapping)
+
+    def test_per_series_frequency(self):
         mapping = {
             'frequency': {'series1': 'w', 'series2': 'm'},
             'blocks': {'block1': {'num_factors': 1, 'series': ['series1', 'series2']}},
             'clock': 'w'
         }
-        source = DictSource(mapping)
-        config = source.load()
-        assert config.frequency['series1'] == 'w'
-        assert config.frequency['series2'] == 'm'
-    
-    def test_dict_source_grouped_frequency_empty_list(self):
-        """Test that empty frequency lists are handled."""
+        config = _DFMEngineConfig.from_dict(mapping)
+        assert config.frequency == {'series1': 'w', 'series2': 'm'}
+
+    def test_grouped_frequency_empty_list(self):
         mapping = {
             'frequency': {
-                'w': [],  # Empty list
+                'w': [],
                 'm': ['series1']
             },
             'blocks': {'block1': {'num_factors': 1, 'series': ['series1']}},
             'clock': 'w'
         }
-        source = DictSource(mapping)
-        config = source.load()
-        assert config.frequency['series1'] == 'm'
-        assert len([k for k, v in config.frequency.items() if v == 'w']) == 0
+        config = _DFMEngineConfig.from_dict(mapping)
+        assert config.frequency == {'series1': 'm'}
 
 
-class TestYamlSource:
-    """Test suite for YamlSource."""
-    
-    def test_yaml_source_loading(self):
-        """Test loading configuration from YAML files."""
-        # Create a temporary YAML file with minimal valid config
-        yaml_content = {
-            'frequency': {'series1': 'm'},
-            'blocks': {'block1': {'num_factors': 1, 'series': ['series1']}},
-            'max_iter': 20
+class TestHelpers:
+    """The private helpers ``_DFMEngineConfig`` uses, called directly."""
+
+    def test_extract_frequency_dict_forms(self):
+        grouped = {'frequency': {'m': ['a', 'b'], 'q': ['c']}}
+        assert adapter._extract_frequency_dict(grouped) == {'a': 'm', 'b': 'm', 'c': 'q'}
+        assert adapter._extract_frequency_dict({'frequency': {'a': 'm'}}) == {'a': 'm'}
+        legacy = {'series': [{'series_id': 'a', 'frequency': 'q'}, {'series_id': 'b'}]}
+        assert adapter._extract_frequency_dict(legacy, clock='w') == {'a': 'q', 'b': 'w'}
+        assert adapter._extract_frequency_dict({}) is None
+
+    def test_extract_frequency_dict_rejects_non_string_values(self):
+        with pytest.raises(ConfigurationError, match="must be strings"):
+            adapter._extract_frequency_dict({'frequency': {'a': 3}})
+
+    def test_normalize_blocks_dict(self):
+        blocks = {'g': {'factors': 2, 'series': ['a']}, 'h': {'num_factors': 1, 'series': 'a'}}
+        assert adapter._normalize_blocks_dict(blocks) == {
+            'g': {'num_factors': 2, 'series': ['a']},
+            'h': {'num_factors': 1, 'series': []},
         }
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(yaml_content, f)
-            yaml_path = f.name
-        
-        try:
-            source = YamlSource(yaml_path)
-            config = source.load()
-            assert config is not None
-            assert hasattr(config, 'blocks')
-            assert hasattr(config, 'frequency')
-            assert config.max_iter == 20
-            assert 'block1' in config.blocks
-        finally:
-            # Clean up temporary file
-            Path(yaml_path).unlink(missing_ok=True)
-    
-    def test_yaml_source_grouped_frequency(self):
-        """Test loading YAML configuration with grouped frequency format."""
-        # Grouped format: {'w': [...], 'm': [...]}
-        yaml_content = {
-            'frequency': {
-                'w': ['A001', 'GSCITOT'],
-                'm': ['KOEQUIPTE', 'KOWRCCNSE', 'KOIPALL.G'],
-                'q': ['KOGCFCNSD']
-            },
-            'blocks': {'block1': {'num_factors': 2, 'series': ['A001', 'KOEQUIPTE', 'KOGCFCNSD']}},
-            'clock': 'w',
-            'max_iter': 30
-        }
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(yaml_content, f)
-            yaml_path = f.name
-        
-        try:
-            source = YamlSource(yaml_path)
-            config = source.load()
-            assert config is not None
-            assert hasattr(config, 'frequency')
-            # Verify grouped format is converted to individual format
-            assert config.frequency['A001'] == 'w'
-            assert config.frequency['GSCITOT'] == 'w'
-            assert config.frequency['KOEQUIPTE'] == 'm'
-            assert config.frequency['KOWRCCNSE'] == 'm'
-            assert config.frequency['KOIPALL.G'] == 'm'
-            assert config.frequency['KOGCFCNSD'] == 'q'
-            assert config.clock == 'w'
-            assert config.max_iter == 30
-        finally:
-            Path(yaml_path).unlink(missing_ok=True)
-    
-    def test_yaml_source_grouped_frequency_empty_groups(self):
-        """Test YAML with some empty frequency groups."""
-        yaml_content = {
-            'frequency': {
-                'w': [],  # Empty group
-                'm': ['series1', 'series2'],
-                'q': []   # Empty group
-            },
-            'blocks': {'block1': {'num_factors': 1, 'series': ['series1', 'series2']}},
-            'clock': 'm'
-        }
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as f:
-            yaml.dump(yaml_content, f)
-            yaml_path = f.name
-        
-        try:
-            source = YamlSource(yaml_path)
-            config = source.load()
-            assert config.frequency['series1'] == 'm'
-            assert config.frequency['series2'] == 'm'
-        finally:
-            Path(yaml_path).unlink(missing_ok=True)
+        with pytest.raises(ConfigurationError, match="must be a dict"):
+            adapter._normalize_blocks_dict({'g': 1})
+
+    def test_detect_config_type_rejects_ddfm_parameters_in_from_dict(self):
+        assert adapter.detect_config_type({'blocks': {'b': {}}, 'encoder_layers': [8]}) == adapter.MODEL_TYPE_DFM
+        assert adapter.detect_config_type({'encoder_layers': [8]}) == adapter.MODEL_TYPE_DDFM
+        assert adapter.detect_config_type({'model_type': 'deep'}) == adapter.MODEL_TYPE_DDFM
+        with pytest.raises(ConfigurationError):
+            adapter.detect_config_type([1, 2])
+        with pytest.raises(ConfigurationError):
+            _DFMEngineConfig.from_dict({'encoder_layers': [8], 'epochs': 2})
 
 
-class TestConfigSource:
-    """Test suite for ConfigSource base class."""
-    
-    def test_config_source_interface(self):
-        """Test ConfigSource interface."""
-        # ConfigSource is a Protocol, so we test that DictSource implements it
-        # Provide minimal valid config with blocks
-        mapping = {
-            'frequency': {'series1': 'm'},
-            'blocks': {'block1': {'num_factors': 1, 'series': ['series1']}}
-        }
-        source = DictSource(mapping)
-        # Verify it has the required load() method
-        assert hasattr(source, 'load')
-        assert callable(source.load)
-        # Verify load() returns a _DFMEngineConfig
-        config = source.load()
-        from dfm_python.config.schema.model import _DFMEngineConfig
-        assert isinstance(config, _DFMEngineConfig)
-        assert hasattr(config, 'blocks')
-        assert 'block1' in config.blocks
+def _write(path, text):
+    path.write_text(text, encoding="utf-8")
+    return path
 
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+class TestYamlLayout:
+    """The former YamlSource tests, on the model:/data: layout."""
+
+    def test_yaml_loading(self, tmp_path):
+        path = _write(tmp_path / "dfm.yaml", (
+            "model:\n"
+            "  blocks:\n    block1: {n_factors: 1, series: [series1]}\n"
+            "  max_iter: 20\n"
+            "data:\n  freq: {series1: m}\n"
+        ))
+        config = DFMConfig.from_yaml(path)
+        assert config.max_iter == 20
+        assert config.blocks == {'block1': {'n_factors': 1, 'series': ['series1']}}
+        assert load_yaml(path)["data"] == {"freq": {"series1": "m"}}
+
+    def test_yaml_grouped_frequency(self, tmp_path):
+        path = _write(tmp_path / "dfm.yaml", (
+            "model:\n"
+            "  blocks:\n    block1: {n_factors: 2, series: [A001, KOEQUIPTE, KOGCFCNSD]}\n"
+            "  clock: w\n  max_iter: 30\n"
+            "data:\n"
+            "  freq:\n"
+            "    w: [A001, GSCITOT]\n"
+            "    m: [KOEQUIPTE, KOWRCCNSE, KOIPALL.G]\n"
+            "    q: [KOGCFCNSD]\n"
+        ))
+        config = DFMConfig.from_yaml(path)
+        assert config.clock == 'w' and config.max_iter == 30
+        names = ["A001", "GSCITOT", "KOEQUIPTE", "KOWRCCNSE", "KOIPALL.G", "KOGCFCNSD"]
+        y = pd.DataFrame(np.zeros((3, len(names))), columns=names)
+        panel = PanelData(y, freq=load_yaml(path)["data"]["freq"])
+        assert panel.freq == {
+            'A001': 'w', 'GSCITOT': 'w', 'KOEQUIPTE': 'm', 'KOWRCCNSE': 'm', 'KOIPALL.G': 'm', 'KOGCFCNSD': 'q',
+        }
+
+    def test_yaml_grouped_frequency_empty_groups(self, tmp_path):
+        path = _write(tmp_path / "dfm.yaml", (
+            "model:\n  clock: m\n"
+            "data:\n  freq: {w: [], m: [series1, series2], q: []}\n"
+        ))
+        freq = load_yaml(path)["data"]["freq"]
+        y = pd.DataFrame(np.zeros((3, 2)), columns=["series1", "series2"])
+        assert PanelData(y, freq=freq).freq == {'series1': 'm', 'series2': 'm'}
+
+    def test_flat_file_is_refused(self, tmp_path):
+        # The flat layout YamlSource read is not supported; the error says where the keys go.
+        path = _write(tmp_path / "flat.yaml", "frequency: {series1: m}\nmax_iter: 20\n")
+        with pytest.raises(ConfigurationError, match="model:"):
+            DFMConfig.from_yaml(path)
+
+
+class TestConfigSourcesRemoved:
+    """The former ConfigSource test: the names are gone; the config mirror is the replacement."""
+
+    @pytest.mark.parametrize("name", ["ConfigSource", "YamlSource", "DictSource", "make_config_source"])
+    def test_names_are_gone(self, name):
+        for namespace in (adapter, dfm_python.config, dfm_python):
+            assert not hasattr(namespace, name), (namespace.__name__, name)
+            assert name not in getattr(namespace, "__all__", ()), (namespace.__name__, name)
+
+    @pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+    def test_config_mirror_builds_the_estimator(self, tmp_path):
+        path = _write(tmp_path / "dfm.yaml", (
+            "model:\n"
+            "  blocks:\n    block1: {n_factors: 1, series: [series1]}\n"
+        ))
+        config = DFMConfig.from_yaml(path)
+        assert isinstance(config, EstimatorConfig)
+        model = DFM.from_config(config)
+        assert isinstance(model, DFM) and model.blocks == {'block1': {'n_factors': 1, 'series': ['series1']}}

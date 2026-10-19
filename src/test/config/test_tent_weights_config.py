@@ -1,11 +1,13 @@
 """Tests for tent weights parameterization in _DFMEngineConfig."""
 
+import importlib.util
+
 import pytest
 import numpy as np
 import yaml
 from pathlib import Path
+from dfm_python import DFMConfig
 from dfm_python.config.schema.model import _DFMEngineConfig
-from dfm_python.config.adapter import YamlSource
 from dfm_python.dataset.dfm_dataset import DFMDataset
 from dfm_python.models.dfm.tent import get_agg_structure
 
@@ -100,106 +102,51 @@ class TestTentWeightsConfig:
         assert len(config.tent_weights['q:w']) == 9
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("omegaconf") is None and importlib.util.find_spec("yaml") is None,
+    reason="YAML needs omegaconf or PyYAML",
+)
 class TestInvestmentProductionConfigs:
-    """Test suite for actual investment and production config files."""
-    
-    def test_investment_config_tent_weights(self):
-        """Test that investment config has correct tent weights."""
-        # Try multiple possible paths
-        possible_paths = [
-            Path(__file__).parent.parent.parent.parent.parent / 'config' / 'model' / 'dfm' / 'investment.yaml',
-            Path(__file__).parent.parent.parent.parent / 'config' / 'model' / 'dfm' / 'investment.yaml',
-            Path.cwd() / 'config' / 'model' / 'dfm' / 'investment.yaml',
-        ]
-        config_path = None
-        for path in possible_paths:
-            if path.exists():
-                config_path = path
-                break
-        
-        if config_path is None:
-            pytest.skip(f"Investment config not found at any of: {possible_paths}")
-        
-        source = YamlSource(str(config_path))
-        config = source.load()
-        
-        # Verify tent weights are set
-        assert config.tent_weights is not None, "Investment config should have tent_weights"
-        assert 'm:w' in config.tent_weights, "Investment config should have m:w tent weights"
-        
-        # Verify investment uses 5-period tent kernel
-        expected_weights = [1, 2, 3, 2, 1]
-        actual_weights = config.tent_weights['m:w']
-        assert actual_weights == expected_weights, \
-            f"Investment config should use {expected_weights}, got {actual_weights}"
-    
-    def test_production_config_tent_weights(self):
-        """Test that production config has correct tent weights."""
-        # Try multiple possible paths
-        possible_paths = [
-            Path(__file__).parent.parent.parent.parent.parent / 'config' / 'model' / 'dfm' / 'production.yaml',
-            Path(__file__).parent.parent.parent.parent / 'config' / 'model' / 'dfm' / 'production.yaml',
-            Path.cwd() / 'config' / 'model' / 'dfm' / 'production.yaml',
-        ]
-        config_path = None
-        for path in possible_paths:
-            if path.exists():
-                config_path = path
-                break
-        
-        if config_path is None:
-            pytest.skip(f"Production config not found at any of: {possible_paths}")
-        
-        source = YamlSource(str(config_path))
-        config = source.load()
-        
-        # Verify tent weights are set
-        assert config.tent_weights is not None, "Production config should have tent_weights"
-        assert 'm:w' in config.tent_weights, "Production config should have m:w tent weights"
-        
-        # Verify production uses 3-period tent kernel
-        expected_weights = [1, 2, 1]
-        actual_weights = config.tent_weights['m:w']
-        assert actual_weights == expected_weights, \
-            f"Production config should use {expected_weights}, got {actual_weights}"
-    
-    def test_config_tent_weights_different(self):
-        """Test that investment and production configs use different tent weights."""
-        # Try multiple possible paths
-        possible_bases = [
-            Path(__file__).parent.parent.parent.parent.parent / 'config' / 'model' / 'dfm',
-            Path(__file__).parent.parent.parent.parent / 'config' / 'model' / 'dfm',
-            Path.cwd() / 'config' / 'model' / 'dfm',
-        ]
-        
-        investment_path = None
-        production_path = None
-        for config_base in possible_bases:
-            inv_path = config_base / 'investment.yaml'
-            prod_path = config_base / 'production.yaml'
-            if inv_path.exists() and prod_path.exists():
-                investment_path = inv_path
-                production_path = prod_path
-                break
-        
-        if investment_path is None or production_path is None:
-            pytest.skip(f"Config files not found. Tried: {possible_bases}")
-        
-        investment_source = YamlSource(str(investment_path))
-        production_source = YamlSource(str(production_path))
-        
-        investment_config = investment_source.load()
-        production_config = production_source.load()
-        
-        # Verify they have different tent weights
-        investment_weights = investment_config.tent_weights.get('m:w') if investment_config.tent_weights else None
-        production_weights = production_config.tent_weights.get('m:w') if production_config.tent_weights else None
-        
-        assert investment_weights is not None, "Investment config should have tent weights"
-        assert production_weights is not None, "Production config should have tent weights"
-        assert investment_weights != production_weights, \
-            f"Investment and production should have different tent weights. " \
-            f"Investment: {investment_weights}, Production: {production_weights}"
+    """Tent kernels read from YAML files.
+
+    These tests read ``config/model/dfm/{investment,production}.yaml`` through
+    the removed ``YamlSource`` and skipped, because the repository has no such
+    files. They now write the two kernels (5-period for investment, 3-period
+    for production) in the ``model:``/``data:`` layout and read them through
+    ``DFMConfig.from_yaml``.
+    """
+
+    @staticmethod
+    def _write(path, kernel):
+        path.write_text(
+            "model:\n"
+            "  clock: w\n"
+            f"  tent_weights: {{'m:w': {kernel}}}\n"
+            "data:\n  freq: {m: [series1], w: [series2]}\n",
+            encoding="utf-8",
+        )
+        return path
+
+    def test_investment_config_tent_weights(self, tmp_path):
+        config = DFMConfig.from_yaml(self._write(tmp_path / "investment.yaml", [1, 2, 3, 2, 1]))
+        assert config.tent_weights == {'m:w': [1, 2, 3, 2, 1]}
+
+    def test_production_config_tent_weights(self, tmp_path):
+        config = DFMConfig.from_yaml(self._write(tmp_path / "production.yaml", [1, 2, 1]))
+        assert config.tent_weights == {'m:w': [1, 2, 1]}
+
+    def test_config_tent_weights_different(self, tmp_path):
+        investment = DFMConfig.from_yaml(self._write(tmp_path / "investment.yaml", [1, 2, 3, 2, 1]))
+        production = DFMConfig.from_yaml(self._write(tmp_path / "production.yaml", [1, 2, 1]))
+        assert investment.tent_weights['m:w'] != production.tent_weights['m:w']
+        # The engine config the estimator builds receives each kernel unchanged.
+        for config in (investment, production):
+            engine_config = _DFMEngineConfig.from_dict(
+                {'clock': 'w', 'frequency': {'series1': 'm', 'series2': 'w'},
+                 'blocks': {'Block_Global': {'num_factors': 1, 'series': ['series1', 'series2']}},
+                 'tent_weights': config.tent_weights}
+            )
+            assert engine_config.tent_weights == config.tent_weights
 
 
 class TestDatasetTentWeightsIntegration:

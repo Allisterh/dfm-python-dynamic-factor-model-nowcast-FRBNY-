@@ -69,6 +69,37 @@ def build_dfm_structure(config: Any, *, columns: Optional[List[str]] = None) -> 
     return blocks, r, num_factors, p
 
 
+def log_blocks_diagnostics(
+    blocks: np.ndarray,
+    columns: Optional[List[str]],
+    N_actual: int
+) -> None:
+    """Log diagnostics about blocks array.
+    
+    Moved here from the removed ``logger.dfm_logger`` module; messages and
+    levels are unchanged.
+    
+    Parameters
+    ----------
+    blocks : np.ndarray
+        Blocks array
+    columns : Optional[List[str]]
+        Column names if available
+    N_actual : int
+        Number of series
+    """
+    n_in_block = np.sum(blocks[:, 0] > 0) if blocks.shape[1] > 0 else 0
+    _logger.info(f"Blocks array: shape={blocks.shape}, series in Block_Global: {n_in_block}/{N_actual}")
+    
+    if n_in_block < N_actual:
+        missing_indices = np.where(blocks[:, 0] == 0)[0]
+        if columns and len(columns) > 0:
+            missing_series = [columns[i] for i in missing_indices[:10]]
+            _logger.warning(f"  Series NOT in Block_Global: {len(missing_indices)} ({missing_series[:5]}...)")
+        else:
+            _logger.warning(f"  Series NOT in Block_Global: {len(missing_indices)} (indices: {missing_indices[:10].tolist()}...)")
+
+
 def build_dfm_blocks(
     blocks: np.ndarray,
     config: Any,
@@ -93,8 +124,6 @@ def build_dfm_blocks(
     np.ndarray
         Updated blocks array matching data dimensions
     """
-    from ..logger.dfm_logger import log_blocks_diagnostics
-    
     if columns is not None:
         # Clear cache and rebuild from config
         if hasattr(config, '_cached_blocks'):

@@ -37,7 +37,6 @@ from dfm_python.config.constants import (
 from dfm_python import DDFM, PanelData
 from dfm_python.config.schema.params import DDFMModelState
 from dfm_python.dataset.ddfm_dataset import DDFMDataset
-from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
 from dfm_python.models.ddfm._engine import DDFMEngine
 from dfm_python.numeric.statistic import diagnose_variance_collapse
 from dfm_python.utils.errors import (
@@ -149,8 +148,10 @@ class TestEngineSurface:
         assert DDFMEngine.load_state_dict is torch.nn.Module.load_state_dict
 
     def test_engine_does_not_inherit_the_old_base(self):
-        assert not issubclass(DDFMEngine, EngineBaseFactorModel)
-        assert issubclass(DDFMEngine, torch.nn.Module)
+        import dfm_python.models.base
+
+        assert not hasattr(dfm_python.models.base, "BaseFactorModel")
+        assert DDFMEngine.__bases__ == (torch.nn.Module,)
 
     def test_init_sets_the_old_base_attributes(self):
         dataset = _dataset(_frame())

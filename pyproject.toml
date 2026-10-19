@@ -48,13 +48,8 @@ polars = [
     "polars>=1.0.0",
     "pyarrow>=22.0.0",
 ]
-# Running the scripts in tutorial/ (Hydra entry points)
-examples = [
-    "hydra-core>=1.3.2",
-    "omegaconf>=2.3.0",
-]
 all = [
-    "dfm-python[tune,yaml,metrics,polars,examples]",
+    "dfm-python[tune,yaml,metrics,polars]",
 ]
 # Keep in sync with [dependency-groups].dev below.
 dev = [

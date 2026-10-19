@@ -152,54 +152,6 @@ def apply_ar_clipping(
 
 # Removed estimate_ar - unused function
 
-def estimate_var(factors: np.ndarray, order: int = 1) -> Tuple[np.ndarray, np.ndarray]:
-    """Estimate AR(1) dynamics for factors.
-    
-    Parameters
-    ----------
-    factors : np.ndarray
-        Extracted factors (T x m)
-    order : int, default 1
-        AR order (always 1)
-        
-    Returns
-    -------
-    A : np.ndarray
-        Transition matrix (m x m) for AR(1)
-    Q : np.ndarray
-        Innovation covariance (m x m)
-    """
-    T, m = factors.shape
-    
-    if T < 2:
-        # Not enough data, use identity
-        A = create_scaled_identity(m, DEFAULT_IDENTITY_SCALE)
-        Q = create_scaled_identity(m, DEFAULT_PROCESS_NOISE)
-        return A, Q
-    
-    # Prepare data for OLS: f_t = A @ f_{t-1}
-    Y = factors[1:, :]  # T-1 x m (dependent)
-    X = factors[:-1, :]  # T-1 x m (independent)
-    
-    # OLS: A = (X'X)^{-1} X'Y
-    A = solve_regularized_ols(X, Y, regularization=DEFAULT_REGULARIZATION).T
-    
-    # Ensure stability: clip eigenvalues
-    eigenvals = np.linalg.eigvals(A)
-    max_eigenval = np.max(np.abs(eigenvals))
-    if max_eigenval >= VAR_STABILITY_THRESHOLD:
-        A = A * (VAR_STABILITY_THRESHOLD / max_eigenval)
-    
-    # Estimate innovation covariance
-    residuals = Y - X @ A.T
-    Q = compute_cov_safe(residuals.T, rowvar=True, pairwise_complete=False)
-    
-    # Stabilize Q: symmetrize, ensure positive definite, apply floor
-    Q = stabilize_innovation_covariance(Q, min_eigenval=MIN_EIGENVALUE, min_floor=MIN_Q_FLOOR, dtype=np.float32)
-    
-    return A, Q
-
-
 def get_idio(eps: np.ndarray, idx_no_missings: np.ndarray, min_obs: int = 5) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Get AR(1) statistics from eps (matching original TensorFlow get_idio).
     
@@ -550,7 +502,7 @@ def estimate_idio_dynamics(
 # Unified Estimation Functions (work with raw data or smoothed expectations)
 # ============================================================================
 
-def estimate_var(  # noqa: F811 -- this definition shadows the earlier one, which is unused
+def estimate_var(
     y: np.ndarray,
     x: np.ndarray,
     V_smooth: Optional[np.ndarray] = None,

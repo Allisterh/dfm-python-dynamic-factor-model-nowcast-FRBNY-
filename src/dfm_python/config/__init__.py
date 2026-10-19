@@ -1,14 +1,18 @@
-"""Configuration subpackage for DFM.
+"""Configuration subpackage.
 
 This subpackage provides:
-- Schema (DFMConfig, etc.) in schema.py
-- IO (ConfigSource, YamlSource, etc.) in adapter.py
+- The constructor mirrors ``DFMConfig``, ``DDFMConfig``, ``iVDFMConfig`` and
+  ``AFMConfig`` (subclasses of :class:`EstimatorConfig`) and :func:`load_yaml`,
+  which reads the ``model:``/``data:`` YAML layout.
+- The result classes (``DFMResult``, ``DDFMResult``, ``AFMResult``).
+- Constants, frequency utilities and type aliases.
 
-Note: Series are specified via frequency dict mapping column names to frequencies.
+The engines' own config classes (``schema.model``) and the parsing helpers in
+``adapter`` are private.
 """
 
 from .schema import (
-    BaseModelConfig, DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig,
+    DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig,
     BaseResult, DFMResult, DDFMResult, AFMResult,
 )
 # DEFAULT_BLOCK_NAME is imported lazily where needed to avoid circular imports
@@ -25,13 +29,6 @@ from .constants import (
 )
 from .schema.model import validate_frequency
 from .estimator import EstimatorConfig, load_yaml
-from .adapter import (
-    ConfigSource,
-    YamlSource,
-    DictSource,
-    make_config_source,
-    detect_config_type,
-)
 # Re-export types for convenience
 from .types import (
     ArrayLike,
@@ -94,7 +91,7 @@ def get_periods_per_year(frequency: str) -> int:
 
 __all__ = [
     # Base classes
-    'BaseModelConfig', 'BaseResult',
+    'BaseResult',
     # Constructor mirror and YAML layout
     'EstimatorConfig', 'load_yaml',
     # 'DEFAULT_BLOCK_NAME',  # Removed to avoid circular import
@@ -104,10 +101,6 @@ __all__ = [
     'DFMResult', 'DDFMResult', 'AFMResult',
     # Utilities
     'validate_frequency',
-    # IO
-    'ConfigSource', 'YamlSource', 'DictSource',
-    'make_config_source',
-    'detect_config_type',
     # Frequency and aggregation utilities
     'FREQUENCY_HIERARCHY',
     'PERIODS_PER_YEAR',

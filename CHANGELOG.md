@@ -7,19 +7,21 @@
   pytorch-lightning. Code that used them through dfm-python now raises an
   `ImportError` naming the extra to install: `calculate_rmse`/`calculate_mae`
   need `[metrics]`, `dfm_python.tuning` needs `[tune]`,
-  `YamlSource.load()` needs `[yaml]`, polars input needs `[polars]` (polars
-  and pyarrow), and the `tutorial/` scripts need `[examples]`.
+  reading YAML configs needs `[yaml]` (omegaconf; PyYAML also works),
+  polars input needs `[polars]` (polars and pyarrow), and the `tutorial/`
+  scripts need `[yaml]`.
   **Migration:** to keep the 0.7.0 behaviour, depend on `dfm-python[all]`
   (for example in a `requirements.txt` that pinned bare `dfm-python`).
 - Runtime dependencies reduced to numpy, pandas, scipy, scikit-learn, torch,
   pykalman and einops. pytorch-lightning and matplotlib were never imported
-  and are dropped; optuna, omegaconf, sktime, polars (with pyarrow) and
-  hydra-core moved to the `tune`, `yaml`, `metrics`, `polars` and `examples`
-  extras (`all` installs every extra).
+  and are dropped; optuna, omegaconf, sktime and polars (with pyarrow) moved
+  to the `tune`, `yaml`, `metrics` and `polars` extras (`all` installs every
+  extra). hydra-core is no longer a dependency of any extra: the tutorials
+  stopped using Hydra, and the short-lived `examples` extra is removed.
 - **Breaking (extras):** the `db`, `deep`, `transform`, `forecasting` and
   `hydra` extras are removed. pip only warns about an unknown extra, so
   `dfm-python[hydra]` now silently installs neither omegaconf nor hydra-core;
-  use `[yaml]` or `[examples]` instead (`[metrics]` replaces `[transform]` and
+  use `[yaml]` instead (`[metrics]` replaces `[transform]` and
   `[forecasting]`).
 - The `dev` dependency group lists its packages directly (it works with
   `pip install --group dev` as well as uv) and includes the optional packages
@@ -171,6 +173,35 @@
     passed. `dfm_finance.yaml` lists its series in the CSV's column order;
     the old tutorial ordered them by iterating over a set, which varied from
     run to run. The DFM tutorials no longer use Hydra.
+- **Breaking (cleanup):** the pre-redesign entry points that the four
+  estimators replaced are removed:
+  - `ConfigSource`, `YamlSource`, `DictSource` and `make_config_source`
+    (from `dfm_python`, `dfm_python.config` and `dfm_python.config.adapter`).
+    Read a YAML file with `XConfig.from_yaml(path)` and build the model with
+    `X.from_config(config)`, or use `dfm_python.config.load_yaml(path)` for
+    the `model:` and `data:` sections. `detect_config_type` (from
+    `dfm_python.config` and `dfm_python.utils`) and `BaseModelConfig` (from
+    `dfm_python.config` and `dfm_python.config.schema`; the private engine
+    configs' base) are no longer exported.
+  - The `AFMDataset` export from `dfm_python.dataset`, which now exports only
+    `PanelData` and `TimeIndex`. The four per-model datasets are the
+    estimators' private adapters.
+  - The old abstract engine base `dfm_python.models.base.BaseFactorModel`
+    (`dfm_python.BaseFactorModel` is the estimator base of all four models)
+    and the AFM engine's `torch.save` `save`/`load`; `dfm_python.models`
+    exports `DFM`, `DDFM`, `iVDFM`, `AFM` and the result classes.
+  - The logger modules `train_logger`, `inference_logger`, `ivdfm_logger` and
+    `dfm_logger`, with `BaseTrainLogger`, `DFMTrainLogger`,
+    `BaseInferenceLogger`, `DFMInferenceLogger`, `iVDFMInferenceLogger` and the
+    `log_training_*`, `log_inference_*`, `log_prediction` and
+    `log_training_epoch` helpers. `dfm_python.logger` keeps `get_logger`,
+    `setup_logging`, `configure_logging`, `set_verbosity`, `get_verbosity`,
+    `fit_verbosity` and `quiet_engine_loggers`; the engines' progress
+    reporting moved to `dfm_python.logger.progress` with unchanged messages.
+  - The unreachable first definition of `numeric.estimator.estimate_var`
+    (a second definition shadowed it).
+- CI runs every `tutorial/` script on truncated data with one iteration or
+  epoch (the `tutorials` job).
 - `__version__` is read from the installed package metadata.
 - The package ships a `py.typed` marker.
 - Fixed: `compute_cov_safe` with listwise deletion raised on every

@@ -33,6 +33,45 @@ jobs:
       - name: Run tests
         run: uv run --no-sync pytest src/test -q
 
+  # Smoke run of every tutorial/ script on truncated data with one EM iteration
+  # or training epoch (about 30 s on CPU). Each script fits, forecasts, saves to
+  # $RUNNER_TEMP and reloads; a non-zero exit fails the job.
+  tutorials:
+    runs-on: ubuntu-latest
+    env:
+      DFM_TUTORIAL_MAX_ITER: "1"
+      DFM_TUTORIAL_MAX_EPOCHS: "1"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --locked --group dev --all-extras
+      - name: Run the tutorials
+        shell: bash
+        run: |
+          set -euo pipefail
+          scripts=(tutorial/tutorial_*.py)
+          if [ "${#scripts[@]}" -ne 9 ]; then
+            echo "expected 9 tutorial scripts, found ${#scripts[@]}"
+            exit 1
+          fi
+          for script in "${scripts[@]}"; do
+            name=$(basename "$script" .py)
+            # 120 rows each; 400 for the weekly-clock macro DFM, so its monthly series keep ~90 observations.
+            rows=120
+            if [ "$name" = tutorial_macro_dfm ]; then rows=400; fi
+            args=(--run-dir "$RUNNER_TEMP/$name")
+            case "$name" in
+              *_ddfm|*_ivdfm) args+=(--device cpu) ;;
+            esac
+            echo "::group::$name (rows=$rows)"
+            DFM_TUTORIAL_ROWS=$rows uv run --no-sync python "$script" "${args[@]}"
+            echo "::endgroup::"
+          done
+
   lint:
     runs-on: ubuntu-latest
     steps:

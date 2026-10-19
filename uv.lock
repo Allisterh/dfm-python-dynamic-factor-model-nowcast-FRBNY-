@@ -379,7 +379,6 @@ dependencies = [
 
 [package.optional-dependencies]
 all = [
-    { name = "hydra-core" },
     { name = "omegaconf" },
     { name = "optuna" },
     { name = "polars" },
@@ -396,10 +395,6 @@ dev = [
     { name = "pyyaml" },
     { name = "ruff" },
     { name = "twine" },
-]
-examples = [
-    { name = "hydra-core" },
-    { name = "omegaconf" },
 ]
 metrics = [
     { name = "sktime" },
@@ -431,12 +426,10 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "build", marker = "extra == 'dev'", specifier = ">=1.4.0" },
-    { name = "dfm-python", extras = ["tune", "yaml", "metrics", "polars", "examples"], marker = "extra == 'all'" },
+    { name = "dfm-python", extras = ["tune", "yaml", "metrics", "polars"], marker = "extra == 'all'" },
     { name = "einops", specifier = ">=0.8.1" },
-    { name = "hydra-core", marker = "extra == 'examples'", specifier = ">=1.3.2" },
     { name = "numpy", specifier = ">=1.24.0" },
     { name = "omegaconf", marker = "extra == 'dev'", specifier = ">=2.3.0" },
-    { name = "omegaconf", marker = "extra == 'examples'", specifier = ">=2.3.0" },
     { name = "omegaconf", marker = "extra == 'yaml'", specifier = ">=2.3.0" },
     { name = "optuna", marker = "extra == 'dev'", specifier = ">=4.7.0" },
     { name = "optuna", marker = "extra == 'tune'", specifier = ">=4.7.0" },
@@ -454,7 +447,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.0.0" },
     { name = "twine", marker = "extra == 'dev'", specifier = ">=6.2.0" },
 ]
-provides-extras = ["tune", "yaml", "metrics", "polars", "examples", "all", "dev"]
+provides-extras = ["tune", "yaml", "metrics", "polars", "all", "dev"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -570,20 +563,6 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/23/6e/74407aed965a4ab6ddd93a7ded3180b730d281c77b765788419484cdfeef/greenlet-3.2.4-cp314-cp314-musllinux_1_2_aarch64.whl", hash = "sha256:2917bdf657f5859fbf3386b12d68ede4cf1f04c90c3a6bc1f013dd68a22e2269", size = 1612508, upload-time = "2025-11-04T12:42:23.427Z" },
     { url = "https://files.pythonhosted.org/packages/0d/da/343cd760ab2f92bac1845ca07ee3faea9fe52bee65f7bcb19f16ad7de08b/greenlet-3.2.4-cp314-cp314-musllinux_1_2_x86_64.whl", hash = "sha256:015d48959d4add5d6c9f6c5210ee3803a830dce46356e3bc326d6776bde54681", size = 1680760, upload-time = "2025-11-04T12:42:25.341Z" },
     { url = "https://files.pythonhosted.org/packages/e3/a5/6ddab2b4c112be95601c13428db1d8b6608a8b6039816f2ba09c346c08fc/greenlet-3.2.4-cp314-cp314-win_amd64.whl", hash = "sha256:e37ab26028f12dbb0ff65f29a8d3d44a765c61e729647bf2ddfbbed621726f01", size = 303425, upload-time = "2025-08-07T13:32:27.59Z" },
-]
-
-[[package]]
-name = "hydra-core"
-version = "1.3.2"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "antlr4-python3-runtime" },
-    { name = "omegaconf" },
-    { name = "packaging" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/6d/8e/07e42bc434a847154083b315779b0a81d567154504624e181caf2c71cd98/hydra-core-1.3.2.tar.gz", hash = "sha256:8a878ed67216997c3e9d88a8e72e7b4767e81af37afb4ea3334b269a4390a824", size = 3263494, upload-time = "2023-02-23T18:33:43.03Z" }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/c6/50/e0edd38dcd63fb26a8547f13d28f7a008bc4a3fd4eb4ff030673f22ad41a/hydra_core-1.3.2-py3-none-any.whl", hash = "sha256:fa0238a9e31df3373b35b0bfb672c34cc92718d21f81311d8996a16de1141d8b", size = 154547, upload-time = "2023-02-23T18:33:40.801Z" },
 ]
 
 [[package]]

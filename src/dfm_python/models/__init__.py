@@ -1,47 +1,22 @@
-"""Factor model implementations.
+"""Factor model estimators.
 
-This package contains implementations of different factor models:
-- DFM (Dynamic Factor Model): Linear factor model with EM estimation
-- DDFM (Deep Dynamic Factor Model): Nonlinear encoder with PyTorch
+- ``DFM``: linear, mixed-frequency dynamic factor model estimated by EM.
+- ``DDFM``: deep dynamic factor model with a nonlinear (PyTorch) encoder.
+- ``iVDFM``: identifiable variational dynamic factor model.
+- ``AFM``: attention factor model for statistical arbitrage.
+
+Each model's engine is private (``models/<model>/_engine.py``); the estimators
+share the base class :class:`dfm_python.base.BaseFactorModel`.
 """
 
-from .base import BaseFactorModel
 from .dfm import DFM
+from .ddfm.estimator import DDFM
+from .ivdfm.estimator import iVDFM
+from .afm.estimator import AFM
 from ..config import BaseResult, DFMResult, DDFMResult
 
 __all__ = [
-    'BaseFactorModel', 'DFM',
+    'DFM', 'DDFM', 'iVDFM', 'AFM',
     # Results
     'BaseResult', 'DFMResult', 'DDFMResult',
 ]
-
-# DDFM implementation
-try:
-    from .ddfm.estimator import DDFM
-    __all__.extend([
-        'DDFM',  # High-level API
-    ])
-except ImportError:
-    # DDFM not available (missing torch or other dependencies)
-    pass
-
-# iVDFM implementation (identifiable variational dynamic factor model)
-try:
-    from .ivdfm.estimator import iVDFM
-    __all__.extend([
-        'iVDFM',  # High-level API
-    ])
-except ImportError:
-    # iVDFM not available (missing torch or other dependencies)
-    pass
-
-# AFM implementation (Attention Factor Model for statistical arbitrage)
-try:
-    from .afm.estimator import AFM
-    __all__.extend([
-        'AFM',  # High-level API
-    ])
-except ImportError:
-    # AFM not available (missing torch or other dependencies)
-    pass
-

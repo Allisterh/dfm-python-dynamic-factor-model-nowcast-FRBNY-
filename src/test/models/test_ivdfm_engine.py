@@ -17,7 +17,6 @@ import pandas as pd
 import pytest
 import torch
 
-from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
 from dfm_python.models.ivdfm._engine import iVDFMEngine
 from dfm_python.utils.errors import ModelNotTrainedError
 
@@ -72,8 +71,10 @@ class TestEngineSurface:
         assert not hasattr(_engine(), name)
 
     def test_engine_does_not_inherit_the_old_base(self):
-        assert not issubclass(iVDFMEngine, EngineBaseFactorModel)
-        assert issubclass(iVDFMEngine, torch.nn.Module)
+        import dfm_python.models.base
+
+        assert not hasattr(dfm_python.models.base, "BaseFactorModel")
+        assert iVDFMEngine.__bases__ == (torch.nn.Module,)
 
     def test_init_sets_the_old_base_attributes(self):
         engine = _engine()

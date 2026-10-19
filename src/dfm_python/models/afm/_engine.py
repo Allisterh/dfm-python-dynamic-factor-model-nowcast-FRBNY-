@@ -20,20 +20,25 @@ empirical CRSP study, which requires licensed point-in-time data.
 ``AFMEngine`` is the private engine behind the public estimator
 :class:`dfm_python.models.afm.estimator.AFM`, which builds its inputs from
 ``PanelData`` and passes every hyperparameter explicitly. The engine's code is
-the pre-redesign ``AFM`` class unchanged, apart from the ``device`` keyword and
-:meth:`AFMEngine._from_saved`.
+the pre-redesign ``AFM`` class unchanged, apart from the ``device`` keyword,
+:meth:`AFMEngine._from_saved` and these removals:
+
+- It no longer inherits the old abstract base ``dfm_python.models.base.BaseFactorModel``
+  (deleted); :func:`_init_engine_state` sets the attributes that base's ``__init__``
+  set, and :meth:`AFMEngine._ensure_result` is the base's method copied unchanged.
+- The ``torch.save`` ``save``/``load`` pair and the inherited ``reset`` and
+  ``_restore_checkpoint_metadata`` are gone; the estimator saves and loads through
+  :meth:`AFMEngine._from_saved`.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 import numpy as np
 import torch
 import torch.nn as nn
 
-from ..base import BaseFactorModel
 from ...config.schema.results import AFMResult
 from ...config.schema.params import AFMModelState
 from ...utils.errors import (ConfigurationError, ModelNotTrainedError,
@@ -46,7 +51,16 @@ from .baselines import avellaneda_lee_weights
 _EPS = 1e-8
 
 
-class AFMEngine(BaseFactorModel, nn.Module):
+def _init_engine_state(engine: Any) -> None:
+    """Set the attributes the old ``models.base.BaseFactorModel.__init__`` set."""
+    engine._config = None
+    engine._result = None
+    engine.training_state = None
+    engine._dataset = None
+    engine.data_processed = None
+
+
+class AFMEngine(nn.Module):
     """Attention Factor Model engine.
 
     Parameters
@@ -82,7 +96,7 @@ class AFMEngine(BaseFactorModel, nn.Module):
                  patience: Optional[int] = None, seed: Optional[int] = None,
                  device: Optional[torch.device] = None,
                  **kwargs: Any) -> None:
-        BaseFactorModel.__init__(self)
+        _init_engine_state(self)
         nn.Module.__init__(self)
 
         # Precedence: explicit kwarg > config field > hardcoded default.
@@ -163,7 +177,7 @@ class AFMEngine(BaseFactorModel, nn.Module):
         """
         with torch.random.fork_rng(devices=[]):
             self = cls.__new__(cls)
-            BaseFactorModel.__init__(self)
+            _init_engine_state(self)
             nn.Module.__init__(self)
             self._config = None
             for name in ("factor_model", "trading", "n_factors", "embed_dim",
@@ -403,34 +417,14 @@ class AFMEngine(BaseFactorModel, nn.Module):
             num_factors=self.n_factors)
         return self._result
 
+    def _ensure_result(self) -> AFMResult:
+        """Ensure result exists, computing it if necessary."""
+        if self._result is None:
+            if self.training_state is None:
+                raise ModelNotTrainedError("Model has not been trained yet")
+            self._result = self.get_result()
+        return self._result
+
     @property
     def result(self) -> AFMResult:
         return self._ensure_result()
-
-    # -------------------------------------------------------------- save/load
-    def save(self, path: Union[str, Path]) -> None:
-        if self.training_state is None:
-            raise ModelNotTrainedError("nothing to save; train first")
-        torch.save({
-            "state_dict": self.state_dict(),
-            "training_state": self.training_state,
-            "arch": {"n_char": self.n_char, "n_factors": self.n_factors,
-                     "embed_dim": self.embed_dim, "hist_len": self.hist_len,
-                     "n_kernels": self.n_kernels, "ridge": self.ridge,
-                     "squash_lambda": self.squash_lambda,
-                     "pca_window": self.pca_window, "reestim": self.reestim,
-                     "factor_model": self.factor_model, "trading": self.trading,
-                     "lambda_var": self.lambda_var,
-                     "turnover_cost": self.turnover_cost,
-                     "short_cost": self.short_cost, "risk_free": self.risk_free},
-        }, Path(path))
-
-    @classmethod
-    def load(cls, path: Union[str, Path], *args: Any, **kwargs: Any) -> AFMEngine:
-        ckpt = torch.load(Path(path), weights_only=False)
-        model = cls(**ckpt["arch"])
-        if not model._built:
-            model._build_components()
-        model.load_state_dict(ckpt["state_dict"])
-        model.training_state = ckpt["training_state"]
-        return model

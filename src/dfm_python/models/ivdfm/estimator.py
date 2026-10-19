@@ -83,10 +83,10 @@ _ENGINE_LOGGERS = (
     "dfm_python.layer",
     "dfm_python.ssm",
 )
-# The engine's training reporter, which also logs its end-of-training summary
-# ("did not converge after N epochs") as a warning; raised to ERROR during fit
-# with verbose=0. converged_ carries the same information.
-_PROGRESS_LOGGERS = ("dfm_python.logger",)
+# The engine's training reporter (iVDFMTrainLogger in logger/progress.py), which
+# also logs its end-of-training summary ("did not converge after N epochs") as a
+# warning; raised to ERROR during fit with verbose=0. converged_ carries the same information.
+_PROGRESS_LOGGERS = ("dfm_python.logger.progress",)
 # Name of the adapter's time column; a suffix is added if a series or exog column has this name.
 _TIME_COLUMN = "__dfm_python_time__"
 # result_ fields not written to result.npz/result.json, rebuilt on load: model_state_dict from

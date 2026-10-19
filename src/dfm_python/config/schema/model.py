@@ -19,8 +19,10 @@ Blocks are DFM-specific and defined as Dict[str, Dict[str, Any]] where each bloc
 - num_factors: int (number of factors)
 - series: List[str] (list of series names/column names in this block)
 
-For loading configurations from files (YAML) or other sources,
-see the config.adapter module which provides source adapters.
+To load an estimator's parameters from a YAML file, use
+``<Model>Config.from_yaml`` or :func:`dfm_python.config.load_yaml`. The engine
+configs here (``BaseModelConfig`` and its subclasses) are private; the parsing
+helpers they use are in ``config.adapter``.
 """
 
 import numpy as np

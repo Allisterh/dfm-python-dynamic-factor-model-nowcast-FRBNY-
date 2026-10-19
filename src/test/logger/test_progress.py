@@ -222,3 +222,139 @@ class TestQuietEngineLoggers:
         with quiet_engine_loggers(0, [self.NAME], logging.ERROR):
             assert logger.level == logging.ERROR
         assert logger.level == logging.NOTSET
+
+
+# -- engine progress reporting (ported from test_train_logger.py and test_inference_logger.py) --
+
+
+PROGRESS = "dfm_python.logger.progress"
+
+
+@pytest.fixture
+def progress_records(caplog):
+    """Capture records of the progress logger at DEBUG and return (level, message) pairs."""
+    caplog.set_level(logging.DEBUG, logger=PROGRESS)
+
+    def records():
+        return [(r.levelno, r.getMessage()) for r in caplog.records if r.name == PROGRESS]
+
+    return records
+
+
+class TestTrainLogger:
+    """``iVDFMTrainLogger`` is the old BaseTrainLogger merged with its iVDFM subclass."""
+
+    def test_train_logger_initialization(self):
+        from dfm_python.logger.progress import iVDFMTrainLogger
+
+        logger = iVDFMTrainLogger()
+        assert logger.model_name == "iVDFM"
+        assert logger.verbose is True
+        assert logger.iterations == 0 and logger.epochs == 0 and logger.converged is False
+        assert logger.metrics_history == [] and logger.start_time is None
+        assert iVDFMTrainLogger(verbose=False).verbose is False
+
+    def test_dropped_methods_and_bases(self):
+        from dfm_python.logger.progress import iVDFMTrainLogger
+
+        assert iVDFMTrainLogger.__bases__ == (object,)
+        assert not hasattr(iVDFMTrainLogger, "log_iteration")
+
+    def test_start_logs_the_config_and_data(self, progress_records):
+        from dfm_python.logger.progress import iVDFMTrainLogger
+
+        logger = iVDFMTrainLogger()
+        logger.start(config={"max_epochs": 5, "optimizer": "Adam"}, data_info={"data_dim": 3})
+        messages = [m for _, m in progress_records()]
+        assert messages[:3] == ["=" * 70, "Starting iVDFM training", "=" * 70]
+        assert "  max_epochs: 5" in messages and "  optimizer: Adam" in messages and "  data_dim: 3" in messages
+        assert logger.start_time is not None
+
+    def test_log_epoch_messages(self, progress_records):
+        from dfm_python.logger.progress import iVDFMTrainLogger
+
+        logger = iVDFMTrainLogger()
+        logger.log_epoch(epoch=3, elbo=1.5, recon_loss=1.0, kl_loss=0.5, learning_rate=1e-3, grad_norm=2.0)
+        quiet = iVDFMTrainLogger(verbose=False)
+        quiet.log_epoch(epoch=3, elbo=1.5)
+        quiet.log_epoch(epoch=10, elbo=1.25)
+        assert progress_records() == [
+            (logging.INFO, f"Epoch    3 | ELBO: {1.5:12.6f} | Recon: {1.0:12.6f} | KL: {0.5:12.6f} | LR: 1.000000e-03"
+                           " | grad_norm: 2.000000"),
+            (logging.INFO, f"Epoch   10 | ELBO: {1.25:12.6f}"),
+        ]
+        assert logger.epochs == 3 and logger.metrics_history[0]["elbo"] == 1.5
+
+    def test_log_convergence_levels(self, progress_records):
+        from dfm_python.logger.progress import iVDFMTrainLogger
+
+        logger = iVDFMTrainLogger()
+        logger.log_convergence(converged=True, num_epochs=4, final_loss=0.25, reason="converged")
+        logger.log_convergence(converged=False, num_epochs=7, reason="max_epochs")
+        assert progress_records() == [
+            (logging.INFO, ""),
+            (logging.INFO, "✓ Training converged after 4 epochs"),
+            (logging.INFO, "  Reason: converged"),
+            (logging.INFO, "  Final training loss: 0.250000"),
+            (logging.INFO, ""),
+            (logging.WARNING, "⚠ Training did not converge after 7 epochs"),
+            (logging.INFO, "  Reason: max_epochs"),
+        ]
+        assert logger.epochs == 7 and logger.converged is False
+
+    def test_end_summarizes(self, progress_records):
+        from dfm_python.logger.progress import iVDFMTrainLogger
+
+        logger = iVDFMTrainLogger()
+        logger.end()
+        assert progress_records() == []  # nothing before start
+        logger.start()
+        logger.log_epoch(epoch=1, elbo=2.0)
+        logger.end(success=False)
+        records = progress_records()
+        assert (logging.ERROR, "Training failed") in records
+        assert (logging.INFO, "  Epochs: 1") in records and (logging.INFO, "  Converged: False") in records
+
+
+class TestEMProgress:
+    """``log_em_iteration`` and ``log_convergence``, called by the DFM EM loop."""
+
+    def test_log_em_iteration(self, progress_records):
+        from dfm_python.logger.progress import log_em_iteration
+
+        log_em_iteration(iteration=2, loglik=-10.5, delta=1e-3, max_iter=5, converged="")
+        log_em_iteration(iteration=3)
+        assert progress_records() == [
+            (logging.INFO, f"EM iteration    2 | Log-likelihood: {-10.5:12.6f} | Delta: 1.000000e-03"
+                           " | max_iter: 5.000000 | converged: "),
+            (logging.INFO, "EM iteration    3"),
+        ]
+
+    def test_log_convergence(self, progress_records):
+        from dfm_python.logger.progress import log_convergence
+
+        log_convergence(converged=True, num_iter=4, final_loglik=-1.0, reason="converged", model_type="dfm")
+        log_convergence(converged=False, num_iter=9, reason="max_iterations_reached", model_type="dfm")
+        log_convergence(converged=False, num_epochs=2, final_loss=0.5, model_type="ddfm")
+        assert progress_records() == [
+            (logging.INFO, "✓ EM algorithm converged after 4 iterations"),
+            (logging.INFO, "  Reason: converged"),
+            (logging.INFO, "  Final log-likelihood: -1.000000"),
+            (logging.WARNING, "⚠ EM algorithm did not converge after 9 iterations"),
+            (logging.INFO, "  Reason: max_iterations_reached"),
+            (logging.WARNING, "⚠ Training did not converge after 2 epochs"),
+            (logging.INFO, "  Final training loss: 0.500000"),
+        ]
+
+
+def test_removed_logger_modules_and_helpers():
+    """The old train/inference logger modules (and their DDFM fallbacks) are gone."""
+    import importlib
+
+    import dfm_python.logger
+
+    for module in ("train_logger", "inference_logger", "ivdfm_logger", "dfm_logger", "ddfm_logger"):
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(f"dfm_python.logger.{module}")
+    for name in ("BaseTrainLogger", "BaseInferenceLogger", "log_training_start", "log_inference_start"):
+        assert not hasattr(dfm_python.logger, name), name

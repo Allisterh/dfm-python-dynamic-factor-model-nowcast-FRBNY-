@@ -12,7 +12,10 @@ apart from these edits, none of which changes math or numbers:
     ``dfm_python.models.numeric``, so ``update()`` always raised
     ``ModuleNotFoundError``;
 (c) the engine's config class is the private ``_DFMEngineConfig`` (the old
-    ``DFMConfig``; ``dfm_python.DFMConfig`` now mirrors the estimator).
+    ``DFMConfig``; ``dfm_python.DFMConfig`` now mirrors the estimator);
+(d) ``log_blocks_diagnostics`` is imported from ``dfm_python.numeric.builder``
+    (it moved there, unchanged, when the ``logger.dfm_logger`` module was
+    removed).
 
 :meth:`DFMEngine._from_saved` rebuilds a trained engine for the estimator's
 ``load`` without ``__init__`` (no dataset): it sets what ``__init__`` and
@@ -31,7 +34,7 @@ pickle-free directory and loads through ``_from_saved``); ``reset``; the
 ``predict``'s ``horizon=None`` default (one year of clock periods through
 ``utils.misc.compute_default_horizon``, removed with it): ``horizon`` is
 required. Without ``save``/``load`` the engine no longer inherits the old
-abstract base ``dfm_python.models.base.BaseFactorModel``:
+abstract base ``dfm_python.models.base.BaseFactorModel`` (since deleted):
 :func:`_init_engine_state` sets the attributes that base's ``__init__`` set, at
 the same point in ``__init__`` and ``_from_saved``, and
 :meth:`DFMEngine._ensure_result` is that base's method, unchanged.
@@ -88,8 +91,7 @@ from .initialization import (
 from .mixed_freq import (
     setup_mixed_frequency_params,
 )
-from ...logger.dfm_logger import log_blocks_diagnostics
-from ...numeric.builder import build_dfm_structure, build_dfm_blocks
+from ...numeric.builder import build_dfm_structure, build_dfm_blocks, log_blocks_diagnostics
 from ...numeric.validator import validate_column_order
 
 _logger = get_logger(__name__)

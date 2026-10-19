@@ -1,6 +1,7 @@
 """The top-level ``dfm_python`` namespace."""
 
 import pytest
+import torch
 
 import dfm_python
 import dfm_python.config
@@ -149,7 +150,6 @@ def test_ddfm_model_state_is_not_public():
 
 def test_ddfm_engine_is_not_public_and_has_no_old_entry_points():
     import dfm_python.models.ddfm as ddfm_pkg
-    from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
     from dfm_python.models.ddfm._engine import DDFMEngine
 
     for namespace in (dfm_python, dfm_python.models, ddfm_pkg, dfm_python.config):
@@ -157,7 +157,7 @@ def test_ddfm_engine_is_not_public_and_has_no_old_entry_points():
         assert not hasattr(namespace, "DDFMEngine"), namespace.__name__
     for name in ("save", "load", "update"):
         assert not hasattr(DDFMEngine, name), name
-    assert not issubclass(DDFMEngine, EngineBaseFactorModel)
+    assert not issubclass(DDFMEngine, BaseFactorModel) and DDFMEngine.__bases__ == (torch.nn.Module,)
 
 
 def test_ddfm_logger_is_gone():
@@ -216,7 +216,6 @@ def test_dfm_state_space_params_alias_is_gone():
 def test_dfm_engine_is_not_public_and_has_no_old_entry_points():
     import dfm_python.models
     import dfm_python.models.dfm as dfm_pkg
-    from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
     from dfm_python.models.dfm._engine import DFMEngine
 
     for namespace in (dfm_python, dfm_python.models, dfm_pkg, dfm_python.config):
@@ -224,7 +223,7 @@ def test_dfm_engine_is_not_public_and_has_no_old_entry_points():
         assert not hasattr(namespace, "DFMEngine"), namespace.__name__
     for name in ("save", "load", "load_config", "reset", "result"):
         assert not hasattr(DFMEngine, name), name
-    assert not issubclass(DFMEngine, EngineBaseFactorModel)
+    assert not issubclass(DFMEngine, BaseFactorModel) and DFMEngine.__bases__ == (object,)
     # The DFM package exports the estimator only; the engine helpers stay in their submodules.
     assert dfm_pkg.__all__ == ["DFM"]
     from dfm_python.models.dfm.initialization import initialize_parameters  # noqa: F401
@@ -232,3 +231,122 @@ def test_dfm_engine_is_not_public_and_has_no_old_entry_points():
     for name in ("find_slower_frequency", "setup_mixed_frequency_params", "initialize_parameters",
                  "build_dfm_structure", "log_blocks_diagnostics"):
         assert name not in dfm_pkg.__all__, name
+
+
+# -- the final cleanup (spec section 13, items 14 and 15) -----------------------------
+
+
+_DATASETS = ("DFMDataset", "DDFMDataset", "iVDFMDataset", "AFMDataset")
+
+
+@pytest.mark.parametrize("name", _DATASETS)
+def test_no_model_dataset_is_public(name):
+    import dfm_python.dataset
+
+    for namespace in (dfm_python, dfm_python.dataset):
+        assert name not in namespace.__all__, (namespace.__name__, name)
+        assert not hasattr(namespace, name), (namespace.__name__, name)
+
+
+def test_dataset_package_exports_the_container_only():
+    import dfm_python.dataset
+    from dfm_python.dataset.time import TimeIndex
+
+    assert dfm_python.dataset.__all__ == ["PanelData", "TimeIndex"]
+    assert dfm_python.dataset.PanelData is PanelData and dfm_python.dataset.TimeIndex is TimeIndex
+    # The datasets live on as the estimators' private adapters.
+    from dfm_python.dataset.afm_dataset import AFMDataset  # noqa: F401
+    from dfm_python.dataset.ddfm_dataset import DDFMDataset  # noqa: F401
+    from dfm_python.dataset.dfm_dataset import DFMDataset  # noqa: F401
+    from dfm_python.dataset.ivdfm_dataset import iVDFMDataset  # noqa: F401
+
+
+@pytest.mark.parametrize(
+    "name", ["ConfigSource", "YamlSource", "DictSource", "make_config_source", "detect_config_type", "BaseModelConfig"]
+)
+def test_config_sources_and_engine_config_base_are_not_exported(name):
+    import dfm_python.config.schema as schema
+    import dfm_python.utils
+
+    for namespace in (dfm_python, dfm_python.config, schema, dfm_python.utils):
+        assert name not in getattr(namespace, "__all__", ()), (namespace.__name__, name)
+        assert not hasattr(namespace, name), (namespace.__name__, name)
+
+
+@pytest.mark.parametrize("name", ["ConfigSource", "YamlSource", "DictSource", "make_config_source"])
+def test_config_sources_are_deleted(name):
+    import dfm_python.config.adapter as adapter
+
+    assert not hasattr(adapter, name)
+
+
+def test_config_adapter_keeps_the_engine_config_helpers():
+    import dfm_python.config.adapter as adapter
+    import dfm_python.config.schema.model as model
+
+    for name in ("_raise_config_error", "_is_dict_like", "_convert_series_to_frequency_dict",
+                 "_extract_frequency_dict", "_normalize_blocks_dict", "detect_config_type"):
+        assert callable(getattr(adapter, name)), name
+    assert (adapter.MODEL_TYPE_DFM, adapter.MODEL_TYPE_DDFM) == ("dfm", "ddfm")
+    assert isinstance(model.BaseModelConfig, type)
+
+
+@pytest.mark.parametrize("module", ["train_logger", "inference_logger", "ivdfm_logger", "dfm_logger", "ddfm_logger"])
+def test_old_logger_modules_are_gone(module):
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module(f"dfm_python.logger.{module}")
+
+
+def test_logger_package_is_logger_and_progress():
+    from pathlib import Path
+
+    import dfm_python.logger
+    import dfm_python.logger.progress as progress
+
+    package = Path(dfm_python.logger.__file__).parent
+    assert sorted(p.name for p in package.glob("*.py")) == ["__init__.py", "logger.py", "progress.py"]
+    assert dfm_python.logger.__all__ == [
+        "get_logger", "setup_logging", "configure_logging", "set_verbosity", "get_verbosity",
+        "fit_verbosity", "quiet_engine_loggers",
+    ]
+    for name in ("BaseTrainLogger", "DFMTrainLogger", "BaseInferenceLogger", "DFMInferenceLogger",
+                 "iVDFMInferenceLogger", "log_training_start", "log_training_step", "log_training_end",
+                 "log_training_epoch", "log_inference_start", "log_inference_step", "log_inference_end",
+                 "log_prediction"):
+        assert not hasattr(dfm_python.logger, name), name
+        assert not hasattr(progress, name), name
+    # What the engines call moved to progress.py.
+    for name in ("log_em_iteration", "log_convergence", "iVDFMTrainLogger"):
+        assert hasattr(progress, name), name
+
+
+def test_engines_import_their_progress_reporting_from_progress():
+    import dfm_python.functional.em as em
+    import dfm_python.logger.progress as progress
+    import dfm_python.models.dfm._engine as dfm_engine
+    import dfm_python.models.ivdfm._engine as ivdfm_engine
+    import dfm_python.numeric.builder as builder
+
+    assert em.log_em_iteration is progress.log_em_iteration and em.log_convergence is progress.log_convergence
+    assert ivdfm_engine.iVDFMTrainLogger is progress.iVDFMTrainLogger
+    assert dfm_engine.log_blocks_diagnostics is builder.log_blocks_diagnostics
+
+
+def test_models_package_exports_the_estimators_and_results():
+    import dfm_python.models
+
+    assert dfm_python.models.__all__ == ["DFM", "DDFM", "iVDFM", "AFM", "BaseResult", "DFMResult", "DDFMResult"]
+    for name in ("DFM", "DDFM", "iVDFM", "AFM"):
+        assert getattr(dfm_python.models, name) is getattr(dfm_python, name), name
+
+
+def test_estimate_var_is_defined_once():
+    import inspect
+
+    import dfm_python.numeric.estimator as estimator
+
+    source = inspect.getsource(estimator)
+    assert source.count("\ndef estimate_var(") == 1
+    assert list(inspect.signature(estimator.estimate_var).parameters)[:2] == ["y", "x"]

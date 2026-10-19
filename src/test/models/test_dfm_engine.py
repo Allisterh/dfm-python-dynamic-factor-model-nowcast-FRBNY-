@@ -203,9 +203,9 @@ class TestEngineSurface:
         assert not hasattr(fitted, name)
 
     def test_no_old_base_class(self):
-        from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
+        import dfm_python.models.base
 
-        assert not issubclass(DFMEngine, EngineBaseFactorModel)
+        assert not hasattr(dfm_python.models.base, "BaseFactorModel")
         assert DFMEngine.__mro__ == (DFMEngine, object)
 
     def test_init_sets_the_old_base_attributes(self):

@@ -34,7 +34,6 @@ from ..config import (
     validate_frequency,
     get_agg_structure,
     group_by_freq,
-    detect_config_type,
 )
 
 # Import constants from config.constants
@@ -135,7 +134,6 @@ __all__ = [
     'generate_R_mat',
     'get_agg_structure',
     'group_by_freq',
-    'detect_config_type',
     # Helper utilities
     'resolve_param',
     'resolve_named_param',

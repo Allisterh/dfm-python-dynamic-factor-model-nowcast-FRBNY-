@@ -41,7 +41,7 @@ class CoreDebugFilter(logging.Filter):
     CORE_LOGGERS = [
         'dfm_python.models.dfm',
         'dfm_python.ssm.kalman',
-        'dfm_python.logger.train_logger'
+        'dfm_python.logger.progress'
     ]
     
     def filter(self, record: logging.LogRecord) -> bool:

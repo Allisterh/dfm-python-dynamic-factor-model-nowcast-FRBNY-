@@ -36,7 +36,7 @@ and loads through ``_from_saved``); the ``data=``/``update=`` and
 ``return_series``/``return_factors`` branches of ``predict`` and the public
 ``update`` wrapper (the estimator calls ``_update``). Without ``save``/``load``
 the engine no longer inherits the old abstract base
-``dfm_python.models.base.BaseFactorModel``; :func:`_init_engine_state` sets the
+``dfm_python.models.base.BaseFactorModel`` (since deleted); :func:`_init_engine_state` sets the
 attributes that base's ``__init__`` set. The never-read ``max_epoch_pre_train``
 and ``min_target_interporate_ratio`` stay as attributes with their defaults.
 """

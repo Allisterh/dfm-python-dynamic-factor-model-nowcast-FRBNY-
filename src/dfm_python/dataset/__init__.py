@@ -1,26 +1,21 @@
-"""PyTorch Dataset and DataLoader utilities for Dynamic Factor Models.
+"""Data container and time utilities.
 
-This module provides PyTorch-compatible Dataset and DataLoader implementations
-for PyTorch-based DFM models (e.g., DDFM) that use gradient descent training.
+This package exports:
+- ``PanelData``: the one data container every estimator's ``fit`` takes.
+- ``TimeIndex``: time-index utilities.
 
-This module provides:
-- Data container: PanelData
-- Dataset classes: AFMDataset
-
-The DFM, DDFM and iVDFM datasets are their estimators' private adapters
-(``dataset.dfm_dataset``, ``dataset.ddfm_dataset``, ``dataset.ivdfm_dataset``)
-and are not exported.
+The per-model datasets are the estimators' private adapters
+(``dataset.dfm_dataset``, ``dataset.ddfm_dataset``, ``dataset.ivdfm_dataset``,
+``dataset.afm_dataset``) and are not exported; ``fit`` builds them from
+``PanelData`` and the hyperparameters.
 """
 
-from .afm_dataset import AFMDataset
 from .panel import PanelData
 from .time import TimeIndex
 
 __all__ = [
     # Data container
     'PanelData',
-    # Datasets
-    'AFMDataset',
     # Time utilities
     'TimeIndex',
 ]

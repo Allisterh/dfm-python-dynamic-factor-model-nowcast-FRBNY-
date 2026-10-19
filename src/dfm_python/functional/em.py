@@ -77,7 +77,7 @@ from ..numeric.estimator import (
 from ..utils.helper import handle_linear_algebra_error
 from ..utils.misc import get_config_attr
 from ..utils.errors import DataValidationError, NumericalError
-from ..logger import log_em_iteration, log_convergence
+from ..logger.progress import log_em_iteration, log_convergence
 
 _logger = get_logger(__name__)
 

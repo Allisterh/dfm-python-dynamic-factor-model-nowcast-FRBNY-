@@ -24,8 +24,9 @@ Every migrated model subclasses :class:`BaseFactorModel`, which builds on
   ``_save_state`` / ``_load_state`` hooks with the ``_write_*`` / ``_read_*``
   helpers below.
 
-This is not the engine base class ``dfm_python.models.base.BaseFactorModel``,
-which the unmigrated models still inherit.
+All four models (``DFM``, ``DDFM``, ``iVDFM``, ``AFM``) inherit it; their
+private engines inherit no common base (the old abstract engine base in
+``dfm_python.models.base`` was removed).
 """
 
 from __future__ import annotations

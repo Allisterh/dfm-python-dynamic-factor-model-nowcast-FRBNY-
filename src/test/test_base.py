@@ -14,7 +14,6 @@ from sklearn.utils.validation import check_is_fitted
 import dfm_python
 from dfm_python.base import DEFAULT_TAGS, BaseFactorModel
 from dfm_python.dataset.panel import PanelData
-from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
 from dfm_python.utils.errors import ConfigurationError, DataValidationError, NotFittedError, UnsupportedInputError
 
 from .contract._dummies import _DummyAllocator, _DummyForecaster, _DummyForecasterConfig
@@ -40,11 +39,39 @@ class _Child(_DummyForecaster):
 
 
 def test_top_level_base_is_the_estimator_base():
-    # Of the model engines, only the AFM engine still inherits the old base from models.base;
-    # the iVDFM, DDFM and DFM engines no longer do.
     assert dfm_python.BaseFactorModel is BaseFactorModel
-    assert BaseFactorModel is not EngineBaseFactorModel
     assert "BaseFactorModel" in dfm_python.__all__
+
+
+def test_old_engine_base_is_gone():
+    # The old abstract engine base in models.base is deleted; that module keeps
+    # only the network component bases of DDFM and iVDFM.
+    import dfm_python.models
+    import dfm_python.models.base as engine_base
+
+    assert not hasattr(engine_base, "BaseFactorModel")
+    assert hasattr(engine_base, "BaseEncoder") and hasattr(engine_base, "BaseDecoder")
+    assert "BaseFactorModel" not in dfm_python.models.__all__
+    assert not hasattr(dfm_python.models, "BaseFactorModel")
+
+
+@pytest.mark.parametrize(
+    "model, name", [("afm", "AFMEngine"), ("ddfm", "DDFMEngine"), ("dfm", "DFMEngine"), ("ivdfm", "iVDFMEngine")]
+)
+def test_no_engine_has_the_old_base_or_its_entry_points(model, name):
+    import importlib
+
+    import torch
+
+    module = importlib.import_module(f"dfm_python.models.{model}._engine")
+    engine = getattr(module, name)
+    assert not issubclass(engine, BaseFactorModel)
+    assert all(base in (object, torch.nn.Module) for base in engine.__bases__), engine.__bases__
+    for name in ("save", "load", "reset", "_restore_checkpoint_metadata", "load_config"):
+        assert not hasattr(engine, name), (engine.__name__, name)
+    for name in ("fit", "predict", "get_result"):
+        assert hasattr(engine, name), (engine.__name__, name)
+    assert callable(module._init_engine_state)
 
 
 # -- tags -------------------------------------------------------------------

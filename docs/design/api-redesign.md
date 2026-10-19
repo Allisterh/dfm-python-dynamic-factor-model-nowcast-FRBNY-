@@ -355,7 +355,7 @@ The global seeding call sites stay where they are and call one helper, `utils.se
 - `dfm_python.set_verbosity("debug" | "info" | "warning" | "error")` and `get_verbosity()` are the opt-in. `DFM_PYTHON_VERBOSITY` is honoured.
 - Every model takes `verbose: int = 0`: 0 is silent, 1 shows progress and 2 is debug. The progress handler is attached only during `fit`.
 - DDFM's `disp` interval maps to `verbose=1`. iVDFM's hard-coded `verbose=True` becomes the parameter.
-- The five logger modules collapse into `logger.py` and `progress.py`.
+- The five logger modules collapse into `logger.py` and `progress.py`. Done: `logger.py` keeps `get_logger`, `setup_logging`, `configure_logging`, `set_verbosity`, `get_verbosity` and the environment verbosity; `progress.py` holds `fit_verbosity`, `quiet_engine_loggers` and the engines' progress reporting (`log_em_iteration`, `log_convergence`, `iVDFMTrainLogger`) with unchanged messages and levels. `log_blocks_diagnostics` moved to `numeric/builder.py`. The unused training and inference logger classes and helpers were removed.
 
 None of this changes numbers.
 
@@ -454,6 +454,7 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
 12. **DFM.** Engine move, the adapter that builds `DFMConfig` and `DFMDataset` with the stable partition and output in user order, `_from_saved` with `data_processed` and the last smoothed state, `new_rows` validation and `update`. Remove `load_config`. Add the permuted-input golden case, contract registration and the golden switch.
 13. **DFM and DDFM examples.** Rewrite the YAMLs and tutorials on the new API.
 14. **Cleanup.** Remove the public `*Dataset` exports, `ConfigSource`, `YamlSource` and `make_config_source`; rename the old engine base class; collapse the logger modules; make the tutorials a CI smoke job on truncated data.
+    Done. The old engine base class was deleted rather than renamed: once no engine inherited it, nothing used it (`models/base.py` keeps `BaseEncoder` and `BaseDecoder` for the DDFM and iVDFM networks), and each engine sets its attributes in `_init_engine_state`. `DictSource`, `detect_config_type` (still used privately by the DFM engine config) and `BaseModelConfig` are no longer exported either. The unused `examples` extra (hydra-core) was removed. The CI `tutorials` job runs the nine scripts with 120 rows (400 for the weekly-clock macro DFM) and one iteration or epoch.
 15. **Documentation.** Rewrite the README and write the CHANGELOG entry described in section 12.
 
 ## 14. Risks

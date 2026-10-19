@@ -90,7 +90,7 @@ _ENGINE_LOGGERS = (
     "dfm_python.ssm",
     "dfm_python.numeric",
     "dfm_python.dataset.dfm_dataset",
-    "dfm_python.logger",
+    "dfm_python.logger.progress",  # log_em_iteration and log_convergence
     "dfm_python.utils",
     "dfm_python.config",
 )

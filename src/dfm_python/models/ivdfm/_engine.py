@@ -18,7 +18,7 @@ config class ``_iVDFMEngineConfig`` (the old ``iVDFMConfig``),
 raw-data branch of ``update`` (it takes an ``iVDFMDataset`` only) and
 ``hyperparameter_optimization`` (see :func:`dfm_python.tuning.tune_hyperparameters`).
 Without ``save``/``load`` the engine no longer inherits the old abstract base
-``dfm_python.models.base.BaseFactorModel``; :func:`_init_engine_state` sets the
+``dfm_python.models.base.BaseFactorModel`` (since deleted); :func:`_init_engine_state` sets the
 attributes that base's ``__init__`` set.
 """
 
@@ -30,7 +30,7 @@ import torch
 import torch.nn as nn
 
 from ...logger import get_logger
-from ...logger.ivdfm_logger import iVDFMTrainLogger
+from ...logger.progress import iVDFMTrainLogger
 from ...config.constants import DEFAULT_LOSS_LOG_PRECISION
 from ...config.types import to_numpy
 from ...config.constants import (

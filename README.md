@@ -27,11 +27,10 @@ Optional extras:
 
 | Extra      | Adds        | Needed for                                              |
 |------------|-------------|---------------------------------------------------------|
-| `yaml`     | omegaconf   | loading configs from YAML (`YamlSource`)                |
+| `yaml`     | omegaconf   | reading YAML configs (`load_yaml`, `XConfig.from_yaml`) |
 | `tune`     | optuna      | iVDFM hyperparameter search (`dfm_python.tuning`)       |
 | `metrics`  | sktime      | `calculate_rmse`, `calculate_mae`                       |
-| `polars`   | polars, pyarrow | passing polars DataFrames to the dataset classes    |
-| `examples` | hydra-core  | running the scripts in `tutorial/`                      |
+| `polars`   | polars, pyarrow | passing polars DataFrames to `PanelData`            |
 | `all`      | all of the above |                                                    |
 
 ```bash
@@ -335,10 +334,11 @@ end to end (`--rows` and `--max-iter` shorten a run).
 src/dfm_python/
   models/      dfm/, ddfm/, ivdfm/, afm/ model classes
   dataset/     PanelData, and the private data adapters of DFM, DDFM, iVDFM and AFM
-  config/      model configs (DFMConfig, ..., AFMConfig), YAML adapter, results
+  config/      constructor mirrors (DFMConfig, ..., AFMConfig), load_yaml, results
   ssm/         state-space form and Kalman filtering
   functional/  EM algorithm
-  numeric/, layer/, utils/, logger/   shared numerics, network layers, helpers
+  numeric/, layer/, utils/   shared numerics, network layers, helpers
+  logger/      logger.py (set_verbosity) and progress.py (fit-scoped progress)
 src/test/      pytest suite
 config/        example YAML configurations (model: and data: sections)
 data/          example datasets used by the tutorials

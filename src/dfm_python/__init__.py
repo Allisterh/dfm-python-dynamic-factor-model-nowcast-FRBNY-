@@ -50,10 +50,6 @@ if not any(isinstance(h, _logging.NullHandler) for h in _package_logger.handlers
 del _package_logger
 
 # Configuration
-from .config import (
-    ConfigSource, YamlSource,
-    make_config_source,
-)
 from .config import DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig
 
 # Results
@@ -75,8 +71,7 @@ from .dataset.panel import PanelData
 # Saved runs
 from .io.loading import load
 
-# Models (BaseFactorModel is the estimator base; the AFM engine still
-# inherits the old one from dfm_python.models.base)
+# Models (BaseFactorModel is the estimator base class of all four)
 from .base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.estimator import DDFM
@@ -89,8 +84,6 @@ __all__ = [
     'DFM', 'DDFM', 'iVDFM', 'AFM',
     # Configs
     'DFMConfig', 'DDFMConfig', 'iVDFMConfig', 'AFMConfig',
-    # Config sources
-    'ConfigSource', 'YamlSource', 'make_config_source',
     # Data container
     'PanelData',
     # Saved runs
