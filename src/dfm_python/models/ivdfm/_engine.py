@@ -9,7 +9,10 @@ conditions to the innovation process driving dynamics.
 dataset from ``PanelData`` and passes every hyperparameter explicitly. The
 engine's code is the pre-redesign ``iVDFM`` class unchanged, apart from two
 pure extractions from ``predict``: :meth:`iVDFMEngine._future_time_features`
-and :meth:`iVDFMEngine._forecast`, which ``predict`` calls.
+and :meth:`iVDFMEngine._forecast`, which ``predict`` calls, and the private
+config class ``_iVDFMEngineConfig`` (the old ``iVDFMConfig``). Saved runs are
+rebuilt without ``__init__`` (no dataset, no seeding) by
+:meth:`iVDFMEngine._from_saved`.
 """
 
 import time
@@ -45,7 +48,7 @@ from ...layer.regime import RegimeNet
 from ...layer.mixing import build_factor_mixing
 from ...ssm.companion import iVDFMCompanionSSM
 from ...dataset.ivdfm_dataset import iVDFMDataset
-from ...config.schema.model import iVDFMConfig
+from ...config.schema.model import _iVDFMEngineConfig
 from ...config.schema.params import iVDFMModelState
 from ...config.schema.results import iVDFMResult
 from ...numeric.builder import build_ivdfm_optimizer
@@ -68,7 +71,7 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
         num_factors: Optional[int] = None,  # Aligned with config: num_factors (not latent_dim)
         context_dim: Optional[int] = None,
         window: Optional[int] = None,
-        config: Optional[iVDFMConfig] = None,
+        config: Optional[_iVDFMEngineConfig] = None,
         # Network architecture (used if config is None)
         encoder_hidden_dim: Union[int, list] = 200,
         encoder_n_hidden_layers: int = 2,
@@ -155,14 +158,14 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
         
         # Build config: start with provided config or defaults, then override with parameters and kwargs
         if config is not None:
-            if isinstance(config, iVDFMConfig):
+            if isinstance(config, _iVDFMEngineConfig):
                 from dataclasses import asdict
                 config_dict = asdict(config)
             elif isinstance(config, dict):
                 config_dict = config.copy()
             else:
                 raise ConfigurationError(
-                    f"config must be iVDFMConfig instance or dict, got {type(config)}"
+                    f"config must be _iVDFMEngineConfig instance or dict, got {type(config)}"
                 )
         else:
             config_dict = {}
@@ -237,14 +240,14 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
         config_dict = {k: v for k, v in config_dict.items() if v is not None}
         
         # Create config object (structural params: num_factors, factor_order, num_regimes, etc. are model selection, not tuning)
-        self._config = iVDFMConfig.from_dict(config_dict) if config_dict else iVDFMConfig()
+        self._config = _iVDFMEngineConfig.from_dict(config_dict) if config_dict else _iVDFMEngineConfig()
         
         # Extract all parameters from config (simplified, unified approach)
         self.data_dim = data_dim  # Can be None, inferred during fit
         # Keep latent_dim as internal attribute name (more intuitive), but use num_factors from config
         self.latent_dim = self._config.num_factors or DEFAULT_IVDFM_LATENT_DIM
         # context_dim: preserve None if not provided
-        # Note: context_dim is NOT in iVDFMConfig schema (replaced by time_context + context columns).
+        # Note: context_dim is NOT in _iVDFMEngineConfig schema (replaced by time_context + context columns).
         # context_dim is inferred from dataset during fit() based on time_context + custom context columns.
         # If user explicitly passes context_dim parameter, use it; otherwise None (will be inferred from dataset).
         self.context_dim = context_dim
@@ -333,6 +336,97 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
         # Move to device
         self.to(self.device)
     
+    @classmethod
+    def _from_saved(cls, params: Dict[str, Any], dims: Dict[str, Any], device: Any) -> 'iVDFMEngine':
+        """Rebuild an engine without ``__init__``: no dataset, no seeding.
+        
+        ``params`` holds the keyword arguments the estimator passes to
+        ``__init__`` (``num_factors``, ``window``, the architecture, training
+        and scheduler values, ``tolerance``, ``seed``, ``stride``,
+        ``time_context``, ``scaler``, ``num_regimes``, ...). ``_config`` is
+        built from them as ``__init__`` builds it, except that None values are
+        kept (the estimator sets them on a fitted engine too). ``dims`` holds
+        the values training sets: ``data_dim``, ``context_dim``,
+        ``time_context`` (after fit, the width of u_t) and ``window``. Every
+        attribute ``__init__`` sets is set; the components are built on
+        ``device`` inside ``torch.random.fork_rng`` (their builders seed and
+        draw from the global torch RNG, which is restored afterwards). The
+        engine has no optimizer, scheduler or training state and is in eval
+        mode, as after ``fit``; load the saved weights over the components.
+        """
+        import dataclasses
+
+        device = torch.device(device)
+        config_dict = {k: v for k, v in params.items() if v is not None}
+        config = _iVDFMEngineConfig.from_dict(config_dict) if config_dict else _iVDFMEngineConfig()
+        fields = {f.name for f in dataclasses.fields(config)}
+        dropped = {k: v for k, v in params.items() if v is None and k in fields}
+        if dropped:
+            config = dataclasses.replace(config, **dropped)
+
+        self = cls.__new__(cls)
+        BaseFactorModel.__init__(self)
+        nn.Module.__init__(self)
+        self._config = config
+        self._dataset = None
+        self.data_dim = dims["data_dim"]
+        self.latent_dim = config.num_factors or DEFAULT_IVDFM_LATENT_DIM
+        self.context_dim = dims["context_dim"]
+        self.time_context = dims["time_context"]
+        self.window = dims["window"]
+        self.encoder_hidden_dim = config.encoder_hidden_dim
+        self.encoder_n_hidden_layers = config.encoder_n_hidden_layers
+        self.decoder_type = getattr(config, "decoder_type", "mlp")
+        self.decoder_hidden_dim = config.decoder_hidden_dim
+        self.decoder_n_hidden_layers = config.decoder_n_hidden_layers
+        self.prior_hidden_dim = config.prior_hidden_dim
+        self.prior_n_hidden_layers = config.prior_n_hidden_layers
+        self.activation = config.activation
+        self.slope = config.slope
+        self.factor_order = config.factor_order
+        self.innovation_distribution = config.innovation_distribution
+        self.decoder_var = config.decoder_var
+        self.num_regimes = self._get_config_attr('num_regimes', 1)
+        self.regime_temperature = self._get_config_attr('regime_temperature', 1.0)
+        self.beta_kl = self._get_config_attr('beta_kl', 1.0)
+        self.use_layer_norm = self._get_config_attr('use_layer_norm', False)
+        self.mixing = self._get_config_attr('mixing', False)
+        self.learning_rate = config.learning_rate
+        self.optimizer_type = config.optimizer
+        self.optimizer_weight_decay = config.optimizer_weight_decay
+        self.optimizer_momentum = config.optimizer_momentum
+        self.batch_size = config.batch_size
+        self.max_epochs = config.max_epochs
+        self.tolerance = config.tolerance
+        self.patience = self._get_config_attr('patience', None)
+        self.scheduler_type = config.scheduler_type
+        self.scheduler_step_size = config.scheduler_step_size
+        self.scheduler_gamma = config.scheduler_gamma
+        self.scheduler_patience = config.scheduler_patience
+        self.scheduler_factor = config.scheduler_factor
+        self.scheduler_min_lr = config.scheduler_min_lr
+        self.device = device
+        self.seed = params.get("seed")
+
+        # The builders call torch.manual_seed (all devices), so every CUDA generator is forked too.
+        devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+        with torch.random.fork_rng(devices=devices):
+            self._build_components()
+        self.to(self.device)
+
+        self.optimizer = None
+        self.scheduler = None
+        self.training_state = None
+        self.factors = None
+        self.innovations = None
+        self.regime_weights = None
+        self._num_iter = 0
+        self.loss_now = None
+        self._elbo = None
+        self._converged = False
+        self.eval()
+        return self
+
     def _get_config_attr(self, attr: str, default: Any = None) -> Any:
         """Helper to safely get config attribute with default."""
         return getattr(self._config, attr, default) if self._config is not None else default

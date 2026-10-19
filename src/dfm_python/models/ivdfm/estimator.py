@@ -11,15 +11,25 @@ innovations and forecasts.
 
 ``predict(h)`` returns forecasts in data units (the engine's model-space
 forecast inverse-transformed with ``scaler_``), and ``predict_factors(h)`` the
-forecast factors.
+forecast factors. ``update(data)`` encodes new data with the fixed networks
+and appends the factors (the engine's ``update``); ``predict(h, data=...)``
+does the same on a copy, so the model is unchanged.
+
+``save(path)`` writes the pickle-free directory of the save layout
+(``state.npz``/``state.json`` with the engine's factor state and the fit's
+``factors_``, ``result.npz``/``result.json`` with ``result_`` and
+``weights.pt`` with the network weights); ``iVDFM.load(path, device=None)``
+rebuilds the engine from them without data or seeding.
 """
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import logging
 import math
 import warnings
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
@@ -32,12 +42,16 @@ from sklearn.utils.validation import check_is_fitted
 
 from ...base import BaseFactorModel
 from ...config.constants import VALID_OPTIMIZERS
+from ...config.schema.model import iVDFMConfig
+from ...config.schema.params import iVDFMModelState
+from ...config.schema.results import iVDFMResult
 from ...config.types import to_numpy
 from ...dataset.ivdfm_dataset import iVDFMDataset
 from ...dataset.panel import PanelData
+from ...io.layout import index_from_spec, index_to_spec
 from ...logger import get_logger
-from ...logger.progress import quiet_engine_loggers
-from ...utils.errors import ConfigurationError, DataValidationError
+from ...logger.progress import fit_verbosity, quiet_engine_loggers
+from ...utils.errors import ConfigurationError, DataValidationError, UnsupportedInputError
 from ._engine import iVDFMEngine
 
 __all__ = ["iVDFM"]
@@ -75,6 +89,11 @@ _ENGINE_LOGGERS = (
 _PROGRESS_LOGGERS = ("dfm_python.logger",)
 # Name of the adapter's time column; a suffix is added if a series or exog column has this name.
 _TIME_COLUMN = "__dfm_python_time__"
+# result_ fields not written to result.npz/result.json, rebuilt on load: model_state_dict from
+# weights.pt and config (asdict of the engine config) from the engine rebuilt from config.json.
+_RESULT_REBUILT = ("model_state_dict", "config")
+# Values of the engine and of the estimator that training sets, written to state.json.
+_ENGINE_DIMS = ("data_dim", "context_dim", "time_context", "window")
 
 
 def _is_int(value: Any) -> bool:
@@ -87,6 +106,27 @@ def _is_real(value: Any) -> bool:
         and not isinstance(value, (bool, np.bool_))
         and math.isfinite(value)
     )
+
+
+class _FittedScaler:
+    """The fitted ``scaler_`` as the dataset's scaler: ``fit_transform`` only transforms.
+
+    ``update`` and ``predict(data=...)`` build the dataset like ``fit`` does,
+    so missing values are filled in data units before the targets are
+    scaled, but the scaler is not refitted.
+    """
+
+    def __init__(self, scaler: Any) -> None:
+        self.scaler = scaler
+
+    def fit_transform(self, X: Any) -> Any:
+        return self.scaler.transform(X)
+
+    def transform(self, X: Any) -> Any:
+        return self.scaler.transform(X)
+
+    def inverse_transform(self, X: Any) -> Any:
+        return self.scaler.inverse_transform(X)
 
 
 class _RecordingDataset(iVDFMDataset):
@@ -208,7 +248,7 @@ class iVDFM(BaseFactorModel):
     factors_ : pandas.DataFrame
         Smoothed factors of every training window, float64, with a
         ``(window, time)`` MultiIndex in chronological order and columns
-        ``factor_0`` .. ``factor_{r-1}``.
+        ``factor_0`` .. ``factor_{r-1}``. ``update`` does not change it.
     network_ : torch.nn.Module
         The trained engine.
     device_ : torch.device
@@ -233,8 +273,9 @@ class iVDFM(BaseFactorModel):
     context_dim_ : int
         Width of u_t: ``time_context_`` plus the number of exog columns.
     conditioning_index_ : pandas.Index
-        Time index of the data the forecasts start from; ``predict(h)``
-        returns the ``h`` stamps after its last entry.
+        Time index of the data the forecasts start from (the training data,
+        or the data of the last ``update``); ``predict(h)`` returns the ``h``
+        stamps after its last entry.
 
     Examples
     --------
@@ -242,6 +283,9 @@ class iVDFM(BaseFactorModel):
     >>> data = PanelData(y=targets_df, exog=context_df)  # doctest: +SKIP
     >>> model = iVDFM(n_factors=5, factor_order=3, window=200, max_epochs=10, scaler="standard").fit(data)  # doctest: +SKIP
     >>> model.predict(6, futr_exog=future_context_df)  # doctest: +SKIP
+    >>> model.update(new_data).predict(6, futr_exog=future_context_df)  # doctest: +SKIP
+    >>> model.save("runs/ivdfm")  # doctest: +SKIP
+    >>> iVDFM.load("runs/ivdfm").predict(6, futr_exog=future_context_df)  # doctest: +SKIP
     """
 
     _tags = {
@@ -257,6 +301,7 @@ class iVDFM(BaseFactorModel):
         # The class default (random_state=3); an instance reports random_state is None.
         "non_deterministic": False,
     }
+    _config_class = iVDFMConfig
 
     def __init__(
         self,
@@ -346,14 +391,16 @@ class iVDFM(BaseFactorModel):
 
     @classmethod
     def get_test_params(cls) -> list[dict]:
-        """Small CPU parameter sets: one regime with a scaler, and two regimes with AR(2) factors."""
+        """Small CPU parameter sets: one regime, and two regimes with AR(2) factors, mixing, a linear decoder and a scaler."""
         tiny = {
-            "n_factors": 2, "window": 8, "encoder_hidden_dim": 8, "decoder_hidden_dim": 8, "prior_hidden_dim": 8,
+            "n_factors": 2, "window": 12, "encoder_hidden_dim": 8, "decoder_hidden_dim": 8, "prior_hidden_dim": 8,
+            "encoder_n_hidden_layers": 1, "decoder_n_hidden_layers": 1, "prior_n_hidden_layers": 1,
             "batch_size": 4, "max_epochs": 2, "random_state": 0, "device": "cpu",
         }
         return [
-            {**tiny, "scaler": "standard"},
-            {**tiny, "n_regimes": 2, "factor_order": 2, "time_context": 2},
+            tiny,
+            {**tiny, "n_regimes": 2, "factor_order": 2, "time_context": 2, "mixing": True, "decoder_type": "linear",
+             "scaler": "standard"},
         ]
 
     # -- validation ----------------------------------------------------------
@@ -478,13 +525,18 @@ class iVDFM(BaseFactorModel):
             )
         return clone(scaler)
 
-    def _adapter(self, panel: PanelData, device: torch.device) -> _RecordingDataset:
+    def _adapter(self, panel: PanelData, device: torch.device, *, fitted: bool = False) -> _RecordingDataset:
         """The engine's dataset built from ``panel``: a frame ``[time | y | exog]`` on a RangeIndex.
 
         The time column holds the ``DatetimeIndex`` (a ``PeriodIndex`` through
         ``to_timestamp()``); a ``RangeIndex`` gives no time column, so the time
         features use the position. The dataset interpolates missing values,
         scales the targets and cuts the windows exactly as before.
+
+        With ``fitted=True`` (``update`` and ``predict(data=...)``) the dataset
+        uses the fitted ``window_``, ``stride_`` and ``time_context_`` (the
+        dataset clips the window to the length of ``panel``) and scales the
+        targets with ``scaler_`` without refitting it.
         """
         frame = panel.y.reset_index(drop=True)
         if panel.exog is not None:
@@ -501,26 +553,35 @@ class iVDFM(BaseFactorModel):
             while time_col in set(frame.columns):
                 time_col += "_"
             frame.insert(0, time_col, np.asarray(stamps))
+        if fitted:
+            window, stride, time_context = self.window_, self.stride_, self.time_context_
+            scaler = None if self.scaler_ is None else _FittedScaler(self.scaler_)
+        else:
+            window, stride, time_context, scaler = self.window, self.stride, self.time_context, self._fresh_scaler()
         return _RecordingDataset(
             data=frame,
-            window=self.window,
-            stride=self.stride,
+            window=window,
+            stride=stride,
             time_idx=time_col,
             context=list(panel.exog_names),
-            time_context=self.time_context,
-            scaler=self._fresh_scaler(),
+            time_context=time_context,
+            scaler=scaler,
             device=device,
         )
 
-    def _engine_params(self, dataset: iVDFMDataset) -> dict:
-        """Every engine hyperparameter, passed explicitly under the engine's names."""
+    def _engine_params(self, window: int, stride: int) -> dict:
+        """Every engine hyperparameter, passed explicitly under the engine's names.
+
+        ``window`` and ``stride`` are the dataset's (``window=None`` is the
+        series length and ``stride=None`` is ``window // 2``).
+        """
 
         def widths(value: Any) -> Any:
             return list(value) if isinstance(value, tuple) else value
 
         return {
             "num_factors": self.n_factors,
-            "window": dataset.window,
+            "window": window,
             "encoder_hidden_dim": widths(self.encoder_hidden_dim),
             "encoder_n_hidden_layers": self.encoder_n_hidden_layers,
             "decoder_type": self.decoder_type,
@@ -540,7 +601,7 @@ class iVDFM(BaseFactorModel):
             "tolerance": self.tol,
             "seed": self.random_state,
             # The rest reach the engine's config through its **kwargs.
-            "stride": dataset.stride,
+            "stride": stride,
             "time_context": self.time_context,
             "scaler": self._scaler_name(),
             "num_regimes": self.n_regimes,
@@ -612,7 +673,7 @@ class iVDFM(BaseFactorModel):
         self._validate_params()
         device = self._resolve_device()
         dataset = self._adapter(data, device)
-        params = self._engine_params(dataset)
+        params = self._engine_params(dataset.window, dataset.stride)
         with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS), \
                 quiet_engine_loggers(self.verbose, _PROGRESS_LOGGERS, logging.ERROR):
             # The engine seeds the global torch and numpy RNGs (random_state) and then builds its networks.
@@ -651,20 +712,105 @@ class iVDFM(BaseFactorModel):
         chronological = np.asarray(factors)[np.argsort(order, kind="stable")]
         starts = np.arange(n_windows) * self.stride_
         positions = (starts[:, None] + np.arange(window)[None, :]).reshape(-1)
+        return self._factors_from(
+            chronological.reshape(n_windows * window, r).astype(np.float64),
+            np.repeat(np.arange(n_windows), window),
+            positions,
+            index,
+        )
+
+    @staticmethod
+    def _factors_from(values: np.ndarray, windows: np.ndarray, positions: np.ndarray, index: pd.Index) -> pd.DataFrame:
+        """``factors_`` from its float64 values, window labels and row positions in ``index``."""
         multi = pd.MultiIndex.from_arrays(
-            [np.repeat(np.arange(n_windows), window), index[positions]],
+            [windows, index[positions]],
             names=["window", index.name if index.name is not None else "time"],
         )
-        return pd.DataFrame(
-            chronological.reshape(n_windows * window, r).astype(np.float64),
-            index=multi,
-            columns=[f"factor_{i}" for i in range(r)],
-        )
+        return pd.DataFrame(values, index=multi, columns=[f"factor_{i}" for i in range(values.shape[1])])
+
+    # -- conditioning on new data -------------------------------------------
+
+    def _panel(self, data: Any, method: str) -> PanelData:
+        """Validate ``data`` for a fitted model: same targets and exog as in training, two or more rows."""
+        panel = self._validate_data(data)  # inputs the tags exclude raise UnsupportedInputError first
+        expected = list(self.feature_names_in_)
+        if list(panel.series_names) != expected:
+            raise DataValidationError(
+                f"iVDFM.{method}: data has series {list(panel.series_names)}, but the model was fitted on "
+                f"{expected}. Pass the same series in the same order."
+            )
+        trained = list(self.exog_names_in_)
+        if list(panel.exog_names) != trained:
+            raise DataValidationError(
+                f"iVDFM.{method}: data has exog {list(panel.exog_names)}, but the model was fitted on {trained}. "
+                "Pass the same exog columns in the same order."
+            )
+        if panel.n_timesteps < 2:
+            raise DataValidationError(f"iVDFM.{method}: data needs at least 2 time steps, got {panel.n_timesteps}.")
+        return panel
+
+    def _condition(self, engine: iVDFMEngine, panel: PanelData) -> None:
+        """Run the engine's ``update`` on ``panel``: encode it with the fixed networks and append the factors.
+
+        The dataset is built like the training dataset, with the fitted window,
+        stride and time context and the fitted ``scaler_``. The engine is called
+        with its default ``append=True`` and ``store_full_history=True``.
+        """
+        dataset = self._adapter(panel, self.device_, fitted=True)
+        with fit_verbosity(self.verbose), quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS), \
+                quiet_engine_loggers(self.verbose, _PROGRESS_LOGGERS, logging.ERROR):
+            engine.update(dataset)
+
+    def _rng_devices(self) -> list:
+        """The CUDA devices whose generators ``predict(data=...)`` forks besides the CPU one."""
+        device = self.device_
+        if device.type != "cuda":
+            return []
+        return [device.index if device.index is not None else torch.cuda.current_device()]
+
+    def update(self, data: Any, *, refit: bool = False) -> iVDFM:
+        """Condition later forecasts on ``data`` and return ``self``.
+
+        The engine encodes every window of ``data`` with the fixed networks
+        (``no_grad``) and appends the window-end factors to its factor state,
+        so ``predict(h)`` then starts from the last time step of ``data``.
+        Missing values are filled as in ``fit`` and the targets are scaled with
+        the fitted ``scaler_`` (not refitted). The network parameters,
+        ``result_``, ``factors_`` and the other fit diagnostics are unchanged;
+        ``conditioning_index_`` becomes ``data.index``. The encoder samples
+        its innovations, so ``update`` draws from the global torch RNG.
+
+        Parameters
+        ----------
+        data : PanelData, DataFrame or 2-D array
+            The same targets (and exog) as in training, in the same order; at
+            least 2 time steps. A window longer than ``data`` is clipped to
+            its length.
+        refit : bool, default False
+            Not supported: iVDFM cannot continue training from new data.
+
+        Raises
+        ------
+        UnsupportedInputError
+            For ``refit=True``, ``series_exog`` or a mixed-frequency panel.
+        DataValidationError
+            If the series or exog names differ from the training data.
+        """
+        self._check_is_fitted("update")
+        if refit:
+            raise UnsupportedInputError(
+                "iVDFM.update(refit=True) is not supported: iVDFM cannot continue training on new data. Use "
+                "update(data) (refit=False) to condition the forecasts on it, or fit(data) to retrain from scratch."
+            )
+        panel = self._panel(data, "update")
+        self._condition(self.network_, panel)
+        self.conditioning_index_ = panel.index
+        return self
 
     # -- forecasting ---------------------------------------------------------
 
-    def _context_data(self, h: int, futr_exog: Any) -> Optional[np.ndarray]:
-        """The engine's ``context_data`` for ``h`` steps: ``[time features | futr_exog]``, or None."""
+    def _futr_exog_values(self, h: int, futr_exog: Any) -> Optional[np.ndarray]:
+        """``futr_exog`` validated as a float64 (h, n_exog) array, or None."""
         exog_names = list(self.exog_names_in_)
         if futr_exog is None:
             if exog_names:
@@ -695,32 +841,52 @@ class iVDFM(BaseFactorModel):
             )
         if not np.isfinite(values).all():
             raise DataValidationError("futr_exog contains NaN or infinite values.")
-        time_features = self.network_._future_time_features(h, self.time_context_)
-        return np.hstack([time_features, values])
+        return values
+
+    def _engine_forecast(
+        self, engine: iVDFMEngine, h: int, futr_exog: Optional[np.ndarray], deterministic: bool, n_samples: int
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """The engine's forecast factors (h, r) and model-space observations (h, N).
+
+        The context is ``[time features | futr_exog]`` (``context_data``), or
+        None when no ``futr_exog`` is given (the engine then generates time
+        features for every context column).
+        """
+        context_data = None
+        if futr_exog is not None:
+            context_data = np.hstack([engine._future_time_features(h, self.time_context_), futr_exog])
+        factors, y_pred = engine._forecast(h, context_data, deterministic, n_samples)
+        return to_numpy(factors.squeeze(0)), to_numpy(y_pred.squeeze(0))
 
     def _run_forecast(
         self, method: str, h: Any, data: Any, futr_exog: Any, deterministic: Any, n_samples: Any
-    ) -> tuple[np.ndarray, np.ndarray, int]:
+    ) -> tuple[np.ndarray, np.ndarray, int, pd.Index]:
         self._check_is_fitted(method)
         h = self._validate_horizon(h)
-        if data is not None:
-            self._validate_data(data)  # inputs the tags exclude raise UnsupportedInputError first
-            raise NotImplementedError(f"iVDFM.{method}(data=...) is not implemented yet; call {method}(h).")
+        panel = None if data is None else self._panel(data, method)
         if not isinstance(deterministic, (bool, np.bool_)):
             raise TypeError(f"deterministic must be True or False, got {deterministic!r}.")
         if not _is_int(n_samples) or n_samples < 1:
             raise ValueError(f"n_samples must be a positive integer, got {n_samples!r}.")
-        context_data = self._context_data(h, futr_exog)
-        factors, y_pred = self.network_._forecast(h, context_data, bool(deterministic), int(n_samples))
-        return to_numpy(factors.squeeze(0)), to_numpy(y_pred.squeeze(0)), h
+        futr = self._futr_exog_values(h, futr_exog)
+        if panel is None:
+            factors, y_pred = self._engine_forecast(self.network_, h, futr, bool(deterministic), int(n_samples))
+            return factors, y_pred, h, self.conditioning_index_
+        # update(data) on a copy of the engine; the global torch RNG the update and
+        # a sampled forecast draw from is restored afterwards.
+        with torch.random.fork_rng(devices=self._rng_devices()):
+            engine = copy.deepcopy(self.network_)
+            self._condition(engine, panel)
+            factors, y_pred = self._engine_forecast(engine, h, futr, bool(deterministic), int(n_samples))
+        return factors, y_pred, h, panel.index
 
-    def _frame(self, values: np.ndarray, h: int, columns: list, kind: str) -> pd.DataFrame:
+    def _frame(self, values: np.ndarray, h: int, columns: list, kind: str, origin_index: pd.Index) -> pd.DataFrame:
         frame = pd.DataFrame(
             np.asarray(values, dtype=np.float64),
-            index=self._forecast_index(self.conditioning_index_, h),
+            index=self._forecast_index(origin_index, h),
             columns=columns,
         )
-        frame.attrs = {"model": type(self).__name__, "kind": kind, "origin": self.conditioning_index_[-1]}
+        frame.attrs = {"model": type(self).__name__, "kind": kind, "origin": origin_index[-1]}
         return frame
 
     def predict(
@@ -734,17 +900,21 @@ class iVDFM(BaseFactorModel):
     ) -> pd.DataFrame:
         """Forecast the targets ``h`` steps ahead, in data units.
 
-        The engine's closed-loop forecast starts from the last training factor
-        state; the decoded observations are inverse-transformed with
-        ``scaler_``.
+        The engine's closed-loop forecast starts from the last factor state
+        (of the training data, or of the data of the last ``update``); the
+        decoded observations are inverse-transformed with ``scaler_``.
 
         Parameters
         ----------
         h : int
             Forecast horizon (a positive integer; anything else raises
             ``TypeError``).
-        data : None
-            Conditioning on new data is not implemented yet.
+        data : PanelData, DataFrame or 2-D array, optional
+            A window to condition on (tag ``predict_data="window"``): every
+            row is encoded and the forecast starts after its last row. This is
+            ``update(data)`` on a copy of the model, followed by the forecast,
+            with the global torch RNG restored afterwards; the model is
+            unchanged. Same series and exog as in training.
         futr_exog : DataFrame or array of shape (h, n_exog), optional
             Future values of the exog columns (a DataFrame is matched by column
             name). They follow the generated time features in the context u_t.
@@ -762,11 +932,11 @@ class iVDFM(BaseFactorModel):
             column per target in the user's order; ``attrs`` holds ``model``,
             ``kind="forecast"`` and ``origin``.
         """
-        _, y_pred, h = self._run_forecast("predict", h, data, futr_exog, deterministic, n_samples)
+        _, y_pred, h, origin = self._run_forecast("predict", h, data, futr_exog, deterministic, n_samples)
         values = np.asarray(y_pred, dtype=np.float64)
         if self.scaler_ is not None:
             values = self.scaler_.inverse_transform(values)
-        return self._frame(values, h, list(self.feature_names_in_), "forecast")
+        return self._frame(values, h, list(self.feature_names_in_), "forecast", origin)
 
     def predict_factors(
         self,
@@ -785,10 +955,86 @@ class iVDFM(BaseFactorModel):
             float64, ``h`` rows, columns ``factor_0`` .. ``factor_{r-1}``;
             ``attrs["kind"]`` is ``"factors"``.
         """
-        factors, _, h = self._run_forecast("predict_factors", h, data, futr_exog, deterministic, n_samples)
-        return self._frame(factors, h, [f"factor_{i}" for i in range(factors.shape[1])], "factors")
+        factors, _, h, origin = self._run_forecast("predict_factors", h, data, futr_exog, deterministic, n_samples)
+        return self._frame(factors, h, [f"factor_{i}" for i in range(factors.shape[1])], "factors", origin)
 
-    def update(self, data: Any, *, refit: bool = False) -> iVDFM:
-        """Not implemented yet; refit with ``fit(data)``."""
-        self._check_is_fitted("update")
-        raise NotImplementedError("iVDFM.update is not implemented yet; call fit(data) to refit on the new data.")
+    # -- save / load ---------------------------------------------------------
+
+    def _save_state(self, path: Path) -> None:
+        """Write the iVDFM part of the saved run (spec section 7).
+
+        - ``state.npz``: the engine's current ``factors``, ``innovations`` and
+          ``regime_weights`` (when it has them; after ``update`` they include
+          the appended factors), and ``fit/factors``, ``fit/window`` and
+          ``fit/position`` (``factors_``: values, window labels and row
+          positions in ``index_``), plus the ``scaler/`` entries;
+        - ``state.json``: the training diagnostics (``num_iter``,
+          ``loss_now``, ``elbo``, ``converged``), the engine's ``data_dim``,
+          ``context_dim``, ``time_context`` and ``window``, the estimator's
+          ``window_``, ``stride_``, ``time_context_`` and ``context_dim_``, and
+          ``conditioning_index``;
+        - ``result.npz`` / ``result.json``: ``result_`` without
+          ``model_state_dict`` and ``config``, which are rebuilt on load from
+          the weights and from the engine config (``config.json`` holds the
+          hyperparameters; JSON would also reorder the config's keys);
+        - ``weights.pt``: ``network_.state_dict()``.
+        """
+        engine = self.network_
+        frame = self.factors_
+        arrays = {"factors": engine.factors, "innovations": engine.innovations}
+        regime_weights = getattr(engine, "regime_weights", None)
+        if regime_weights is not None:
+            arrays["regime_weights"] = regime_weights
+        arrays["fit/factors"] = frame.to_numpy()
+        arrays["fit/window"] = frame.index.get_level_values(0).to_numpy(dtype=np.int64)
+        arrays["fit/position"] = self.index_.get_indexer(frame.index.get_level_values(1)).astype(np.int64)
+        meta = {
+            "num_iter": engine._num_iter,
+            "loss_now": engine.loss_now,
+            "elbo": engine._elbo,
+            "converged": engine._converged,
+            **{name: getattr(engine, name) for name in _ENGINE_DIMS},
+            "window_": self.window_,
+            "stride_": self.stride_,
+            "time_context_": self.time_context_,
+            "context_dim_": self.context_dim_,
+            "conditioning_index": index_to_spec(self.conditioning_index_),
+        }
+        self._write_state(path, arrays, meta)
+        self._write_result(path, exclude=_RESULT_REBUILT)
+        self._write_weights(path)
+
+    @classmethod
+    def _load_state(cls, est: iVDFM, path: Path, device: Any, allow_pickle: bool) -> None:
+        """Rebuild the engine without data or seeding, load its weights and restore the fitted attributes."""
+        arrays, meta = cls._read_state(path)
+        device = est._load_device(device)
+        params = est._engine_params(meta["window"], meta["stride_"])
+        engine = iVDFMEngine._from_saved(params, {name: meta[name] for name in _ENGINE_DIMS}, device)
+        engine.load_state_dict(cls._read_weights(path, device))
+        engine.factors = arrays["factors"]
+        engine.innovations = arrays["innovations"]
+        engine.regime_weights = arrays.get("regime_weights")
+        engine._num_iter = meta["num_iter"]
+        # state.json holds the float64 means as JSON numbers; fit leaves numpy float64 values.
+        engine.loss_now = None if meta["loss_now"] is None else np.float64(meta["loss_now"])
+        engine._elbo = None if meta["elbo"] is None else np.float64(meta["elbo"])
+        engine._converged = meta["converged"]
+        engine.training_state = iVDFMModelState.from_model(engine)
+
+        weights = {k: v.detach().cpu() for k, v in engine.state_dict().items()}
+        est.network_ = engine
+        est.device_ = device
+        est.result_ = cls._read_result(
+            path, iVDFMResult, model_state_dict=weights, config=dataclasses.asdict(engine._config)
+        )
+        est.n_iter_ = int(meta["num_iter"])
+        est.converged_ = bool(meta["converged"])
+        est.n_factors_ = int(engine.latent_dim)
+        est.random_state_ = est.random_state
+        est.window_ = int(meta["window_"])
+        est.stride_ = int(meta["stride_"])
+        est.time_context_ = int(meta["time_context_"])
+        est.context_dim_ = int(meta["context_dim_"])
+        est.conditioning_index_ = index_from_spec(meta["conditioning_index"])
+        est.factors_ = cls._factors_from(arrays["fit/factors"], arrays["fit/window"], arrays["fit/position"], est.index_)

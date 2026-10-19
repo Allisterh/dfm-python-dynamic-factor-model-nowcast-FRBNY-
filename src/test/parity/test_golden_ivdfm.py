@@ -3,28 +3,38 @@
 ``test_golden_ivdfm_engine`` runs the engine (the pre-redesign class, now
 ``iVDFMEngine``) exactly as the fixtures were captured.
 ``test_golden_ivdfm_estimator`` runs the public ``iVDFM`` estimator, built from
-the constructor, on the same data with the recorded hyperparameters (mapped to
-the canonical names, ``device="cpu"``). The engine it builds must hold the
-recorded hyperparameters when training starts, reproduce every golden output,
-and the estimator's ``predict`` must equal the fixture's model-space forecast
-inverse-transformed with ``scaler_``, bitwise.
+the constructor and from a YAML file, on the same data with the recorded
+hyperparameters (mapped to the canonical names, ``device="cpu"``). The engine
+it builds must hold the recorded hyperparameters when training starts,
+reproduce every golden output, and the estimator's ``predict`` must equal the
+fixture's model-space forecast inverse-transformed with ``scaler_``, bitwise.
+``test_golden_ivdfm_save_load`` fits the estimator, saves it, loads it back
+(``iVDFM.load`` and ``dfm_python.load``) and requires the loaded model to
+report the same numbers: ``predict`` bitwise equal to the fitted model's, and
+every golden output reproduced from the loaded engine alone.
 """
 
 from __future__ import annotations
 
+import dataclasses
+import importlib.util
 from typing import Any
 
 import numpy as np
 import pandas as pd
 import pytest
 
+import dfm_python
 from dfm_python import PanelData, iVDFM
+from dfm_python.config import iVDFMConfig
 from dfm_python.models.ivdfm._engine import iVDFMEngine
 
 from ._cases import (
+    _IVDFM_ATTRS,
     IVDFM_EXOG_HORIZON,
     _IVDFM_ROWS,
     _ivdfm_hyper,
+    _attrs,
     _ivdfm_outputs,
     _macro_tail,
     _reset_global_rngs,
@@ -37,6 +47,7 @@ from ._cases import (
 from ._golden import assert_golden, load_golden
 
 _SCALER_NAMES = {None: None, "StandardScaler": "standard"}
+_YAML = importlib.util.find_spec("omegaconf") is not None or importlib.util.find_spec("yaml") is not None
 
 
 @pytest.mark.parametrize("case", cases_for("ivdfm"), ids=repr)
@@ -125,14 +136,34 @@ def engine_at_fit(monkeypatch):
     return seen
 
 
+def _build(build: str, params: dict, tmp_path) -> iVDFM:
+    if build == "constructor":
+        return iVDFM(**params)
+    if not _YAML:
+        pytest.skip("YAML needs omegaconf or PyYAML")
+    path = tmp_path / "ivdfm.yaml"
+    iVDFMConfig(**params).to_yaml(path)
+    return iVDFM.from_config(iVDFMConfig.from_yaml(path))
+
+
+def _engine_outputs(engine: iVDFMEngine, hyper: dict, x_future: Any) -> dict:
+    """The golden outputs of a fitted (or loaded) engine."""
+    outputs = _ivdfm_outputs(engine, horizon=IVDFM_EXOG_HORIZON)
+    if x_future is not None:
+        context = np.hstack([ivdfm_time_features(IVDFM_EXOG_HORIZON, hyper["time_context"], hyper["window"]), x_future])
+        outputs["predict_futr"] = engine.predict(horizon=IVDFM_EXOG_HORIZON, context_data=context)
+    return outputs
+
+
+@pytest.mark.parametrize("build", ["constructor", "yaml"])
 @pytest.mark.parametrize("case", cases_for("ivdfm"), ids=repr)
-def test_golden_ivdfm_estimator(case, pinned, engine_at_fit):
+def test_golden_ivdfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     manifest, fixture = load_golden(case.name)
     hyper = manifest["hyperparameters"]
     params = _estimator_params(hyper)
     data, x_future = _panel(case.name, manifest)
 
-    model = iVDFM(**params)
+    model = _build(build, params, tmp_path)
     assert model.get_params() == {**iVDFM().get_params(), **params}
 
     _reset_global_rngs()
@@ -141,12 +172,7 @@ def test_golden_ivdfm_estimator(case, pinned, engine_at_fit):
     # Every hyperparameter reached the engine unchanged (read when its training starts).
     assert engine_at_fit == [hyper]
 
-    engine = model.network_
-    outputs = _ivdfm_outputs(engine, horizon=IVDFM_EXOG_HORIZON)
-    if x_future is not None:
-        context = np.hstack([ivdfm_time_features(IVDFM_EXOG_HORIZON, hyper["time_context"], hyper["window"]), x_future])
-        outputs["predict_futr"] = engine.predict(horizon=IVDFM_EXOG_HORIZON, context_data=context)
-    assert_golden(outputs, case.name)
+    assert_golden(_engine_outputs(model.network_, hyper, x_future), case.name)
 
     # The estimator's forecasts are the engine's, in data units.
     def data_units(model_space: np.ndarray) -> np.ndarray:
@@ -180,3 +206,57 @@ def test_golden_ivdfm_estimator(case, pinned, engine_at_fit):
     rows = model.factors_.to_numpy().reshape(n_windows, window, r)
     engine_rows = {fixture["factors"][k].astype(np.float64).tobytes() for k in range(n_windows)}
     assert {rows[w].tobytes() for w in range(n_windows)} == engine_rows
+
+
+@pytest.mark.parametrize("loader", ["iVDFM.load", "dfm_python.load"])
+@pytest.mark.parametrize("case", cases_for("ivdfm"), ids=repr)
+def test_golden_ivdfm_save_load(case, loader, pinned, tmp_path):
+    manifest, _ = load_golden(case.name)
+    hyper = manifest["hyperparameters"]
+    data, x_future = _panel(case.name, manifest)
+    futr = None if x_future is None else pd.DataFrame(x_future, columns=["x0", "x1"])
+
+    _reset_global_rngs()
+    model = iVDFM(**_estimator_params(hyper)).fit(data)
+    forecast = model.predict(IVDFM_EXOG_HORIZON, futr_exog=futr)
+    model.save(tmp_path / "run")
+    fitted_config = dataclasses.asdict(model.network_._config)
+    del model
+
+    loaded = (iVDFM.load if loader == "iVDFM.load" else dfm_python.load)(tmp_path / "run", device="cpu")
+    assert type(loaded) is iVDFM
+    reloaded = loaded.predict(IVDFM_EXOG_HORIZON, futr_exog=futr)
+    assert reloaded.index.equals(forecast.index) and list(reloaded.columns) == list(forecast.columns)
+    assert reloaded.to_numpy().tobytes() == forecast.to_numpy().tobytes()
+    assert reloaded.attrs == forecast.attrs
+
+    # The loaded engine alone reproduces the golden numbers and holds the recorded hyperparameters.
+    engine = loaded.network_
+    assert_golden(_engine_outputs(engine, hyper, x_future), case.name)
+    # time_context was recorded when training started; fit then sets it to the width of u_t.
+    held = normalized(_attrs(engine, _IVDFM_ATTRS))
+    assert held.pop("time_context") == hyper["dataset"]["context_dim"]
+    assert held == {k: v for k, v in hyper.items() if k not in ("dataset", "time_context")}
+    assert dataclasses.asdict(engine._config) == fitted_config
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+def test_yaml_values_reach_the_engine(tmp_path, engine_at_fit):
+    """Spec section 14: a YAML with factor_order: 3 runs AR(3), and patience: null disables early stopping."""
+    path = tmp_path / "ivdfm.yaml"
+    path.write_text(
+        "model:\n"
+        "  n_factors: 2\n  window: 12\n  factor_order: 3\n  patience: null\n  scheduler_type: null\n"
+        "  encoder_hidden_dim: [8, 6]\n  decoder_hidden_dim: 8\n  prior_hidden_dim: 8\n"
+        "  batch_size: 4\n  max_epochs: 2\n  random_state: 0\n  device: cpu\n",
+        encoding="utf-8",
+    )
+    model = iVDFM.from_config(iVDFMConfig.from_yaml(path))
+    assert model.factor_order == 3 and model.patience is None and model.encoder_hidden_dim == (8, 6)
+    y = np.random.default_rng(0).standard_normal((30, 3))
+    engine = model.fit(PanelData.from_arrays(y)).network_
+    assert engine_at_fit[0]["factor_order"] == 3 and engine_at_fit[0]["patience"] is None
+    assert engine.factor_order == 3 and engine._config.factor_order == 3
+    assert engine.patience is None and engine._config.patience is None
+    assert engine.scheduler_type is None and engine.scheduler is None
+    assert engine.encoder_hidden_dim == [8, 6]

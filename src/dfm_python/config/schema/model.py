@@ -4,8 +4,9 @@ This module provides model-specific configuration dataclasses:
 - BaseModelConfig: Base class with shared model structure (series, clock, data handling)
 - DFMConfig(BaseModelConfig): Linear DFM with EM algorithm parameters and block structure
 - DDFMConfig(BaseModelConfig): Deep DFM with neural network training parameters (no blocks)
-- iVDFMConfig(BaseModelConfig): Identifiable variational DFM parameters (no blocks)
+- _iVDFMEngineConfig(BaseModelConfig): the private iVDFM engine's parameters (no blocks)
 - AFMConfig(EstimatorConfig): mirror of the AFM estimator's constructor
+- iVDFMConfig(EstimatorConfig): mirror of the iVDFM estimator's constructor
 
 The configuration hierarchy:
 - BaseModelConfig: Model structure (series, clock, data handling) - NO blocks
@@ -23,7 +24,7 @@ see the config.adapter module which provides source adapters.
 """
 
 import numpy as np
-from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
+from typing import List, Optional, Dict, Any, Tuple, Union, TYPE_CHECKING
 from dataclasses import dataclass, field
 
 from ..estimator import EstimatorConfig
@@ -143,7 +144,7 @@ class BaseModelConfig:
     Note: Blocks are DFM-specific and are NOT included in BaseModelConfig.
     DFMConfig adds block structure; the other model configs do not use blocks.
     
-    Subclasses (DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig) add model-specific training parameters.
+    Subclasses (DFMConfig, DDFMConfig, _iVDFMEngineConfig) add model-specific training parameters.
     
     Examples
     --------
@@ -670,9 +671,11 @@ class DDFMConfig(BaseModelConfig):
 
 
 @dataclass
-class iVDFMConfig(BaseModelConfig):
-    """Identifiable Variational Dynamic Factor Model configuration.
+class _iVDFMEngineConfig(BaseModelConfig):
+    """Configuration of the private iVDFM engine (the pre-redesign ``iVDFMConfig``).
     
+    Used only by :class:`~dfm_python.models.ivdfm._engine.iVDFMEngine`; the
+    public :class:`iVDFMConfig` mirrors the estimator's constructor instead.
     Uses 'scaler' (string) pattern like DDFM, not 'target_scaler' (instance).
     Scaler is applied to targets only, not to context/auxiliary variables.
     """
@@ -928,8 +931,8 @@ class iVDFMConfig(BaseModelConfig):
         return ivdfm_params
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'iVDFMConfig':
-        """Create iVDFMConfig from dictionary.
+    def from_dict(cls, data: Dict[str, Any]) -> '_iVDFMEngineConfig':
+        """Create _iVDFMEngineConfig from dictionary.
         
         Parameters
         ----------
@@ -938,8 +941,8 @@ class iVDFMConfig(BaseModelConfig):
             
         Returns
         -------
-        iVDFMConfig
-            iVDFM configuration instance
+        _iVDFMEngineConfig
+            iVDFM engine configuration instance
         """
         # Extract base params
         base_params = cls._extract_base(data)
@@ -1023,3 +1026,56 @@ class AFMConfig(EstimatorConfig):
     device: str = "auto"
     verbose: int = 0
 
+
+@dataclass
+class iVDFMConfig(EstimatorConfig):
+    """Config mirror of the :class:`~dfm_python.models.ivdfm.estimator.iVDFM` estimator.
+
+    The fields and defaults are exactly the estimator's constructor
+    parameters, so ``iVDFM.from_config(cfg)`` is ``iVDFM(**cfg.to_dict())`` and
+    ``iVDFM(...).get_config()`` returns one whose fields equal ``get_params()``.
+    Values are validated when the estimator is fitted, not here. Unknown keys
+    (including the old names ``num_factors``, ``num_regimes``, ``tolerance``
+    and ``seed``) raise ``ConfigurationError`` in ``from_dict`` and
+    ``from_yaml``. A list given for a hidden width in YAML or JSON becomes a
+    tuple.
+    """
+    n_factors: int = 3
+    window: Optional[int] = None
+    stride: Optional[int] = None
+    time_context: int = 1
+    encoder_hidden_dim: Union[int, Tuple[int, ...]] = 200
+    encoder_n_hidden_layers: int = 2
+    decoder_type: str = "mlp"
+    decoder_hidden_dim: Union[int, Tuple[int, ...]] = 200
+    decoder_n_hidden_layers: int = 2
+    prior_hidden_dim: Union[int, Tuple[int, ...]] = 100
+    prior_n_hidden_layers: int = 1
+    activation: str = "lrelu"
+    slope: float = 0.1
+    factor_order: int = 1
+    innovation_distribution: str = "laplace"
+    decoder_var: float = 0.01
+    n_regimes: int = 1
+    regime_temperature: float = 1.0
+    beta_kl: float = 1.0
+    use_layer_norm: bool = False
+    mixing: bool = False
+    learning_rate: float = 1e-3
+    optimizer: str = "Adam"
+    optimizer_weight_decay: float = 0.0
+    optimizer_momentum: float = 0.9
+    batch_size: int = 32
+    max_epochs: int = 100
+    tol: float = 5e-4
+    patience: Optional[int] = 20
+    scheduler_type: Optional[str] = "step"
+    scheduler_step_size: Optional[int] = None
+    scheduler_gamma: float = 0.5
+    scheduler_patience: int = 10
+    scheduler_factor: float = 0.1
+    scheduler_min_lr: float = 0.0
+    scaler: Any = None
+    random_state: Optional[int] = 3
+    device: str = "auto"
+    verbose: int = 0

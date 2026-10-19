@@ -15,6 +15,7 @@ __all__ = ["all_estimators"]
 # registry does not import every model.
 _ESTIMATORS: tuple[tuple[str, str, str], ...] = (
     ("AFM", "dfm_python.models.afm.estimator", "AFM"),
+    ("iVDFM", "dfm_python.models.ivdfm.estimator", "iVDFM"),
 )
 
 

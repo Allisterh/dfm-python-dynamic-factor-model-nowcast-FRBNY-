@@ -5,7 +5,7 @@ import numpy as np
 import torch
 from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
 from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
-from dfm_python.config.schema.model import iVDFMConfig
+from dfm_python.config.schema.model import _iVDFMEngineConfig as iVDFMConfig
 
 
 def _make_data(T=80, N=5, seed=42):

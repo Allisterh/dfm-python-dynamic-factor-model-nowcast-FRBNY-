@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import contextlib
+import copy
+import dataclasses
+import inspect
 import io
+import json
 import logging
 import warnings
 
@@ -17,9 +21,11 @@ import dfm_python
 import dfm_python.models
 import dfm_python.models.ivdfm
 from dfm_python import PanelData
+from dfm_python.config import iVDFMConfig
 from dfm_python.config.schema.results import iVDFMResult
 from dfm_python.models.ivdfm._engine import iVDFMEngine
 from dfm_python.models.ivdfm.estimator import _TIME_COLUMN, iVDFM
+from dfm_python.registry import all_estimators
 from dfm_python.utils.errors import ConfigurationError, DataValidationError, NotFittedError, UnsupportedInputError
 
 TINY = {
@@ -408,19 +414,16 @@ def test_horizon_below_one_raises(fitted):
         fitted.predict(0)
 
 
-def test_not_yet_implemented_paths(fitted):
-    with pytest.raises(NotImplementedError):
-        fitted.predict(3, data=_panel())
-    with pytest.raises(NotImplementedError):
-        fitted.predict_factors(3, data=_panel())
-    with pytest.raises(NotImplementedError):
-        fitted.update(_panel())
+def test_excluded_inputs_are_rejected_before_anything_else(fitted):
     panel = _panel()
     series_exog = pd.DataFrame(
         np.zeros((40, 3)), index=panel.index, columns=pd.MultiIndex.from_product([["c"], panel.series_names])
     )
-    with pytest.raises(UnsupportedInputError):  # excluded inputs are rejected before anything else
-        fitted.predict(3, data=PanelData(y=panel.y, series_exog=series_exog))
+    bad = PanelData(y=panel.y, series_exog=series_exog)
+    for call in (lambda: fitted.predict(3, data=bad), lambda: fitted.predict_factors(3, data=bad),
+                 lambda: fitted.update(bad)):
+        with pytest.raises(UnsupportedInputError, match="capability:series_exog"):
+            call()
 
 
 def test_unfitted_access_raises():
@@ -470,3 +473,308 @@ def test_bad_futr_exog_raises(fitted_exog, futr_exog, match):
 def test_futr_exog_without_exog_raises(fitted):
     with pytest.raises(DataValidationError, match="without exog"):
         fitted.predict(3, futr_exog=np.zeros((3, 1)))
+
+
+# -- update ---------------------------------------------------------------------
+
+
+def _weights(est: iVDFM) -> dict:
+    return {k: v.detach().clone() for k, v in est.network_.state_dict().items()}
+
+
+def _same_weights(a: dict, b: dict) -> bool:
+    return list(a) == list(b) and all(torch.equal(a[k], b[k]) for k in a)
+
+
+def _extended(T: int = 52, K: int = 0) -> PanelData:
+    """The training panel (first 40 rows) followed by 12 new rows."""
+    return _panel(T=T, K=K)
+
+
+def test_update_appends_factors_and_keeps_the_fit(fitted):
+    est = copy.deepcopy(fitted)
+    weights, result, factors = _weights(est), est.result_, est.factors_.copy()
+    n_windows, window, r = est.network_.factors.shape
+    new = _extended()
+    assert est.update(new) is est
+    engine = est.network_
+    # The engine's update keeps one factor per window end, after the window-averaged training path.
+    n_new = (52 - window) // est.stride_ + 1
+    assert engine.factors.shape == (window + n_new, r) and engine.innovations.shape == (window + n_new, r)
+    assert _same_weights(weights, _weights(est))
+    assert est.result_ is result and est.factors_.equals(factors) and est.index_.equals(_panel().index)
+    assert est.conditioning_index_.equals(new.index)
+    forecast = est.predict(3)
+    assert forecast.index.equals(pd.date_range(new.index[-1], periods=4, freq="ME", name="date")[1:])
+    assert forecast.attrs["origin"] == new.index[-1]
+    assert est.get_params() == fitted.get_params()
+
+
+def test_update_is_the_engine_update_on_the_fitted_dataset(fitted):
+    est = copy.deepcopy(fitted)
+    reference = copy.deepcopy(fitted.network_)
+    new = _extended()
+    dataset = est._adapter(new, est.device_, fitted=True)
+    assert (dataset.window, dataset.stride, dataset.context_dim) == (est.window_, est.stride_, est.context_dim_)
+    state = torch.get_rng_state()
+    est.update(new)
+    torch.set_rng_state(state)
+    reference.update(dataset)
+    np.testing.assert_array_equal(est.network_.factors, reference.factors)
+    np.testing.assert_array_equal(est.network_.innovations, reference.innovations)
+
+
+def test_update_scales_with_the_fitted_scaler_after_filling_missing_values():
+    y = _panel().y.copy()
+    y.iloc[[3, 10], [0, 2]] = np.nan
+    panel = PanelData(y=y)
+    device = torch.device("cpu")
+    est = iVDFM(**TINY, scaler="standard").fit(panel)
+    mean = est.scaler_.mean_.copy()
+    # On the training rows the update dataset is the training dataset: missing
+    # values are filled in data units, then the targets are scaled.
+    trained = iVDFM(**TINY, scaler="standard")._adapter(panel, device)
+    updated = est._adapter(panel, device, fitted=True)
+    np.testing.assert_array_equal(updated.data, trained.data)
+    np.testing.assert_array_equal(updated.context, trained.context)
+    assert (updated.window, updated.stride) == (trained.window, trained.stride)
+    est.update(_extended())
+    np.testing.assert_array_equal(est.scaler_.mean_, mean)  # not refitted
+
+
+def test_update_with_a_short_window_clips_it(fitted):
+    est = copy.deepcopy(fitted)
+    short = _extended().loc(_extended().index[-5], None)
+    est.update(short)
+    assert est.network_.factors.shape[0] == est.window_ + 1
+    assert est.conditioning_index_.equals(short.index)
+
+
+def test_update_refit_raises(fitted):
+    est = copy.deepcopy(fitted)
+    with pytest.raises(UnsupportedInputError, match="refit"):
+        est.update(_extended(), refit=True)
+    assert est.conditioning_index_.equals(fitted.conditioning_index_)
+
+
+@pytest.mark.parametrize("change", ["series", "order", "exog", "short"])
+def test_update_and_predict_data_check_the_names(fitted, change):
+    panel = _extended()
+    if change == "series":
+        panel = PanelData(y=panel.y.rename(columns={"s0": "other"}))
+    elif change == "order":
+        panel = PanelData(y=panel.y[["s1", "s0", "s2"]])
+    elif change == "exog":
+        panel = _extended(K=1)
+    else:
+        panel = PanelData(y=panel.y.iloc[:1])
+    est = copy.deepcopy(fitted)
+    for call in (lambda: est.update(panel), lambda: est.predict(3, data=panel), lambda: est.predict_factors(3, data=panel)):
+        with pytest.raises(DataValidationError):
+            call()
+    assert est.conditioning_index_.equals(fitted.conditioning_index_)
+
+
+def test_update_with_exog(fitted_exog):
+    est = copy.deepcopy(fitted_exog)
+    new = _extended(K=2)
+    future = np.zeros((3, 2))
+    state = torch.get_rng_state()  # the encoder samples its innovations
+    expected = copy.deepcopy(est).update(new).predict(3, futr_exog=future)
+    torch.set_rng_state(state)
+    est.update(new)
+    assert est.predict(3, futr_exog=future).equals(expected)
+    assert est.network_.factors.ndim == 2
+
+
+# -- predict(data=...) ----------------------------------------------------------
+
+
+def test_predict_data_is_update_on_a_copy(fitted):
+    est = fitted
+    new = _extended()
+    weights, factors = _weights(est), est.network_.factors.copy()
+    state = torch.get_rng_state()
+    forecast = est.predict(4, data=new)
+    factor_forecast = est.predict_factors(4, data=new)
+    assert torch.equal(state, torch.get_rng_state())  # the global RNG is untouched
+    assert est.predict(4, data=new).equals(forecast)  # so repeated calls are bitwise equal
+    assert _same_weights(weights, _weights(est)) and np.array_equal(est.network_.factors, factors)
+    assert est.conditioning_index_.equals(_panel().index)
+
+    reference = copy.deepcopy(est).update(new)  # from the same RNG state
+    assert forecast.to_numpy().tobytes() == reference.predict(4).to_numpy().tobytes()
+    assert forecast.index.equals(reference.predict(4).index) and forecast.attrs == reference.predict(4).attrs
+    assert factor_forecast.equals(reference.predict_factors(4))
+
+
+def test_predict_data_with_the_training_data_starts_after_it(fitted):
+    forecast = fitted.predict(3, data=_panel())
+    assert forecast.index.equals(fitted.predict(3).index)
+    assert np.isfinite(forecast.to_numpy()).all()
+
+
+def test_predict_data_sampled_forecast_follows_the_update(fitted):
+    new = _extended()
+    state = torch.get_rng_state()
+    sampled = fitted.predict(3, data=new, deterministic=False, n_samples=2)
+    assert torch.equal(state, torch.get_rng_state())
+    reference = copy.deepcopy(fitted)
+    torch.set_rng_state(state)
+    reference.update(new)
+    assert sampled.equals(reference.predict(3, deterministic=False, n_samples=2))
+
+
+def test_predict_data_with_futr_exog(fitted_exog):
+    new = _extended(K=2)
+    future = pd.DataFrame(np.ones((3, 2)), columns=["u0", "u1"])
+    state = torch.get_rng_state()
+    forecast = fitted_exog.predict(3, data=new, futr_exog=future)
+    torch.set_rng_state(state)
+    assert forecast.equals(copy.deepcopy(fitted_exog).update(new).predict(3, futr_exog=future))
+
+
+# -- save / load ----------------------------------------------------------------
+
+
+def _assert_same_model(loaded: iVDFM, est: iVDFM) -> None:
+    assert type(loaded) is iVDFM and loaded.get_params() == est.get_params()
+    assert _same_weights(_weights(loaded), _weights(est))
+    for name in ("n_features_in_", "n_iter_", "converged_", "n_factors_", "random_state_", "window_", "stride_",
+                 "time_context_", "context_dim_"):
+        assert getattr(loaded, name) == getattr(est, name), name
+    for name in ("feature_names_in_", "exog_names_in_"):
+        assert list(getattr(loaded, name)) == list(getattr(est, name)), name
+    assert loaded.index_.equals(est.index_) and getattr(loaded.index_, "freq", None) == getattr(est.index_, "freq", None)
+    assert loaded.conditioning_index_.equals(est.conditioning_index_)
+    assert loaded.factors_.equals(est.factors_) and loaded.factors_.index.names == est.factors_.index.names
+    assert loaded.device_ == torch.device("cpu") and not loaded.network_.training
+    engine, original = loaded.network_, est.network_
+    for name in ("factors", "innovations", "regime_weights"):
+        a, b = getattr(engine, name), getattr(original, name)
+        assert (a is None and b is None) or (a.dtype == b.dtype and a.tobytes() == b.tobytes()), name
+    assert dataclasses.asdict(engine._config) == dataclasses.asdict(original._config)
+    assert (engine._num_iter, engine._converged) == (original._num_iter, original._converged)
+    assert engine.loss_now == original.loss_now and type(engine.loss_now) is type(original.loss_now)
+    assert engine._elbo == original._elbo and type(engine._elbo) is type(original._elbo)
+    assert engine.time_context == original.time_context and engine.context_dim == original.context_dim
+    result, fitted_result = loaded.result_, est.result_
+    for f in dataclasses.fields(iVDFMResult):
+        a, b = getattr(result, f.name), getattr(fitted_result, f.name)
+        if f.name == "model_state_dict":
+            assert _same_weights(a, b)
+        elif isinstance(b, np.ndarray):
+            assert a.dtype == b.dtype and a.tobytes() == b.tobytes(), f.name
+        else:
+            assert a == b and type(a) is type(b), f.name
+
+
+def test_save_load_round_trip(fitted, tmp_path):
+    fitted.save(tmp_path / "run")
+    files = {p.name for p in (tmp_path / "run").iterdir()}
+    assert files == {"config.json", "data_spec.json", "state.npz", "state.json", "result.npz", "result.json",
+                     "weights.pt", "scaler.json"}
+    state = json.loads((tmp_path / "run" / "state.json").read_text())
+    assert state["window_"] == 8 and state["stride_"] == 4 and state["time_context"] == 1
+    assert state["conditioning_index"]["kind"] == "datetime"
+    config = json.loads((tmp_path / "run" / "config.json").read_text())
+    assert config["model_type"] == "iVDFM" and config["params"]["random_state"] == 0
+    for loader in (iVDFM.load, dfm_python.load):
+        loaded = loader(tmp_path / "run", device="cpu")
+        _assert_same_model(loaded, fitted)
+        assert loaded.predict(3).equals(fitted.predict(3))
+        assert loaded.predict_factors(3).equals(fitted.predict_factors(3))
+        new = _extended()
+        assert loaded.predict(3, data=new).equals(fitted.predict(3, data=new))
+        assert isinstance(loaded.scaler_, StandardScaler)
+        np.testing.assert_array_equal(loaded.scaler_.mean_, fitted.scaler_.mean_)
+
+
+def test_save_load_after_update(fitted, tmp_path):
+    est = copy.deepcopy(fitted).update(_extended())
+    est.save(tmp_path / "run")
+    loaded = iVDFM.load(tmp_path / "run")
+    _assert_same_model(loaded, est)
+    assert loaded.network_.factors.ndim == 2
+    assert loaded.predict(3).equals(est.predict(3))
+    # Updating the loaded model further works like updating the original.
+    more = _panel(T=60)
+    state = torch.get_rng_state()
+    expected = copy.deepcopy(est).update(more).predict(3)
+    torch.set_rng_state(state)
+    assert loaded.update(more).predict(3).equals(expected)
+
+
+def test_save_load_with_regimes_exog_and_no_scaler(fitted_exog, tmp_path):
+    fitted_exog.save(tmp_path / "run")
+    loaded = iVDFM.load(tmp_path / "run")
+    _assert_same_model(loaded, fitted_exog)
+    assert loaded.scaler_ is None
+    future = np.ones((3, 2))
+    assert loaded.predict(3, futr_exog=future).equals(fitted_exog.predict(3, futr_exog=future))
+
+    regimes = iVDFM(**{**TINY, "n_regimes": 2, "factor_order": 2, "mixing": True, "patience": None}).fit(
+        _panel(index="range")
+    )
+    regimes.save(tmp_path / "regimes")
+    loaded = iVDFM.load(tmp_path / "regimes")
+    _assert_same_model(loaded, regimes)
+    assert loaded.network_.regime_weights is not None and loaded.network_.patience is None
+    assert loaded.predict(3).equals(regimes.predict(3))
+
+
+def test_load_does_not_touch_the_global_rngs(fitted, tmp_path):
+    fitted.save(tmp_path / "run")
+    torch_state, np_state = torch.get_rng_state(), np.random.get_state()
+    iVDFM.load(tmp_path / "run")
+    assert torch.equal(torch_state, torch.get_rng_state())
+    assert all(np.array_equal(a, b) for a, b in zip(np_state, np.random.get_state()))
+
+
+def test_from_saved_sets_every_attribute_init_sets(fitted, tmp_path):
+    fitted.save(tmp_path / "run")
+    loaded = iVDFM.load(tmp_path / "run").network_
+    dataset = fitted._adapter(_panel(), torch.device("cpu"))
+    built = iVDFMEngine(dataset=dataset, device=torch.device("cpu"), **fitted._engine_params(dataset.window, dataset.stride))
+    missing = sorted(set(vars(built)) - set(vars(loaded)))
+    assert not missing
+    assert loaded._dataset is None and loaded.optimizer is None and loaded.scheduler is None
+    assert loaded.training_state is not None and loaded.training_state.num_iter == fitted.n_iter_
+    assert dict(loaded.named_modules()).keys() == dict(fitted.network_.named_modules()).keys()
+
+
+def test_save_before_fit_raises(tmp_path):
+    with pytest.raises(NotFittedError):
+        iVDFM(**TINY).save(tmp_path / "run")
+    assert not (tmp_path / "run").exists()
+
+
+# -- config mirror and registry -------------------------------------------------
+
+
+def test_config_mirrors_the_constructor():
+    cfg = iVDFM().get_config()
+    assert isinstance(cfg, iVDFMConfig) and cfg.to_dict() == iVDFM().get_params()
+    assert iVDFM._config_class is iVDFMConfig and dfm_python.iVDFMConfig is iVDFMConfig
+    assert iVDFMConfig.field_names() == tuple(inspect.signature(iVDFM.__init__).parameters)[1:]
+    est = iVDFM.from_config({"n_factors": 4, "encoder_hidden_dim": [16, 8], "scaler": "robust"})
+    assert est.n_factors == 4 and est.encoder_hidden_dim == (16, 8) and est.scaler == "robust"
+
+
+@pytest.mark.parametrize("old", ["num_factors", "num_regimes", "tolerance", "seed", "context", "covariates"])
+def test_config_rejects_old_names(old):
+    with pytest.raises(ConfigurationError, match=old):
+        iVDFMConfig.from_dict({old: 1})
+
+
+def test_engine_config_is_private():
+    from dfm_python.config.schema import model
+
+    assert "_iVDFMEngineConfig" not in dfm_python.config.__all__
+    assert model._iVDFMEngineConfig is not iVDFMConfig
+    assert isinstance(fitted_engine_config := iVDFM(**TINY).fit(_panel()).network_._config, model._iVDFMEngineConfig)
+    assert fitted_engine_config.num_factors == 2
+
+
+def test_ivdfm_is_registered():
+    assert ("iVDFM", iVDFM) in all_estimators()

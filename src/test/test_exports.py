@@ -36,3 +36,19 @@ def test_afm_model_state_is_not_public():
     # AFMModelState is used only by the engine and AFM's save/load.
     assert "AFMModelState" not in dfm_python.config.__all__
     assert not hasattr(dfm_python.config, "AFMModelState")
+
+
+def test_ivdfm_model_state_is_not_public():
+    # iVDFMModelState is used only by the engine and iVDFM's save/load.
+    import dfm_python.config.schema as schema
+
+    assert "iVDFMModelState" not in schema.__all__ and not hasattr(schema, "iVDFMModelState")
+    assert "iVDFMModelState" not in dfm_python.config.__all__
+    assert not hasattr(dfm_python.config, "iVDFMModelState")
+
+
+def test_ivdfm_config_is_the_estimator_mirror():
+    from dfm_python.config import EstimatorConfig
+
+    assert dfm_python.iVDFMConfig is dfm_python.config.iVDFMConfig is iVDFM._config_class
+    assert issubclass(dfm_python.iVDFMConfig, EstimatorConfig)

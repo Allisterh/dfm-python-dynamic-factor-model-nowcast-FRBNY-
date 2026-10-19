@@ -488,7 +488,7 @@ _IVDFM_MAX_EPOCHS = 3
 
 def _ivdfm_macro() -> CaseRun:
     from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
-    from dfm_python.config.schema.model import iVDFMConfig
+    from dfm_python.config.schema.model import _iVDFMEngineConfig as iVDFMConfig
     from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
 
     # tutorial_macro_ivdfm.py on the last rows of data/macro.csv. The tutorial

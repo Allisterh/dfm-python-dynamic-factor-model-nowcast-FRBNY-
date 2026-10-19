@@ -6,7 +6,7 @@ import pandas as pd
 import torch
 from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
 from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
-from dfm_python.config.schema.model import iVDFMConfig
+from dfm_python.config.schema.model import _iVDFMEngineConfig as iVDFMConfig
 from dfm_python.utils.errors import ModelNotTrainedError, DataValidationError, ConfigurationError
 
 
