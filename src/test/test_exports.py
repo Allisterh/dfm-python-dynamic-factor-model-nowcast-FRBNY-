@@ -109,6 +109,53 @@ def test_ivdfm_config_is_the_estimator_mirror():
     assert issubclass(dfm_python.iVDFMConfig, EstimatorConfig)
 
 
+def test_ddfm_dataset_is_not_public():
+    # The DDFM dataset is the estimator's private adapter (dfm_python.dataset.ddfm_dataset).
+    import dfm_python.dataset
+
+    for namespace in (dfm_python, dfm_python.dataset):
+        assert "DDFMDataset" not in namespace.__all__, namespace.__name__
+        assert not hasattr(namespace, "DDFMDataset"), namespace.__name__
+
+
+def test_ddfm_model_state_is_not_public():
+    # DDFMModelState is the engine's training_state and the DDFMResult.fit_params type only;
+    # its aliases DDFMTrainingState and DDFMStateSpaceParams are gone.
+    import dfm_python.config.schema as schema
+    import dfm_python.config.schema.params as params
+
+    for name in ("DDFMModelState", "DDFMTrainingState", "DDFMStateSpaceParams"):
+        for namespace in (dfm_python, dfm_python.config, schema):
+            assert name not in namespace.__all__, (namespace.__name__, name)
+            assert not hasattr(namespace, name), (namespace.__name__, name)
+    assert hasattr(params, "DDFMModelState")
+    assert not hasattr(params, "DDFMTrainingState") and not hasattr(params, "DDFMStateSpaceParams")
+
+
+def test_ddfm_engine_is_not_public_and_has_no_old_entry_points():
+    import dfm_python.models.ddfm as ddfm_pkg
+    from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
+    from dfm_python.models.ddfm._engine import DDFMEngine
+
+    for namespace in (dfm_python, dfm_python.models, ddfm_pkg, dfm_python.config):
+        assert "DDFMEngine" not in getattr(namespace, "__all__", ()), namespace.__name__
+        assert not hasattr(namespace, "DDFMEngine"), namespace.__name__
+    for name in ("save", "load", "update"):
+        assert not hasattr(DDFMEngine, name), name
+    assert not issubclass(DDFMEngine, EngineBaseFactorModel)
+
+
+def test_ddfm_logger_is_gone():
+    import importlib
+
+    import dfm_python.logger
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("dfm_python.logger.ddfm_logger")
+    for name in ("DDFMTrainLogger", "DDFMInferenceLogger"):
+        assert name not in dfm_python.logger.__all__ and not hasattr(dfm_python.logger, name)
+
+
 def test_ddfm_config_is_the_estimator_mirror():
     from dfm_python.config import EstimatorConfig
     from dfm_python.models.ddfm.estimator import DDFM

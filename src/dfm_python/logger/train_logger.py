@@ -356,9 +356,6 @@ def log_training_start(
     """
     if model_name.upper() == "DFM":
         logger = DFMTrainLogger()
-    elif model_name.upper() == "DDFM":
-        from .ddfm_logger import DDFMTrainLogger
-        logger = DDFMTrainLogger()
     else:
         logger = BaseTrainLogger(model_name=model_name)
     

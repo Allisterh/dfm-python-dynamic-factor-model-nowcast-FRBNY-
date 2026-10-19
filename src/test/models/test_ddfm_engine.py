@@ -4,14 +4,19 @@ The engine is the pre-redesign DDFM class with three edits that change no
 math: a ``device`` keyword that overrides the automatic CUDA/CPU choice, the
 pure ``_forecast`` extraction from ``predict``, and ``target_series`` /
 ``covariates`` copied from the dataset so that ``_update`` needs no dataset.
+The removed pre-redesign entry points (``config``, ``save``, ``load``, the
+public ``update``, ``predict``'s ``data``/``update``/``return_*`` flags) stay
+removed, and the engine no longer inherits the old abstract base.
 
 The engine internals that the old ``test_ddfm.py`` covered (encoder sizes,
-the pre-training inputs, the decoder helpers, the variance diagnostics, the
-dimension constants and the ``infer_*`` checkpoint helpers) are tested here
-against the engine; its workflow tests moved to ``test_ddfm_estimator.py``.
+the pre-training inputs, the decoder helpers, the variance diagnostics and the
+dimension constants) are tested here against the engine; its workflow tests
+moved to ``test_ddfm_estimator.py`` and the generic ``infer_input_dim_*``
+helpers to ``src/test/utils/test_checkpoint.py``.
 """
 
 import copy
+import inspect
 import warnings
 from unittest import mock
 
@@ -21,15 +26,23 @@ import pytest
 import torch
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
-from dfm_python.config.constants import DEFAULT_ENCODER_LAYERS, MIN_DDFM_TIME_STEPS, MIN_VARIABLES
+from dfm_python.config.constants import (
+    DEFAULT_DISP,
+    DEFAULT_ENCODER_LAYERS,
+    DEFAULT_MIN_TARGET_INTERPOLATE_RATIO,
+    DEFAULT_PRETRAIN_EPOCHS,
+    MIN_DDFM_TIME_STEPS,
+    MIN_VARIABLES,
+)
+from dfm_python import DDFM, PanelData
+from dfm_python.config.schema.params import DDFMModelState
 from dfm_python.dataset.ddfm_dataset import DDFMDataset
+from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
 from dfm_python.models.ddfm._engine import DDFMEngine
 from dfm_python.numeric.statistic import diagnose_variance_collapse
-from dfm_python.utils.checkpoint import infer_ddfm_input_dim, infer_input_dim_from_data
 from dfm_python.utils.errors import (
     ConfigurationError,
-    DataError,
-    DataValidationError,
+    ModelNotInitializedError,
     ModelNotTrainedError,
 )
 
@@ -123,6 +136,84 @@ def test_forecast_without_scaler_is_the_identity_and_predict_still_raises():
         engine.predict(horizon=6)
 
 
+class TestEngineSurface:
+    """The pre-redesign entry points were removed, not deprecated; they must not come back."""
+
+    @pytest.mark.parametrize("name", ["save", "load", "update", "_create_minimal_dataset_from_metadata",
+                                      "_get_interpolation_params", "_restore_checkpoint_metadata"])
+    def test_old_entry_point_is_removed(self, name):
+        assert not hasattr(DDFMEngine, name)
+        assert not hasattr(_engine(_dataset(_frame())), name)
+
+    def test_load_state_dict_is_the_module_one(self):
+        assert DDFMEngine.load_state_dict is torch.nn.Module.load_state_dict
+
+    def test_engine_does_not_inherit_the_old_base(self):
+        assert not issubclass(DDFMEngine, EngineBaseFactorModel)
+        assert issubclass(DDFMEngine, torch.nn.Module)
+
+    def test_init_sets_the_old_base_attributes(self):
+        dataset = _dataset(_frame())
+        engine = _engine(dataset)
+        assert engine._config is None and engine._result is None and engine.data_processed is None
+        assert engine._dataset is dataset and isinstance(engine.training_state, DDFMModelState)
+
+    def test_config_parameter_is_removed(self):
+        assert "config" not in inspect.signature(DDFMEngine.__init__).parameters
+        with pytest.raises(TypeError, match="config"):
+            DDFMEngine(_dataset(_frame()), config=None)
+
+    def test_dead_parameters_keep_their_recorded_defaults(self):
+        # The golden manifests record them; the engine never reads them.
+        engine = _engine(_dataset(_frame()))
+        assert engine.max_epoch_pre_train == DEFAULT_PRETRAIN_EPOCHS
+        assert engine.min_target_interporate_ratio == DEFAULT_MIN_TARGET_INTERPOLATE_RATIO
+        assert engine.disp == DEFAULT_DISP and engine.lags_input == 0
+
+    def test_interpolation_arguments_are_used_directly(self):
+        engine = _engine(_dataset(_frame()), interpolation_method="nearest", interpolation_limit=3,
+                         interpolation_limit_direction="forward")
+        assert (engine.interpolation_method, engine.interpolation_limit,
+                engine.interpolation_limit_direction) == ("nearest", 3, "forward")
+
+    def test_predict_takes_only_the_horizon(self):
+        assert list(inspect.signature(DDFMEngine.predict).parameters) == ["self", "horizon"]
+        engine = _fitted(_dataset(_frame()))
+        with pytest.raises(TypeError):
+            engine.predict(horizon=6, data=_dataset(_frame()))
+        y_pred, z_pred = engine.predict(horizon=6)
+        assert y_pred.shape == (6, 3) and z_pred.shape == (6, 2)
+
+    def test_predict_before_the_state_space_raises(self):
+        engine = _engine(_dataset(_frame()))
+        engine.fit()
+        with pytest.raises(ModelNotInitializedError, match="state-space model has not been built"):
+            engine.predict(horizon=3)
+
+
+def test_update_on_a_loaded_engine_needs_no_dataset(tmp_path):
+    """A loaded engine has no _dataset; _update runs on it and matches the fitted engine's update."""
+    frame = _frame(T=72)
+    panel = PanelData(y=frame[["a", "b", "c"]], exog=frame[["cov"]])
+    fit_panel = PanelData(y=frame[["a", "b", "c"]].iloc[:60], exog=frame[["cov"]].iloc[:60])
+    est = DDFM(n_factors=2, encoder_layers=(4,), n_mc_samples=2, max_iter=2, scaler="standard",
+               random_state=0, device="cpu").fit(fit_panel)
+    est.save(tmp_path / "run")
+    loaded = DDFM.load(tmp_path / "run")
+    engine = loaded.network_
+    assert engine._dataset is None
+
+    reference = copy.deepcopy(est.network_)
+    reference._update(est._adapter(panel, fitted=True))
+    engine._update(loaded._adapter(panel, fitted=True))
+
+    assert engine._dataset is None
+    assert engine.factors.shape[-2] == 60 + 72
+    assert engine.factors.tobytes() == reference.factors.tobytes()
+    assert engine.scaler.mean_.tobytes() == reference.scaler.mean_.tobytes()
+    assert engine.scaler.scale_.tobytes() == reference.scaler.scale_.tobytes()
+
+
 def test_update_needs_no_dataset():
     frame = _frame(T=72)
     engine = _fitted(_dataset(frame.iloc[:60]))
@@ -193,40 +284,6 @@ def test_get_result_and_predict_before_fit_raise_not_trained():
     assert getattr(engine, "_result", None) is None
     with pytest.raises(ModelNotTrainedError, match="model has not been trained"):
         engine.predict(horizon=5)
-
-
-@pytest.mark.parametrize("invalid_input", ["not a dict", [1, 2, 3], 42, None])
-def test_infer_input_dim_rejects_non_dicts(invalid_input):
-    with pytest.raises(DataValidationError, match="state_dict must be a dictionary"):
-        infer_ddfm_input_dim(invalid_input)
-
-
-def test_infer_input_dim_of_an_empty_dict_is_none():
-    assert infer_ddfm_input_dim({}) is None
-
-
-def test_infer_input_dim_without_matching_keys_is_none():
-    assert infer_ddfm_input_dim({"some.other.key": torch.zeros(10, 5)}) is None
-
-
-def test_infer_input_dim_from_the_first_encoder_layer():
-    assert infer_ddfm_input_dim({"autoencoder.encoder.layers.0.weight": torch.zeros(32, 64)}) == 64
-
-
-def test_infer_input_dim_from_the_decoder_weight():
-    assert infer_ddfm_input_dim({"autoencoder.decoder.decoder.weight": torch.zeros(10, 5)}) == 10
-
-
-@pytest.mark.parametrize("make", [lambda: np.array([[1, 2, 3], [4, 5, 6]]),
-                                  lambda: torch.tensor([[1, 2, 3], [4, 5, 6]])])
-def test_infer_input_dim_from_2d_data(make):
-    assert infer_input_dim_from_data(make()) == 3
-
-
-@pytest.mark.parametrize("make", [lambda: np.array([1, 2, 3]), lambda: torch.tensor([1, 2, 3])])
-def test_infer_input_dim_from_1d_data_raises(make):
-    with pytest.raises(DataError, match="Data must be at least 2D"):
-        infer_input_dim_from_data(make())
 
 
 def test_dimension_constants():

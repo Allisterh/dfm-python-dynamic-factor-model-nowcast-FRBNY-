@@ -205,7 +205,7 @@ def test_every_hyperparameter_reaches_the_engine(monkeypatch):
     dataset = seen.pop("dataset")
     assert isinstance(dataset, DDFMDataset)
     assert seen == {
-        "config": None, "encoder_size": (6, 5, 3), "decoder_type": "mlp", "seed": 11, "activation": "tanh",
+        "encoder_size": (6, 5, 3), "decoder_type": "mlp", "seed": 11, "activation": "tanh",
         "learning_rate": 0.01, "optimizer": "AdamW", "n_mc_samples": 2, "window_size": 12, "max_iter": 1,
         "tolerance": 1e-3, "disp": 10, "interpolation_method": "nearest", "interpolation_limit": 3,
         "interpolation_limit_direction": "forward", "device": torch.device("cpu"),
@@ -681,7 +681,7 @@ def test_load_does_not_touch_the_global_rngs(fitted, tmp_path):
 def test_from_saved_sets_every_attribute_init_sets(fitted, tmp_path):
     fitted.save(tmp_path / "run")
     loaded = DDFM.load(tmp_path / "run").network_
-    built = DDFMEngine(dataset=fitted._adapter(_panel()), config=None, device="cpu", **fitted._engine_params())
+    built = DDFMEngine(dataset=fitted._adapter(_panel()), device="cpu", **fitted._engine_params())
     missing = sorted(set(vars(built)) - set(vars(loaded)))
     assert not missing
     for name in ("encoder_size", "decoder_size", "decoder_type", "activation", "n_mc_samples", "window_size",
@@ -699,7 +699,7 @@ def test_from_saved_sets_every_attribute_init_sets(fitted, tmp_path):
 
 def test_from_saved_rejects_unknown_engine_parameters(fitted):
     dims = {"input_dim": 4, "output_dim": 3, "num_series": 4, "target_series": ["s0", "s1", "s2"], "covariates": ["x0"]}
-    for bad in ({"dataset": None}, {"device": "cpu"}, {"pretrain_epochs": 3}):
+    for bad in ({"dataset": None}, {"device": "cpu"}, {"pretrain_epochs": 3}, {"config": None}):
         with pytest.raises(TypeError, match="unexpected"):
             DDFMEngine._from_saved({**fitted._engine_params(), **bad}, dims, "cpu")
 
@@ -712,6 +712,17 @@ def test_load_rejects_a_state_that_does_not_match_the_config(fitted, tmp_path):
     path.write_text(json.dumps(state))
     with pytest.raises(ConfigurationError, match="encoder"):
         DDFM.load(tmp_path / "run")
+
+
+def test_single_file_checkpoint_is_rejected(fitted, tmp_path):
+    """Replaces the tests of the removed single-file helpers (infer_ddfm_input_dim and
+    infer_ddfm_params_from_state_dict): an old torch.save checkpoint is refused, not read."""
+    path = tmp_path / "old_ddfm_model.pt"
+    torch.save({"state_dict": fitted.network_.state_dict(), "encoder_size": (4, 2), "decoder_type": "linear"}, path)
+    with pytest.raises(ConfigurationError, match="single-file"):
+        DDFM.load(path)
+    with pytest.raises(ConfigurationError, match="single-file"):
+        dfm_python.load(path)
 
 
 def test_save_before_fit_raises(tmp_path):

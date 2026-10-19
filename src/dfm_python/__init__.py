@@ -75,10 +75,9 @@ from .io.loading import load
 
 # Datasets
 from .dataset.dfm_dataset import DFMDataset
-from .dataset.ddfm_dataset import DDFMDataset
 
 # Models (BaseFactorModel is the estimator base; the unmigrated DFM and the
-# DDFM and AFM engines still inherit the old one from dfm_python.models.base)
+# AFM engine still inherit the old one from dfm_python.models.base)
 from .base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.estimator import DDFM
@@ -98,7 +97,7 @@ __all__ = [
     # Saved runs
     'load',
     # Datasets
-    'DFMDataset', 'DDFMDataset',
+    'DFMDataset',
     # Results and metrics
     'BaseResult', 'DFMResult', 'DDFMResult', 'calculate_rmse',
     # Errors

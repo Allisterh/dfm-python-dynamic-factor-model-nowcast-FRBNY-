@@ -4,11 +4,13 @@ This module provides PyTorch-compatible Dataset and DataLoader implementations
 for PyTorch-based DFM models (e.g., DDFM) that use gradient descent training.
 
 This module provides:
-- Dataset classes: DDFMDataset, DFMDataset
-- DataLoader factories: create_ddfm_dataloader
+- Data container: PanelData
+- Dataset classes: DFMDataset, AFMDataset
+
+The DDFM and iVDFM datasets are their estimators' private adapters
+(``dataset.ddfm_dataset``, ``dataset.ivdfm_dataset``) and are not exported.
 """
 
-from .ddfm_dataset import DDFMDataset
 from .dfm_dataset import DFMDataset
 from .afm_dataset import AFMDataset
 from .panel import PanelData
@@ -18,7 +20,6 @@ __all__ = [
     # Data container
     'PanelData',
     # Datasets
-    'DDFMDataset',
     'DFMDataset',
     'AFMDataset',
     # Time utilities

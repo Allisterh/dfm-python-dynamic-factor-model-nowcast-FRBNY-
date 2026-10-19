@@ -9,11 +9,11 @@ Note: Series are specified via frequency dict mapping column names to frequencie
 
 from .model import BaseModelConfig, DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig
 from .results import BaseResult, DFMResult, DDFMResult, iVDFMResult, AFMResult
-from .params import DFMStateSpaceParams, DDFMStateSpaceParams
+from .params import DFMStateSpaceParams
 
 __all__ = [
     'BaseModelConfig', 'DFMConfig', 'DDFMConfig', 'iVDFMConfig', 'AFMConfig',
     'BaseResult', 'DFMResult', 'DDFMResult', 'iVDFMResult', 'AFMResult',
-    'DFMStateSpaceParams', 'DDFMStateSpaceParams',
+    'DFMStateSpaceParams',
 ]
 

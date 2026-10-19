@@ -3,8 +3,11 @@
 This module provides utilities for loading and parsing PyTorch model checkpoints,
 inferring model parameters from state dictionaries, and extracting input dimensions.
 
-The utilities are designed to work with DDFM models but can be parameterized
-for other autoencoder-based models.
+The state-dict helper defaults to the DDFM autoencoder's key names and can be
+parameterized for other autoencoder-based models. Saved DDFM runs are
+directories (see ``DDFM.save``/``DDFM.load``); the single-file checkpoint
+helpers ``infer_ddfm_input_dim`` and ``infer_ddfm_params_from_state_dict``
+were removed with the old ``torch.save`` checkpoints.
 """
 
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -23,15 +26,7 @@ except ImportError:
 from ..logger import get_logger
 from ..utils.errors import DataError, DataValidationError, ConfigurationError
 from ..utils.validation import has_shape_with_min_dims
-from ..utils.misc import resolve_param
-from ..config.constants import (
-    MAX_WARNING_ITEMS,
-    DEFAULT_ENCODER_LAYERS,
-    DEFAULT_NUM_FACTORS,
-    DEFAULT_ACTIVATION,
-    DEFAULT_DECODER,
-    DEFAULT_USE_BATCH_NORM,
-)
+from ..config.constants import MAX_WARNING_ITEMS
 
 _logger = get_logger(__name__)
 
@@ -166,130 +161,3 @@ def infer_input_dim_from_state_dict(
                     return weight.shape[1]  # input_dim is second dimension
     
     return None
-
-
-def infer_ddfm_input_dim(state_dict: Dict[str, Any]) -> Optional[int]:
-    """Infer input_dim from DDFM checkpoint state_dict.
-    
-    This is a convenience wrapper around infer_input_dim_from_state_dict
-    with DDFM-specific defaults.
-    
-    Parameters
-    ----------
-    state_dict : Dict[str, Any]
-        Model state dictionary
-        
-    Returns
-    -------
-    Optional[int]
-        Inferred input dimension, or None if cannot be determined
-        
-    Raises
-    ------
-    DataValidationError
-        If state_dict is invalid
-    """
-    return infer_input_dim_from_state_dict(
-        state_dict,
-        encoder_prefix="encoder.layers.0.weight",
-        decoder_prefixes=["decoder.decoder.weight", "decoder.layers.0.weight"],
-        output_dim_equals_input_dim=True
-    )
-
-
-def infer_ddfm_params_from_state_dict(
-    state_dict: Dict[str, Any],
-    hparams: Dict[str, Any],
-    kwargs: Dict[str, Any],
-    defaults: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
-    """Infer DDFM model parameters from state_dict.
-    
-    Uses resolve_param utility for consistent parameter resolution and
-    constants for default values instead of hardcoded literals.
-    
-    Parameters
-    ----------
-    state_dict : Dict[str, Any]
-        Model state dictionary
-    hparams : Dict[str, Any]
-        Hyperparameters from checkpoint
-    kwargs : Dict[str, Any]
-        Additional keyword arguments
-    defaults : Dict[str, Any], optional
-        Default parameter values. If None, uses constants from config.
-        
-    Returns
-    -------
-    Dict[str, Any]
-        Inferred model parameters
-    """
-    # Use constants for defaults instead of hardcoded values
-    if defaults is None:
-        defaults = {
-            'encoder_layers': DEFAULT_ENCODER_LAYERS,
-            'num_factors': DEFAULT_NUM_FACTORS,
-            'activation': DEFAULT_ACTIVATION,
-            'use_batch_norm': DEFAULT_USE_BATCH_NORM,
-            'decoder': DEFAULT_DECODER,
-            'decoder_layers': None,
-        }
-    
-    if not isinstance(state_dict, dict):
-        # Fallback: use resolve_param pattern for consistent resolution
-        return {
-            'encoder_layers': resolve_param(name='encoder_layers', kwargs=kwargs, config=None, defaults={**hparams, **defaults}),
-            'num_factors': resolve_param(name='num_factors', kwargs=kwargs, config=None, defaults={**hparams, **defaults}),
-            'activation': resolve_param(name='activation', kwargs=kwargs, config=None, defaults={**hparams, **defaults}),
-            'use_batch_norm': resolve_param(name='use_batch_norm', kwargs=kwargs, config=None, defaults={**hparams, **defaults}),
-            'decoder': resolve_param(name='decoder', kwargs=kwargs, config=None, defaults={**hparams, **defaults}),
-            'decoder_layers': resolve_param(name='decoder_layers', kwargs=kwargs, config=None, defaults={**hparams, **defaults}),
-        }
-    
-    # Infer encoder_layers from state_dict keys
-    inferred_encoder_layers = None
-    encoder_layer_keys = [k for k in sorted(state_dict.keys()) 
-                         if 'encoder.layers' in k and 'weight' in k and 'output' not in k]
-    if encoder_layer_keys:
-        inferred_encoder_layers = []
-        for key in encoder_layer_keys:
-            weight = state_dict[key]
-            if _has_torch and isinstance(weight, torch.Tensor):
-                inferred_encoder_layers.append(weight.shape[0])
-    
-    # Infer num_factors from encoder output layer or decoder
-    inferred_num_factors = None
-    
-    # Try encoder output layer first
-    output_layer_keys = [k for k in state_dict.keys() if 'encoder.output_layer.weight' in k]
-    if output_layer_keys:
-        weight = state_dict[output_layer_keys[0]]
-        if _has_torch and isinstance(weight, torch.Tensor):
-            inferred_num_factors = weight.shape[0]
-    
-    # Fallback to decoder if encoder output not found
-    if inferred_num_factors is None:
-        decoder_keys = [k for k in state_dict.keys() if 'decoder' in k and 'weight' in k]
-        for key in decoder_keys:
-            if 'decoder.weight' in key or ('layers' in key and '0.weight' in key):
-                weight = state_dict[key]
-                if _has_torch and isinstance(weight, torch.Tensor):
-                    inferred_num_factors = weight.shape[1]  # decoder input_dim = num_factors
-                    break
-    
-    # Use resolve_param for consistent parameter resolution
-    combined_defaults = {**defaults}
-    if inferred_encoder_layers is not None:
-        combined_defaults['encoder_layers'] = inferred_encoder_layers
-    if inferred_num_factors is not None:
-        combined_defaults['num_factors'] = inferred_num_factors
-    
-    return {
-        'encoder_layers': resolve_param(name='encoder_layers', kwargs=kwargs, config=None, defaults={**hparams, **combined_defaults}),
-        'num_factors': resolve_param(name='num_factors', kwargs=kwargs, config=None, defaults={**hparams, **combined_defaults}),
-        'activation': resolve_param(name='activation', kwargs=kwargs, config=None, defaults={**hparams, **combined_defaults}),
-        'use_batch_norm': resolve_param(name='use_batch_norm', kwargs=kwargs, config=None, defaults={**hparams, **combined_defaults}),
-        'decoder': resolve_param(name='decoder', kwargs=kwargs, config=None, defaults={**hparams, **combined_defaults}),
-        'decoder_layers': resolve_param(name='decoder_layers', kwargs=kwargs, config=None, defaults={**hparams, **combined_defaults}),
-    }
-

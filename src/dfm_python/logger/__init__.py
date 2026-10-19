@@ -7,7 +7,7 @@ The package provides:
   quiet_engine_loggers)
 
 The package is silent by default: the 'dfm_python' logger has only a NullHandler.
-- Training process tracking (BaseTrainLogger and model-specific loggers: DFMTrainLogger, DDFMTrainLogger)
+- Training process tracking (BaseTrainLogger and model-specific loggers: DFMTrainLogger, iVDFMTrainLogger)
 - Inference process tracking (BaseInferenceLogger and model-specific loggers)
 - Convenience functions for common logging tasks (log_em_iteration, log_convergence, etc.)
 """
@@ -42,11 +42,6 @@ from .inference_logger import (
     log_prediction,
 )
 
-from .ddfm_logger import (
-    DDFMTrainLogger,
-    DDFMInferenceLogger,
-)
-
 from .ivdfm_logger import (
     iVDFMTrainLogger,
     iVDFMInferenceLogger,
@@ -64,7 +59,6 @@ __all__ = [
     # Training tracking - base and model-specific
     'BaseTrainLogger',
     'DFMTrainLogger',
-    'DDFMTrainLogger',
     'log_training_start',
     'log_training_step',
     'log_training_end',
@@ -74,7 +68,6 @@ __all__ = [
     # Inference tracking - base and model-specific
     'BaseInferenceLogger',
     'DFMInferenceLogger',
-    'DDFMInferenceLogger',
     'iVDFMInferenceLogger',
     'log_inference_start',
     'log_inference_step',

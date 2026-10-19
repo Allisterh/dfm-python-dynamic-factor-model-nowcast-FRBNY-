@@ -169,7 +169,10 @@ class DDFMModelState:
     
     Consolidates all DDFM model state for checkpointing: training state (convergence,
     loss, factors, residuals) and fitted state-space parameters.
-    
+
+    Private: it is the DDFM engine's ``training_state`` and the type of
+    ``DDFMResult.fit_params``, and is not exported.
+
     Attributes
     ----------
     num_iter : int
@@ -324,9 +327,6 @@ class DDFMModelState:
                 model.training_state.Sigma_0 = self.Sigma_0
                 model.training_state.H = self.H
                 model.training_state.R = self.R
-
-# Backward compatibility aliases
-DDFMTrainingState = DDFMModelState
 
 
 @dataclass
@@ -509,7 +509,6 @@ class iVDFMModelState:
                 
                 if self.f0 is not None and hasattr(ssm, 'f0'):
                     ssm.f0.data = torch.from_numpy(self.f0).to(ssm.f0.device)
-DDFMStateSpaceParams = DDFMModelState
 
 # Backward compatibility alias
 DFMStateSpaceParams = DFMModelState

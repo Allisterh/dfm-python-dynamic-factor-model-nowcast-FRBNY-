@@ -10,7 +10,7 @@ Note: Series are specified via frequency dict mapping column names to frequencie
 from .schema import (
     BaseModelConfig, DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig,
     BaseResult, DFMResult, DDFMResult, AFMResult,
-    DFMStateSpaceParams, DDFMStateSpaceParams,
+    DFMStateSpaceParams,
 )
 # DEFAULT_BLOCK_NAME is imported lazily where needed to avoid circular imports
 from .constants import (
@@ -102,7 +102,7 @@ __all__ = [
     # Model-specific configs (from schema.py)
     'DFMConfig', 'DDFMConfig', 'iVDFMConfig', 'AFMConfig',
     # State-space parameters
-    'DFMStateSpaceParams', 'DDFMStateSpaceParams',
+    'DFMStateSpaceParams',
     # Model-specific results (from results.py)
     'DFMResult', 'DDFMResult', 'AFMResult',
     # Utilities

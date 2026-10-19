@@ -1,7 +1,10 @@
 """Golden tests for DDFM.
 
 ``test_golden_ddfm_engine`` runs the engine (the pre-redesign class, now
-``DDFMEngine``) exactly as the fixtures were captured.
+``DDFMEngine``) as the fixtures were captured, minus the removed entry points:
+no ``config`` argument (the capture passed the values it read explicitly) and
+``_update(dataset)`` followed by ``predict(horizon)`` for the old mutating
+``predict(horizon, data=dataset)``, which ran the same calls in that order.
 ``test_golden_ddfm_estimator`` runs the public ``DDFM`` estimator, built from
 the constructor and from a YAML file, on the same data as ``PanelData``
 (covariates in ``exog``) with the recorded hyperparameters mapped to the
@@ -184,7 +187,7 @@ def test_golden_ddfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     assert engine_at_fit == [hyper]
 
     # The engine reproduces every pinned output of the fit; the update outputs
-    # (an engine predict(data=...), which mutates it) are left out here.
+    # (an engine _update, which mutates it) are left out here.
     assert_golden(ddfm_engine_outputs(model.network_), case.name, exclude=DDFM_UPDATE_KEYS)
 
     # The estimator's forecasts are the engine's, in data units.

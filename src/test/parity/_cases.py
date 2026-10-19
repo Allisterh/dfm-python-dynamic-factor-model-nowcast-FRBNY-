@@ -423,13 +423,17 @@ DDFM_UPDATE_KEYS = ("update_predict_X", "update_predict_Z", "update_factors", "u
 
 
 def _ddfm_update_outputs(model: Any, upd: Any) -> dict[str, np.ndarray]:
-    """``predict(data=upd)`` as today's API runs it (update=True: mutates the model).
+    """``_update(upd)`` then ``predict(horizon=6)``: mutates the model.
 
     The update refits the model's target scaler on the training plus new
     targets, encodes the new rows and appends their factors; the forecast then
-    conditions on the last appended factor row.
+    conditions on the last appended factor row. The fixtures were captured
+    through the old ``predict(horizon=6, data=upd)`` (``update=True``), which
+    ran the same calls in the same order: its checks, ``_update(upd)``, then
+    the forecast.
     """
-    X_u, Z_u = model.predict(horizon=_DDFM_HORIZON, data=upd)
+    model._update(upd)
+    X_u, Z_u = model.predict(horizon=_DDFM_HORIZON)
     return {
         "update_predict_X": _np(X_u),
         "update_predict_Z": _np(Z_u),
@@ -472,9 +476,10 @@ def _ddfm_macro() -> CaseRun:
         config = dict(_DDFM_MACRO_FLAT_CONFIG)
         dataset = DDFMDataset(data=df, time_idx="date", covariates=covariates, scaler=StandardScaler())
         # The capture also passed the config object, which the engine read only
-        # for the interpolation values; they are passed explicitly here.
+        # for the interpolation values (the engine has no config parameter
+        # now); they are passed explicitly here.
         model = DDFM(
-            dataset=dataset, config=None,
+            dataset=dataset,
             encoder_size=tuple(config["encoder_layers"]), decoder_type="linear",
             activation=config["activation"], learning_rate=config["learning_rate"], optimizer="Adam",
             n_mc_samples=config["n_mc_samples"], window_size=config["window_size"],

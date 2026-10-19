@@ -28,6 +28,68 @@
   `iVDFMConfig`, `AFMConfig`) are exported from `dfm_python`. `iVDFMDataset`
   is no longer exported (from `dfm_python` or `dfm_python.dataset`); it is the
   iVDFM estimator's private window adapter in `dfm_python.dataset.ivdfm_dataset`.
+- **Breaking (DDFM):** `DDFM` is now an estimator with sklearn conventions
+  that takes `PanelData`: `DDFM(*, n_factors=4, encoder_layers=(16,),
+  decoder_type="linear", activation="relu", learning_rate=0.005,
+  optimizer="Adam", n_mc_samples=10, window_size=100, max_iter=200, tol=5e-4,
+  interpolation_method="linear", interpolation_limit=10,
+  interpolation_limit_direction="both", scaler=None, random_state=3,
+  device="auto", verbose=0)`, then `fit(data)`, `predict(h, data=None)`,
+  `predict_factors(h, data=None)`, `update(data)`, `save(path)` and
+  `DDFM.load(path, device=None)` (or `dfm_python.load`). The targets are the
+  panel's `y` and the encoder covariates its `exog`. `DDFMConfig` mirrors the
+  constructor (`DDFM.from_config`, `get_config`) and reads the `model:`/`data:`
+  YAML layout. The numbers are unchanged: the same data and hyperparameters
+  give the same weights, factors, state-space matrices and forecasts.
+
+  | Old | New |
+  |---|---|
+  | `DDFM(dataset, config, encoder_size, ..., seed=3)` (18 keywords; `config` was ignored except for the interpolation values); `DDFMDataset(data, time_idx, covariates, scaler)` | `DDFM(*, n_factors, encoder_layers, ..., random_state=3, device="auto", verbose=0)`; covariates in `PanelData.exog` |
+  | `fit() -> None`, then a required `build_state_space()` | `fit(data) -> self` (builds the state space) |
+  | `predict(horizon=None, *, data, update=True, return_series, return_factors)`: ndarray or tuple, mutates with `data` | `predict(h, data=None) -> DataFrame` (pure); `predict_factors(h, data=None) -> DataFrame` |
+  | `update(DDFMDataset) -> None`; `torch.save` file, `load` rebuilt a minimal dataset; no device override | `update(data) -> self`; a directory with `weights.pt`; `DDFM.load(path, device=)` |
+  | `get_result()`, `training_state` | `result_`, `factors_`, `n_iter_`, `converged_`, `scaler_`, `network_` |
+  | `encoder_size=(*hidden, k)`, `seed`, `tolerance` | `encoder_layers=hidden`, `n_factors=k`, `random_state`, `tol` |
+
+  - Removed: the `DDFM(dataset, config, ...)` constructor, `build_state_space`,
+    `get_result`, `training_state`, `predict`'s `data`/`update`/`return_series`/
+    `return_factors` flags, `torch.save` single-file checkpoints (loading one
+    raises `ConfigurationError`; save a run with the release that wrote it and
+    refit), the `utils.checkpoint` helpers `infer_ddfm_input_dim` and
+    `infer_ddfm_params_from_state_dict`, the `DDFMDataset` export (from
+    `dfm_python` and `dfm_python.dataset`; it is the estimator's private
+    adapter in `dfm_python.dataset.ddfm_dataset`), the `DDFMTrainingState` and
+    `DDFMStateSpaceParams` aliases and their exports, and
+    `dfm_python.logger.ddfm_logger` (`DDFMTrainLogger`, `DDFMInferenceLogger`;
+    `log_training_start("DDFM")` and `log_inference_start("DDFM")` return the
+    base loggers).
+  - `predict(h, data=...)` is pure: it conditions on `data` (the full panel,
+    including the new rows) on a copy and leaves the model unchanged. The
+    mutating path is the explicit `update(data)`.
+  - `result_.C` is the loading matrix H, N x r (series x factors), the `DFM`
+    orientation; it was H transposed (factors x N).
+  - With `scaler=None` the forecasts are in model space (the engine's
+    forecast, untransformed); the old `predict` raised without a scaler.
+  - Dropped as dead (stored but never read): `max_epoch_pre_train`
+    (pre-training runs `n_mc_samples` epochs) and `min_target_interpolate_ratio`,
+    and the `DDFMConfig` fields `use_batch_norm`, `use_idiosyncratic`,
+    `min_obs_idio` and `lags_input`. `DDFMConfig`'s `disp` is replaced by
+    `verbose`, and its `num_factors`, `max_epoch`, `tolerance` and `seed` by
+    `n_factors`, `max_iter`, `tol` and `random_state`.
+  - Shipped YAML values that now take effect. `DDFM(dataset, config=...)`
+    ignored the YAML except for the interpolation values, so a run with these
+    files used the constructor defaults:
+    - `config/ddfm_macro.yaml`: `learning_rate: 0.001` (ran as 0.005),
+      `n_mc_samples: 1` (10), `encoder_layers: [64, 32]` ([16]),
+      `n_factors: 2` (4). For the old tutorial, which passed the values,
+      only `random_state: 3` differs (it ran unseeded).
+    - `config/ddfm_finance.yaml`: `learning_rate: 0.001` (0.005),
+      `encoder_layers: [64, 32]` ([16]), `n_factors: 5` (4),
+      `decoder_type: mlp` (linear), `window_size: 200` (100), `max_iter: 10`
+      (200). For the old tutorial only `random_state: 3` (unseeded) and
+      `decoder_type: mlp` (it ran linear) differ.
+    - `config/ddfm_exchange.yaml`: `window_size: 200` (100), `max_iter: 10`
+      (200). The old tutorial passed every value and ran these.
 - `__version__` is read from the installed package metadata.
 - The package ships a `py.typed` marker.
 - Fixed: `compute_cov_safe` with listwise deletion raised on every

@@ -470,7 +470,7 @@ class DDFM(BaseFactorModel):
                 quiet_engine_loggers(self.verbose, _DIAGNOSTIC_LOGGERS, logging.ERROR):
             if self.verbose >= 2:
                 _logger.debug("DDFM: engine hyperparameters %s", params)
-            engine = DDFMEngine(dataset=dataset, config=None, device=device, **params)
+            engine = DDFMEngine(dataset=dataset, device=device, **params)
             engine.fit()
             engine.build_state_space()
             result = engine.get_result()

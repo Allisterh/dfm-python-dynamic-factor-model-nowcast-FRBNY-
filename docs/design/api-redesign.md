@@ -470,6 +470,12 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
 - **Rename churn.** `tol`, `random_state`, `n_factors` and `encoder_layers` touch every migrated script. Old keyword names raise `TypeError`, and old YAML keys raise `ConfigurationError` naming the canonical key.
 - **Two-column unpacking.** Code that still does `X, Z = model.predict(h)` on a model with exactly two targets silently gets the column labels. The CHANGELOG calls this out. Any other column count raises.
 - **Eager `result_`** may lengthen `fit` on large DFM panels. If so, it can become lazy without an API change.
+- **Known DDFM engine bugs, left in place.** The migration preserves the engine's numbers, so these stay until a separate fix (each changes golden outputs and needs a recapture):
+  - `_update` overwrites the interpolated targets with the un-interpolated `data_original`, so missing target values reach the encoder as NaN;
+  - the update panel's covariates are scaled with a fresh `type(scaler)()` fitted on that panel, not with the training statistics;
+  - the target scaler is refitted on the training rows plus the full update panel, which repeats the training rows;
+  - a second `update` inverse-transforms the training targets with the scaler the first one refitted;
+  - the `DDFMResult` `training_*` fields are never set.
 
 ## 15. Open questions for the owner
 

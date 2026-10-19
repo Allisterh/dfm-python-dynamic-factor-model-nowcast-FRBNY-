@@ -233,9 +233,6 @@ def log_inference_start(
     """
     if model_name.upper() == "DFM":
         logger = DFMInferenceLogger()
-    elif model_name.upper() == "DDFM":
-        from .ddfm_logger import DDFMInferenceLogger
-        logger = DDFMInferenceLogger()
     else:
         logger = BaseInferenceLogger(model_name=model_name)
     

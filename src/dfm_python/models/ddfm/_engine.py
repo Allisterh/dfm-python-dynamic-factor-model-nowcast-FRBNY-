@@ -3,7 +3,9 @@
 Implements the original DDFM algorithm with MCMC-based denoising training
 and sequential MC sample processing.
 
-``DDFMEngine`` is the private engine behind the public DDFM estimator. Its
+``DDFMEngine`` is the private engine behind the public estimator
+:class:`dfm_python.models.ddfm.estimator.DDFM`, which builds the engine's
+dataset from ``PanelData`` and passes every hyperparameter explicitly. Its
 code is the pre-redesign ``DDFM`` class unchanged, apart from three edits that
 change no math and no RNG order:
 
@@ -12,8 +14,8 @@ change no math and no RNG order:
     the dataset tensors built in ``run_mcmc_iteration`` follow it;
 (b) a pure extraction from ``predict``: :meth:`DDFMEngine._forecast` runs the
     AR(1) factor forecast and maps it to the targets, inverse-transforming with
-    ``self.scaler`` when it is set (identity otherwise); ``predict`` keeps its
-    checks, its update branch and its return flags and calls ``_forecast``;
+    ``self.scaler`` when it is set (identity otherwise); ``predict(horizon)``
+    keeps its checks and returns ``_forecast``'s ``(y, Z)``;
 (c) ``target_series`` and ``covariates`` are copied from the dataset in
     ``__init__``, and ``_update`` and ``_refit_scalers_with_new_data`` read
     them instead of ``self._dataset``, so an engine needs no dataset to update.
@@ -24,17 +26,28 @@ orientation) instead of ``H.T``; nothing else reads it.
 :meth:`DDFMEngine._from_saved` rebuilds a trained engine for the estimator's
 ``load`` without ``__init__``: no dataset and no seeding (it replaces the
 minimal-dataset rebuild of the old ``load``).
+
+Removed, because the estimator covers them: the ``config`` parameter (the
+engine read only its interpolation values; they are passed directly) and
+``_get_interpolation_params``; the ``torch.save`` checkpoint methods
+``save``/``load`` with the ``load_state_dict`` override and
+``_create_minimal_dataset_from_metadata`` (the estimator saves a directory
+and loads through ``_from_saved``); the ``data=``/``update=`` and
+``return_series``/``return_factors`` branches of ``predict`` and the public
+``update`` wrapper (the estimator calls ``_update``). Without ``save``/``load``
+the engine no longer inherits the old abstract base
+``dfm_python.models.base.BaseFactorModel``; :func:`_init_engine_state` sets the
+attributes that base's ``__init__`` set. The never-read ``max_epoch_pre_train``
+and ``min_target_interporate_ratio`` stay as attributes with their defaults.
 """
 
 import time
-from pathlib import Path
 import numpy as np
 import torch
 import torch.nn as nn
 from typing import Optional, Any, Union, Tuple
 import pandas as pd
 
-from ..base import BaseFactorModel
 from ...logger import get_logger
 from ...numeric.stability import convergence_checker
 from ...numeric.builder import build_ddfm_state_space
@@ -96,13 +109,21 @@ from ...dataset.ddfm_dataset import DDFMDataset
 _logger = get_logger(__name__)
 
 
-class DDFMEngine(BaseFactorModel, nn.Module):
+def _init_engine_state(engine: Any) -> None:
+    """Set the attributes the old ``models.base.BaseFactorModel.__init__`` set."""
+    engine._config = None
+    engine._result = None
+    engine.training_state = None
+    engine._dataset = None
+    engine.data_processed = None
+
+
+class DDFMEngine(nn.Module):
     """Deep Dynamic Factor Model using PyTorch."""
-    
+
     def __init__(
         self,
         dataset: DDFMDataset,
-        config: Optional[Any] = None,
         encoder_size: Optional[tuple] = None,
         decoder_type: str = "linear",
         seed: int = DEFAULT_SEED,
@@ -122,15 +143,14 @@ class DDFMEngine(BaseFactorModel, nn.Module):
         device: Optional[Union[str, torch.device]] = None,
     ):
         """Initialize DDFM model."""
-        BaseFactorModel.__init__(self)
+        _init_engine_state(self)
         nn.Module.__init__(self)
-        
+
         if not isinstance(dataset, DDFMDataset):
             raise ModelNotInitializedError(
                 f"dataset must be an instance of DDFMDataset, got {type(dataset).__name__}"
             )
-        
-        self._config = config
+
         self._dataset = dataset
         self.target_series = list(dataset.target_series)
         self.covariates = list(dataset.covariates)
@@ -157,11 +177,12 @@ class DDFMEngine(BaseFactorModel, nn.Module):
         
         self.scaler = getattr(dataset, 'scaler', None)
         self.min_target_interporate_ratio = min_target_interporate_ratio
-        
-        # Interpolation parameters (config takes precedence over function arguments)
-        self.interpolation_method, self.interpolation_limit, self.interpolation_limit_direction = \
-            self._get_interpolation_params(config, interpolation_method, interpolation_limit, interpolation_limit_direction)
-        
+
+        # Interpolation parameters
+        self.interpolation_method = interpolation_method
+        self.interpolation_limit = interpolation_limit
+        self.interpolation_limit_direction = interpolation_limit_direction
+
         # Calculate dimensions using dataset shape properties
         # input_dim = X features + y targets (full_input concatenates them)
         # output_dim = only y targets (decoder only reconstructs targets, not features)
@@ -193,12 +214,12 @@ class DDFMEngine(BaseFactorModel, nn.Module):
         ``__init__`` (``encoder_size``, ``decoder_type``, ``seed``,
         ``activation``, ``learning_rate``, ``optimizer``, ``n_mc_samples``,
         ``window_size``, ``max_iter``, ``tolerance``, ``disp`` and the
-        interpolation values; ``config`` may be given too); a keyword left out
-        takes ``__init__``'s default. ``dims`` holds what ``__init__`` reads
-        from the dataset: ``input_dim``, ``output_dim``, ``num_series``,
-        ``target_series`` and ``covariates``. Every attribute ``__init__`` sets
-        is set the same way, except ``scaler``, which is None (the caller sets
-        the fitted one), and the device, which is ``device``.
+        interpolation values); a keyword left out takes ``__init__``'s default.
+        ``dims`` holds what ``__init__`` reads from the dataset: ``input_dim``,
+        ``output_dim``, ``num_series``, ``target_series`` and ``covariates``.
+        Every attribute ``__init__`` sets is set the same way, except
+        ``scaler``, which is None (the caller sets the fitted one), and the
+        device, which is ``device``.
 
         The autoencoder is built as ``fit`` builds it, without its seed and
         inside ``torch.random.fork_rng`` (its initialization draws from the
@@ -220,11 +241,9 @@ class DDFMEngine(BaseFactorModel, nn.Module):
         values = {**defaults, **params}
 
         self = cls.__new__(cls)
-        BaseFactorModel.__init__(self)
+        _init_engine_state(self)
         nn.Module.__init__(self)
 
-        config = values["config"]
-        self._config = config
         self._dataset = None
         self.target_series = list(dims["target_series"])
         self.covariates = list(dims["covariates"])
@@ -251,11 +270,9 @@ class DDFMEngine(BaseFactorModel, nn.Module):
 
         self.scaler = None
         self.min_target_interporate_ratio = values["min_target_interporate_ratio"]
-        self.interpolation_method, self.interpolation_limit, self.interpolation_limit_direction = \
-            self._get_interpolation_params(
-                config, values["interpolation_method"], values["interpolation_limit"],
-                values["interpolation_limit_direction"],
-            )
+        self.interpolation_method = values["interpolation_method"]
+        self.interpolation_limit = values["interpolation_limit"]
+        self.interpolation_limit_direction = values["interpolation_limit_direction"]
 
         self.num_series = int(dims["num_series"])
         self.input_dim = int(dims["input_dim"])
@@ -288,39 +305,6 @@ class DDFMEngine(BaseFactorModel, nn.Module):
         self.autoencoder.eval()
         return self
 
-    def _get_interpolation_params(
-        self,
-        config: Optional[Any],
-        default_method: str,
-        default_limit: Optional[int],
-        default_direction: str
-    ) -> Tuple[str, Optional[int], str]:
-        """Get interpolation parameters from config or defaults.
-        
-        Parameters
-        ----------
-        config : Optional[Any]
-            Config object (may have interpolation attributes)
-        default_method : str
-            Default interpolation method
-        default_limit : Optional[int]
-            Default interpolation limit
-        default_direction : str
-            Default interpolation direction
-            
-        Returns
-        -------
-        Tuple[str, Optional[int], str]
-            (method, limit, direction)
-        """
-        if config is not None:
-            return (
-                getattr(config, 'interpolation_method', default_method),
-                getattr(config, 'interpolation_limit', default_limit),
-                getattr(config, 'interpolation_limit_direction', default_direction)
-            )
-        return default_method, default_limit, default_direction
-    
     def _get_averaged_factors(self) -> np.ndarray:
         """Get factors averaged across MC samples if 3D, otherwise return as-is."""
         return average_3d_array(self.factors, axis=0)
@@ -701,201 +685,13 @@ class DDFMEngine(BaseFactorModel, nn.Module):
         self.training_state.H = H
         self.training_state.R = R
     
-    def save(self, path: Union[str, Path]) -> None:
-        """Save DDFM model to file.
-        
-        Saves the complete model state using the defined dataclasses:
-        - PyTorch model state_dict (autoencoder weights)
-        - Configuration
-        - Training state (DDFMModelState dataclass) - single source of truth for all model state
-               including training state and state-space parameters
-        - Result (DDFMResult dataclass, if model is trained)
-        
-        Parameters
-        ----------
-        path : str or Path
-            Path to save the model checkpoint file
-        """
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Sync training_state dataclass with current model state
-        self.training_state.sync_from_model(self)
-        
-        # Get result dataclass if model is trained
-        result = self._result if self._result is not None else (self.get_result() if self._has_factors and self.training_state.F is not None else None)
-        
-        # Extract dataset metadata if available (needed for forecasting)
-        dataset_metadata = None
-        if hasattr(self, '_dataset') and self._dataset is not None:
-            dataset = self._dataset
-            dataset_metadata = {
-                'colnames': list(dataset.data.columns) if hasattr(dataset, 'data') and dataset.data is not None else None,
-                'covariates': dataset.covariates if hasattr(dataset, 'covariates') else None,
-                'time_idx': dataset.time_idx if hasattr(dataset, 'time_idx') else None,
-            }
-        
-        # Add DDFM-specific dimensions to metadata
-        if dataset_metadata is not None:
-            dataset_metadata.update({
-                'input_dim': self.input_dim,
-                'output_dim': self.output_dim,
-                'num_series': self.num_series,
-                'window_size': self.window_size,  # Also save window_size for dummy data creation
-            })
-        
-        # Collect checkpoint using dataclasses
-        checkpoint = {
-            'state_dict': self.state_dict(),
-            'config': self._config,
-            'training_state': self.training_state,
-            'result': result,
-            'encoder_size': self.encoder_size,
-            'decoder_type': self.decoder_type,
-            'decoder_size': self.decoder_size,
-            'dataset_metadata': dataset_metadata,  # Save dataset metadata in model checkpoint
-            'scaler': self.scaler,  # Save scaler for forecast scaling
-        }
-        
-        torch.save(checkpoint, path)
-        _logger.info(f"DDFM model saved to {path}")
-    
-    @classmethod
-    def load(cls, path: Union[str, Path], dataset: Optional[DDFMDataset] = None) -> 'DDFMEngine':
-        """Load DDFM model from checkpoint file.
-        
-        Parameters
-        ----------
-        path : str or Path
-            Path to the checkpoint file
-        dataset : DDFMDataset, optional
-            Dataset instance. If None, a minimal dataset will be created from checkpoint metadata.
-            
-        Returns
-        -------
-        DDFM
-            Loaded DDFM model instance
-        """
-        path = Path(path)
-        # PyTorch 2.6+ defaults torch.load(..., weights_only=True), which blocks
-        # unpickling non-tensor objects (e.g., our config dataclass) unless allowlisted.
-        # These checkpoints are produced locally by this project, so load them fully.
-        try:
-            checkpoint = torch.load(path, map_location='cpu', weights_only=False)
-        except TypeError:
-            # Older PyTorch versions don't support weights_only
-            checkpoint = torch.load(path, map_location='cpu')
-        
-        # Extract architecture and config
-        encoder_size = checkpoint.get('encoder_size')
-        decoder_type = checkpoint.get('decoder_type', 'linear')
-        config = checkpoint.get('config')
-        
-        # Create minimal dataset from metadata if dataset not provided
-        if dataset is None:
-            dataset = cls._create_minimal_dataset_from_metadata(checkpoint)
-        
-        # Create model instance
-        model = cls(
-            dataset=dataset,
-            config=config,
-            encoder_size=encoder_size,
-            decoder_type=decoder_type
-        )
-        
-        # Build autoencoder modules before loading state_dict so attributes exist
-        # (needed for update()/predict() paths that use encoder/decoder).
-        model.autoencoder = SimpleAutoencoder.build(
-            input_dim=model.input_dim,
-            encoder_size=model.encoder_size,
-            decoder_size=model.decoder_size,
-            decoder_type=model.decoder_type,
-            output_dim=model.output_dim,
-            activation=model.activation,
-            seed=model.initializer_seed
-        )
-        model.encoder = model.autoencoder.encoder
-        model.decoder = model.autoencoder.decoder
-        
-        # Load PyTorch state
-        model.load_state_dict(checkpoint['state_dict'], strict=False)
-        # Ensure modules are on the same device expected by update()/predict()
-        model.autoencoder.to(model.device)
-        
-        # Restore dataclasses
-        model.training_state = checkpoint.get('training_state', DDFMModelState())
-        
-        # Restore instance attributes from training_state if trained
-        if model.training_state.factors is not None:
-            model.factors = model.training_state.factors
-            model.eps = model.training_state.eps
-            model.last_neurons = model.training_state.last_neurons
-            model._num_iter = model.training_state.num_iter
-            model.loss_now = model.training_state.loss_now
-            model._converged = model.training_state.converged
-        
-        # Reconstruct runtime attributes needed for update()/forecast paths
-        # (these are not part of state_dict/training_state but are expected by methods).
-        # For minimal datasets created from metadata, we still need these attributes
-        model.data = model._dataset.data.copy()
-        model.target_indices = model._dataset.target_indices
-        if not model._dataset.all_columns_are_targets:
-            model._target_col_tensor = torch.tensor(model.target_indices, device=model.device, dtype=torch.long)
-        
-        # Restore checkpoint metadata (uses base class helper)
-        model._restore_checkpoint_metadata(checkpoint)
-        
-        # Restore result
-        if checkpoint.get('result') is not None:
-            model._result = checkpoint['result']
-        
-        # Ensure scaler is set (from checkpoint or dataset)
-        if model.scaler is None:
-            # Try to get from checkpoint first
-            if checkpoint.get('scaler') is not None:
-                model.scaler = checkpoint['scaler']
-            # Fallback to dataset scaler
-            elif dataset is not None and hasattr(dataset, 'scaler') and dataset.scaler is not None:
-                model.scaler = dataset.scaler
-            else:
-                _logger.warning("DDFM model loaded without scaler - forecasts may not be properly scaled")
-        
-        _logger.info(f"DDFM model loaded from {path}")
-        return model
-    
-    def load_state_dict(self, state_dict: dict, strict: bool = True):
-        """Load state dictionary."""
-        return super().load_state_dict(state_dict, strict=strict)
-    
-    
-    def predict(
-        self,
-        horizon: Optional[int] = None,
-        *,
-        data: Optional[Union[np.ndarray, Any]] = None,
-        update: bool = True,
-        return_series: bool = True,
-        return_factors: bool = True
-    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
-        """Forecast future values using trained state-space model. Requires build_state_space() to be called.
-        
-        **New Data Initialization**: If `data` is provided:
-        - If `update=True` (default): Updates the model's internal state with new data
-          via neural network forward pass, then forecasts from the updated state.
-        - If `update=False`: Uses data only for initializing factor state without modifying model state.
-        
-        Parameters
-        ----------
-        horizon : int, optional
-            Number of periods ahead to forecast
-        data : DDFMDataset, optional
-            New preprocessed dataset to use for updating model state. If provided:
-            - With `update=True` (default): Updates model state, then forecasts from updated state.
-            - With `update=False`: Uses data only for initializing factor state without modifying model state.
-        update : bool, default True
-            If True and `data` is provided, updates the model's internal state with new data
-            before forecasting. If False, uses data only for initializing factor state without
-            modifying model state.
+    def predict(self, horizon: Optional[int] = None) -> Tuple[np.ndarray, np.ndarray]:
+        """Forecast the targets and factors ``horizon`` steps ahead (default ``DEFAULT_FORECAST_HORIZON``).
+
+        Requires ``fit`` and ``build_state_space``. Returns ``(y_forecast,
+        Z_forecast)`` from :meth:`_forecast` after checking that the model is
+        trained, the state space is built, the horizon is valid and a scaler is
+        set. To condition on new rows, call ``_update(dataset)`` first.
         """
         
         # Validate model is trained
@@ -913,16 +709,6 @@ class DDFMEngine(BaseFactorModel, nn.Module):
             details="Please call build_state_space() after training to enable prediction"
         )
         
-        # Handle data update if provided
-        if data is not None and update:
-            # Update model state with new data, then use updated state for forecasting
-            if not isinstance(data, DDFMDataset):
-                raise TypeError(
-                    f"DDFM.predict() requires data to be a DDFMDataset when update=True. "
-                    f"Got {type(data)} instead."
-                )
-            self._update(data)
-        
         # Validate and resolve horizon
         from ...numeric.validator import validate_horizon
         if horizon is None:
@@ -936,14 +722,7 @@ class DDFMEngine(BaseFactorModel, nn.Module):
                 details="Dataset must provide scaler for proper forecast scaling"
             )
         
-        y_forecast, Z_forecast = self._forecast(horizon)
-        
-        # Return based on flags
-        if return_series and return_factors:
-            return y_forecast, Z_forecast
-        if return_series:
-            return y_forecast
-        return Z_forecast
+        return self._forecast(horizon)
     
     def _forecast(self, horizon: int) -> Tuple[np.ndarray, np.ndarray]:
         """Forecast the targets and factors ``horizon`` steps ahead.
@@ -1056,71 +835,6 @@ class DDFMEngine(BaseFactorModel, nn.Module):
             loglik=-float('inf')  # DDFM doesn't compute log-likelihood
         )
 
-    def update(self, data: Union[np.ndarray, Any], *args, **kwargs) -> None:
-        """Update model state with new observations.
-
-        For DDFM we only support updating with a `DDFMDataset`, which guarantees
-        consistent preprocessing and column order.
-        """
-        if not isinstance(data, DDFMDataset):
-            raise TypeError(f"DDFM.update() expects a DDFMDataset, got {type(data)}")
-        self._update(data)
-    
-    @classmethod
-    def _create_minimal_dataset_from_metadata(cls, checkpoint: dict) -> DDFMDataset:
-        """Create minimal DDFMDataset from checkpoint metadata.
-        
-        Parameters
-        ----------
-        checkpoint : dict
-            Checkpoint dictionary containing dataset_metadata and scaler
-            
-        Returns
-        -------
-        DDFMDataset
-            Minimal dataset with correct structure for model loading
-        """
-        dataset_metadata = checkpoint.get('dataset_metadata')
-        if dataset_metadata is None:
-            raise ValueError(
-                "Cannot load DDFM model: dataset_metadata not found in checkpoint. "
-                "Either provide a dataset parameter or ensure the checkpoint was saved with dataset_metadata."
-            )
-        
-        # Extract metadata
-        colnames = dataset_metadata.get('colnames')
-        covariates = dataset_metadata.get('covariates', [])
-        time_idx = dataset_metadata.get('time_idx')
-        
-        if colnames is None:
-            raise ValueError("Cannot create dataset: colnames not found in checkpoint metadata")
-        
-        # Create minimal dummy data with correct column structure
-        # We only need the shape properties, not actual data
-        window_size = dataset_metadata.get('window_size', checkpoint.get('window_size', 10))
-        num_rows = max(10, window_size)
-        dummy_data = pd.DataFrame(
-            np.zeros((num_rows, len(colnames))),
-            columns=colnames,
-            index=pd.date_range('2000-01-01', periods=num_rows, freq='W')
-        )
-        
-        # If time_idx is a column name, ensure it exists in dummy_data
-        # Otherwise, use None (DDFMDataset will use index)
-        if time_idx and time_idx not in colnames:
-            time_idx = None
-        
-        # Get scaler from checkpoint if available
-        scaler = checkpoint.get('scaler')
-        
-        # Create minimal dataset with metadata
-        return DDFMDataset(
-            data=dummy_data,
-            time_idx=time_idx if time_idx else 'date',  # Use 'date' as default if not specified
-            covariates=covariates if covariates else None,
-            scaler=scaler  # Restore scaler from checkpoint
-        )
-    
     def _refit_scalers_with_new_data(
         self,
         dataset: DDFMDataset,
