@@ -150,6 +150,17 @@
       iteration on all rows) and refreshes `result_`.
     - The old `DFMConfig` (the engine's config) is private, and its
       never-read `idio_rho0` and `idio_min_var` are gone.
+    - Known engine issues, left in place (the engine is frozen for identical
+      numbers; each fix changes the golden outputs): mixed-frequency fits
+      report `result_.loglik` as exactly `-T/2` (`-57.0` for the README's
+      114-row example), which is not a usable log-likelihood; on some
+      mixed-frequency panels (truncated slices of `data/macro.csv`, or the
+      full file with `config/dfm_macro.yaml`) EM diverges or leaves
+      parameters under which the Kalman filter is not finite, so `save`
+      warns and stores a NaN `last_smoothed_cov` and `update` raises; one or
+      two EM iterations on short weekly/monthly slices can give explosive
+      forecasts; `update(data, refit=True)` runs one EM iteration, not a
+      full refit.
   - **DDFM:**
     - `result_.C` is the loading matrix H, N x r (series x factors), the DFM
       orientation; it was H transposed (factors x N).

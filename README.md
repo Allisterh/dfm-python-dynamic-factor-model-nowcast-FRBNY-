@@ -223,6 +223,19 @@ model = DFM.load("runs/dfm")                            # no data needed
   the last conditioning date, with the training series and frequencies; an
   overlap raises `DataValidationError`. They are the engine's two paths and
   give different numbers (see [update and predict(data=)](#update-and-predictdata)).
+- **Known engine issues.** The engine is kept as it was, for identical
+  numbers, so these remain until a separate fix:
+  - mixed-frequency fits report `result_.loglik` as exactly `-T/2` (`-57.0`
+    for the 114 fitted rows above), which is not a usable log-likelihood;
+  - on some mixed-frequency panels (for example truncated slices of
+    `data/macro.csv`, or the full file with `config/dfm_macro.yaml`) EM
+    diverges or leaves parameters under which the Kalman filter is not
+    finite: `save` then warns and stores a NaN `last_smoothed_cov`, and
+    `update` raises;
+  - one or two EM iterations on short weekly/monthly slices can give
+    explosive forecasts;
+  - `update(data, refit=True)` runs one EM iteration on all rows, not a full
+    refit.
 
 `tutorial/tutorial_{macro,finance,exchange}_dfm.py` fit the shipped
 configurations end to end.
