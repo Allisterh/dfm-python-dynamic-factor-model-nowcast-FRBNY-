@@ -7,6 +7,7 @@ from dfm_python.dataset.panel import PanelData
 from dfm_python.io.loading import load
 from dfm_python.logger import get_verbosity, set_verbosity
 from dfm_python.models.afm.estimator import AFM
+from dfm_python.models.ivdfm.estimator import iVDFM
 
 
 def test_new_api_names_are_exported():
@@ -15,7 +16,8 @@ def test_new_api_names_are_exported():
     assert dfm_python.set_verbosity is set_verbosity and dfm_python.get_verbosity is get_verbosity
     assert dfm_python.BaseFactorModel is BaseFactorModel
     assert dfm_python.AFM is AFM
-    for name in ("PanelData", "load", "set_verbosity", "get_verbosity", "BaseFactorModel", "AFM"):
+    assert dfm_python.iVDFM is iVDFM
+    for name in ("PanelData", "load", "set_verbosity", "get_verbosity", "BaseFactorModel", "AFM", "iVDFM"):
         assert name in dfm_python.__all__, name
 
 

@@ -11,12 +11,18 @@ On exit, also when the body raises, the temporary handler is removed and the
 ``'dfm_python'`` logger's level is restored. If :func:`set_verbosity` already
 installed its handler, no second handler is added (records would otherwise be
 printed twice); only the level is lowered for the duration of the block.
+
+``quiet_engine_loggers(verbose, names)`` covers the other half of
+``verbose=0``: an engine that logs progress at INFO stays silent during
+``fit`` even when the user opted in with :func:`set_verbosity`, because the
+engine's loggers are raised to WARNING (or another level) for the duration of
+the block.
 """
 
 import logging
 import sys
 from contextlib import contextmanager
-from typing import Iterator, Optional
+from typing import Iterable, Iterator, Optional
 
 from .logger import (
     DEFAULT_DATEFMT,
@@ -82,3 +88,47 @@ def fit_verbosity(verbose: int) -> Iterator[None]:
             package_logger.removeHandler(handler)
             handler.close()
         package_logger.setLevel(saved_level)
+
+
+@contextmanager
+def quiet_engine_loggers(verbose: int, names: Iterable[str], level: int = logging.WARNING) -> Iterator[None]:
+    """With ``verbose=0``, raise the loggers ``names`` (and their children) to ``level`` inside the block.
+
+    Engines log their progress (epochs, initialization) at INFO. Inside
+    ``fit`` with ``verbose=0`` those records are dropped even when the package
+    logger is at INFO (for example after ``set_verbosity("info")``); with the
+    default ``level`` warnings and errors still pass. With ``verbose >= 1``
+    nothing changes, so :func:`fit_verbosity` shows the records. A logger that
+    is already at ``level`` or above keeps its level. Levels are restored on
+    exit, also when the body raises.
+
+    Parameters
+    ----------
+    verbose : int
+        The model's ``verbose`` hyperparameter (0 silent, 1 progress, 2 debug).
+    names : iterable of str
+        Logger names, for example ``"dfm_python.models.ivdfm"``.
+    level : int, default logging.WARNING
+        The level the loggers are raised to. A progress reporter whose
+        summaries are logged as warnings (such as "did not converge") can be
+        raised to ``logging.ERROR``.
+
+    Raises
+    ------
+    ConfigurationError
+        If ``verbose`` is not a non-negative integer.
+    """
+    if _verbose_to_level(verbose) is not None:
+        yield
+        return
+    saved = []
+    for name in names:
+        logger = logging.getLogger(name)
+        saved.append((logger, logger.level))
+        if logger.getEffectiveLevel() < level:
+            logger.setLevel(level)
+    try:
+        yield
+    finally:
+        for logger, level in reversed(saved):
+            logger.setLevel(level)

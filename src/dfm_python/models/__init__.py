@@ -25,6 +25,16 @@ except ImportError:
     # DDFM not available (missing torch or other dependencies)
     pass
 
+# iVDFM implementation (identifiable variational dynamic factor model)
+try:
+    from .ivdfm.estimator import iVDFM
+    __all__.extend([
+        'iVDFM',  # High-level API
+    ])
+except ImportError:
+    # iVDFM not available (missing torch or other dependencies)
+    pass
+
 # AFM implementation (Attention Factor Model for statistical arbitrage)
 try:
     from .afm.estimator import AFM

@@ -15,7 +15,7 @@ import dfm_python
 from dfm_python.base import DEFAULT_TAGS, BaseFactorModel
 from dfm_python.dataset.panel import PanelData
 from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
-from dfm_python.utils.errors import ConfigurationError, NotFittedError, UnsupportedInputError
+from dfm_python.utils.errors import ConfigurationError, DataValidationError, NotFittedError, UnsupportedInputError
 
 from .contract._dummies import _DummyAllocator, _DummyForecaster, _DummyForecasterConfig
 
@@ -40,7 +40,7 @@ class _Child(_DummyForecaster):
 
 
 def test_top_level_base_is_the_estimator_base():
-    # The unmigrated engines (DFM, DDFM, iVDFM) still inherit the old base from models.base.
+    # The unmigrated engines (DFM, DDFM) and the iVDFM engine still inherit the old base from models.base.
     assert dfm_python.BaseFactorModel is BaseFactorModel
     assert BaseFactorModel is not EngineBaseFactorModel
     assert "BaseFactorModel" in dfm_python.__all__
@@ -392,3 +392,35 @@ def test_fit_is_silent_with_verbose_0(panel, capsys, caplog):
 def test_invalid_verbose_raises(panel):
     with pytest.raises(ConfigurationError, match="verbose"):
         _DummyForecaster(verbose=-1).fit(panel)
+
+
+# -- forecast index -----------------------------------------------------------
+
+
+def test_forecast_index_uses_freq_then_inferred_freq():
+    idx = pd.date_range("2020-01-31", periods=5, freq="ME", name="date")
+    expected = pd.date_range("2020-06-30", periods=3, freq="ME", name="date")
+    assert BaseFactorModel._forecast_index(idx, 3).equals(expected)
+    no_freq = pd.DatetimeIndex(list(idx), name="date")
+    assert no_freq.freq is None
+    out = BaseFactorModel._forecast_index(no_freq, 3)
+    assert out.equals(expected) and out.name == "date"
+
+
+def test_forecast_index_irregular_datetime_uses_the_median_step():
+    idx = pd.DatetimeIndex(["2020-01-01", "2020-01-08", "2020-01-14", "2020-01-22", "2020-01-29"])
+    out = BaseFactorModel._forecast_index(idx, 2)
+    assert list(out) == [pd.Timestamp("2020-02-05"), pd.Timestamp("2020-02-12")]
+    assert out.name == "time"
+
+
+def test_forecast_index_range_and_period():
+    assert BaseFactorModel._forecast_index(pd.RangeIndex(0, 10, 2), 3).equals(pd.RangeIndex(10, 16, 2))
+    assert BaseFactorModel._forecast_index(pd.RangeIndex(5), 2).name == "time"
+    per = pd.period_range("2020Q1", periods=4, freq="Q", name="q")
+    assert BaseFactorModel._forecast_index(per, 2).equals(pd.period_range("2021Q1", periods=2, freq="Q", name="q"))
+
+
+def test_forecast_index_single_stamp_without_freq_raises():
+    with pytest.raises(DataValidationError, match="single time stamp"):
+        BaseFactorModel._forecast_index(pd.DatetimeIndex(["2020-01-01"]), 2)

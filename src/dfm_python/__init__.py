@@ -21,8 +21,11 @@ pickle-free save directory::
     >>> model.save("runs/afm")
     >>> model = AFM.load("runs/afm")             # or dfm_python.load("runs/afm")
 
-``DFM``, ``DDFM`` and ``iVDFM`` are still built from a dataset and a config
-until they are migrated; see README.md for complete examples of every model.
+``iVDFM`` is an estimator on the same API: ``iVDFM(n_factors=3, window=200,
+scaler="standard").fit(data)``, then ``predict(h, futr_exog=...)`` (data
+units) and ``predict_factors(h)``. ``DFM`` and ``DDFM`` are still built from a
+dataset and a config until they are migrated; see README.md for complete
+examples of every model.
 """
 
 import logging as _logging
@@ -73,12 +76,12 @@ from .dataset.dfm_dataset import DFMDataset
 from .dataset.ddfm_dataset import DDFMDataset
 from .dataset.ivdfm_dataset import iVDFMDataset
 
-# Models (BaseFactorModel is the estimator base; the unmigrated engines still
-# inherit the old one from dfm_python.models.base)
+# Models (BaseFactorModel is the estimator base; the unmigrated engines and the
+# iVDFM engine still inherit the old one from dfm_python.models.base)
 from .base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.ddfm import DDFM
-from .models.ivdfm._engine import iVDFMEngine as iVDFM
+from .models.ivdfm.estimator import iVDFM
 from .models.afm.estimator import AFM
 
 __all__ = [

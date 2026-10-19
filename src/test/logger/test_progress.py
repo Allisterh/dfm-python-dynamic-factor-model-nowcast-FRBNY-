@@ -153,3 +153,72 @@ class TestFitVerbosity:
             with fit_verbosity(bad):
                 pass
         assert len(silent_package.handlers) == 1
+
+
+class TestQuietEngineLoggers:
+    NAME = "dfm_python.models.fake_engine"
+
+    def _records(self, verbose, level=logging.INFO):
+        from dfm_python.logger import quiet_engine_loggers
+
+        pkg = logging.getLogger(PKG)
+        records = []
+
+        class _Keep(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        handler = _Keep(level=logging.DEBUG)
+        pkg.addHandler(handler)
+        pkg.setLevel(level)
+        child = logging.getLogger(self.NAME + ".module")
+        try:
+            with quiet_engine_loggers(verbose, [self.NAME]):
+                child.info("progress")
+                child.warning("careful")
+        finally:
+            pkg.removeHandler(handler)
+        return [r.getMessage() for r in records]
+
+    def test_verbose_0_drops_info_but_keeps_warnings(self, silent_package):
+        assert self._records(0) == ["careful"]
+
+    def test_verbose_1_changes_nothing(self, silent_package):
+        assert self._records(1) == ["progress", "careful"]
+
+    def test_levels_are_restored_also_on_error(self, silent_package):
+        from dfm_python.logger import quiet_engine_loggers
+
+        logger = logging.getLogger(self.NAME)
+        logger.setLevel(logging.DEBUG)
+        with pytest.raises(RuntimeError):
+            with quiet_engine_loggers(0, [self.NAME]):
+                assert logger.level == logging.WARNING
+                raise RuntimeError("boom")
+        assert logger.level == logging.DEBUG
+        logger.setLevel(logging.NOTSET)
+
+    def test_a_quieter_logger_keeps_its_level(self, silent_package):
+        from dfm_python.logger import quiet_engine_loggers
+
+        logger = logging.getLogger(self.NAME)
+        logger.setLevel(logging.ERROR)
+        with quiet_engine_loggers(0, [self.NAME]):
+            assert logger.level == logging.ERROR
+        assert logger.level == logging.ERROR
+        logger.setLevel(logging.NOTSET)
+
+    def test_invalid_verbose_raises(self):
+        from dfm_python.logger import quiet_engine_loggers
+
+        with pytest.raises(ConfigurationError):
+            with quiet_engine_loggers(-1, [self.NAME]):
+                pass
+
+    def test_level_argument(self, silent_package):
+        from dfm_python.logger import quiet_engine_loggers
+
+        logger = logging.getLogger(self.NAME)
+        with quiet_engine_loggers(0, [self.NAME], logging.ERROR):
+            assert logger.level == logging.ERROR
+        assert logger.level == logging.NOTSET

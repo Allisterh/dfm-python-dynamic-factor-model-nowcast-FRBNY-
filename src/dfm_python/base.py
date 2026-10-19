@@ -62,7 +62,7 @@ from .io.layout import (
 from .io.results import result_from_files, result_to_files
 from .io.scaler import SCALER_PREFIX, has_scaler, read_scaler, write_scaler
 from .logger.progress import fit_verbosity
-from .utils.errors import ConfigurationError, NotFittedError, UnsupportedInputError
+from .utils.errors import ConfigurationError, DataValidationError, NotFittedError, UnsupportedInputError
 
 __all__ = ["BaseFactorModel", "DEFAULT_TAGS"]
 
@@ -291,6 +291,49 @@ class BaseFactorModel(BaseEstimator):
         if h < 1:
             raise ValueError(f"h must be a positive integer (the forecast horizon), got {h}.")
         return h
+
+    @staticmethod
+    def _forecast_index(index: pd.Index, h: int) -> pd.Index:
+        """The ``h`` time stamps after ``index[-1]`` (the forecast index of spec section 6).
+
+        - ``RangeIndex``: continues by position with the same step.
+        - ``PeriodIndex``: the next ``h`` periods.
+        - ``DatetimeIndex``: the step is ``index.freq``, else ``pd.infer_freq``
+          (three or more stamps), else the median step between stamps, for an
+          irregular index.
+
+        The name is ``index.name``, or ``"time"`` if it has none.
+
+        Raises
+        ------
+        DataValidationError
+            For a ``DatetimeIndex`` with a single stamp and no ``freq``, or an
+            index of another type.
+        """
+        name = index.name if index.name is not None else "time"
+        if isinstance(index, pd.RangeIndex):
+            start = index[-1] + index.step
+            out: pd.Index = pd.RangeIndex(start, start + index.step * h, index.step)
+        elif isinstance(index, pd.PeriodIndex):
+            out = pd.period_range(index[-1] + 1, periods=h, freq=index.freq)
+        elif isinstance(index, pd.DatetimeIndex):
+            freq = index.freq or (pd.infer_freq(index) if len(index) >= 3 else None)
+            if freq is not None:
+                out = pd.date_range(index[-1], periods=h + 1, freq=freq)[1:]
+            elif len(index) >= 2:
+                step = index.to_series().diff().median()
+                out = pd.DatetimeIndex([index[-1] + step * i for i in range(1, h + 1)])
+            else:
+                raise DataValidationError(
+                    "Cannot build a forecast index after a single time stamp without a frequency; give the "
+                    "DatetimeIndex a freq (for example pd.date_range(..., freq='ME'))."
+                )
+        else:
+            raise DataValidationError(
+                f"Cannot build a forecast index after a {type(index).__name__}; use a DatetimeIndex, PeriodIndex "
+                "or RangeIndex."
+            )
+        return out.rename(name)
 
     # -- fit ---------------------------------------------------------------
 
