@@ -13,7 +13,9 @@ __all__ = ["all_estimators"]
 
 # (public name, module, attribute), imported lazily so that importing the
 # registry does not import every model.
-_ESTIMATORS: tuple[tuple[str, str, str], ...] = ()
+_ESTIMATORS: tuple[tuple[str, str, str], ...] = (
+    ("AFM", "dfm_python.models.afm.estimator", "AFM"),
+)
 
 
 def all_estimators() -> list[tuple[str, type]]:

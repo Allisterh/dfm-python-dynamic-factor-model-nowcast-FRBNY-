@@ -19,4 +19,7 @@ def test_registry_lists_estimator_classes():
 
 @pytest.mark.parametrize("name, cls", _ESTIMATORS, ids=[name for name, _ in _ESTIMATORS])
 def test_contract(name, cls):
-    check_estimator(cls)
+    ran = check_estimator(cls)
+    # Every check that applies to every estimator ran, save/load included.
+    for check in ("pure_construction", "config_serialization", "unfitted", "fit", "purity", "silence", "save_load"):
+        assert check in ran, check

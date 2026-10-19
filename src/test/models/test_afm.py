@@ -3,14 +3,19 @@
 Covers the residual-construction math (attention weights, closed-form loadings,
 residual projection identity), the LongConv filter, the ``AFM`` estimator
 (fit/allocate/backtest/update on ``PanelData``, tags, validation, config
-mirror), the private ``AFMEngine`` (``device`` keyword, ``_from_saved``) and
-the paper's three model classes (attention+longconv, pca+longconv, pca+ou).
+mirror, save/load), the private ``AFMEngine`` (``device`` keyword,
+``_from_saved``), the shipped ``config/afm_finance.yaml`` and the paper's three
+model classes (attention+longconv, pca+longconv, pca+ou).
 Small synthetic panels only: this is a from-the-paper unit test, not an
 empirical reproduction.
 """
 
 import dataclasses
+import importlib.util
 import inspect
+import json
+import warnings
+from pathlib import Path
 from unittest import mock
 
 import numpy as np
@@ -19,6 +24,7 @@ import pytest
 import torch
 from sklearn.base import clone
 
+import dfm_python
 from dfm_python import PanelData
 from dfm_python.models.afm import (AFM, AttentionFactors, PCAFactors,
                                    LongConv1d, residuals, ridge_loadings,
@@ -27,6 +33,7 @@ from dfm_python.models.afm._engine import AFMEngine
 from dfm_python.dataset.afm_dataset import AFMDataset
 from dfm_python.config.schema.model import AFMConfig
 from dfm_python.config.schema.results import AFMResult
+from dfm_python.registry import all_estimators
 from dfm_python.utils.errors import (ConfigurationError, DataValidationError,
                                      NotFittedError, UnsupportedInputError)
 
@@ -535,11 +542,156 @@ class TestFidelity:
         assert r_all.shape == (80, 5)
 
 
-def test_afm_passes_the_contract_checks_before_save_load(monkeypatch):
-    # AFM's save/load hooks and its registration come with the next item; every
-    # other contract check already applies.
-    import dfm_python.testing as testing
+class TestAFMSaveLoad:
+    """``save`` writes the section 7 directory; ``AFM.load`` rebuilds the engine without data or seeding."""
 
-    monkeypatch.setattr(testing, "_CHECKS", tuple(c for c in testing._CHECKS if c[0] != "save_load"))
-    ran = testing.check_estimator(AFM)
-    assert ran[-1] == "update" and "device" in ran and "save_load" not in ran
+    @staticmethod
+    def _saved(tmp_path, data=None, **params):
+        if data is None:
+            data = _panel(chars=params.get("factor_model", "attention") == "attention")
+        model = _model(**params).fit(data)
+        path = tmp_path / "run"
+        model.save(path)
+        return model, data, path
+
+    def test_file_set_and_state_files(self, tmp_path):
+        model, _, path = self._saved(tmp_path)
+        assert sorted(p.name for p in path.iterdir()) == [
+            "config.json", "data_spec.json", "result.json", "result.npz", "scaler.json",
+            "state.json", "state.npz", "weights.pt"]
+        with np.load(path / "state.npz", allow_pickle=False) as npz:
+            assert sorted(npz.files) == ["book_returns", "residuals"]
+            np.testing.assert_array_equal(npz["residuals"], model.result_.residual_portfolios)
+            np.testing.assert_array_equal(npz["book_returns"], model.result_.book_returns)
+        state = json.loads((path / "state.json").read_text())
+        st = model.network_.training_state
+        assert state == {"num_iter": st.num_iter, "converged": st.converged, "loss_now": st.loss_now,
+                         "sharpe": st.sharpe, "explained_variance": st.explained_variance, "n_char": 8}
+        with np.load(path / "result.npz", allow_pickle=False) as npz:
+            # Z and x_sm alias residual_portfolios and are not written again.
+            assert sorted(npz.files) == ["book_returns", "residual_portfolios"]
+        weights = torch.load(path / "weights.pt", weights_only=True)
+        assert weights.keys() == model.network_.state_dict().keys()
+        config = json.loads((path / "config.json").read_text())
+        assert config["model_type"] == "AFM" and config["params"]["random_state"] == 0
+
+    @pytest.mark.parametrize("factor_model, trading", [("attention", "longconv"), ("pca", "longconv"),
+                                                       ("pca", "ou")])
+    def test_round_trip_is_bitwise(self, tmp_path, factor_model, trading):
+        model, data, path = self._saved(tmp_path, factor_model=factor_model, trading=trading)
+        loaded = AFM.load(path)
+        assert type(loaded) is AFM and loaded.get_params() == model.get_params()
+        assert isinstance(loaded.network_, AFMEngine) and loaded.network_._dataset is None
+        assert _same_state(_state(model), _state(loaded))
+        assert loaded.allocate(data=data).equals(model.allocate())
+        for name in ("n_iter_", "converged_", "n_factors_", "n_char_", "scaler_", "random_state_",
+                     "n_features_in_", "device_"):
+            assert getattr(loaded, name) == getattr(model, name), name
+        for name in ("feature_names_in_", "exog_names_in_", "series_exog_names_in_"):
+            assert list(getattr(loaded, name)) == list(getattr(model, name)), name
+        assert loaded.index_.equals(model.index_) and loaded.index_.freq == model.index_.freq
+        assert loaded.residuals_.equals(model.residuals_)
+        assert loaded.book_returns_.equals(model.book_returns_)
+        for f in dataclasses.fields(AFMResult):
+            a, b = getattr(model.result_, f.name), getattr(loaded.result_, f.name)
+            if isinstance(a, np.ndarray):
+                assert a.dtype == b.dtype and a.tobytes() == b.tobytes(), f.name
+            else:
+                assert a == b, f.name
+        assert loaded.result_.Z is loaded.result_.residual_portfolios is loaded.result_.x_sm
+        assert loaded.network_.get_result() is loaded.result_
+        before, after = model.network_.training_state, loaded.network_.training_state
+        for f in dataclasses.fields(before):
+            a, b = getattr(before, f.name), getattr(after, f.name)
+            if isinstance(a, np.ndarray):
+                assert a.dtype == b.dtype and a.tobytes() == b.tobytes(), f.name
+            else:
+                assert type(a) is type(b) and a == b, f.name
+        assert loaded.network_.loss_now == model.network_.loss_now
+        assert loaded.network_._num_iter == model.network_._num_iter
+        backtest_a, backtest_b = model.backtest(data), loaded.backtest(data)
+        np.testing.assert_array_equal(backtest_a.weights, backtest_b.weights)
+        assert backtest_a.sharpe == backtest_b.sharpe
+
+    def test_loaded_model_has_no_attached_data(self, tmp_path):
+        _, data, path = self._saved(tmp_path)
+        loaded = AFM.load(path)
+        assert "data_" not in vars(loaded)
+        with pytest.raises(DataValidationError, match=r"allocate\(data=\.\.\.\)"):
+            loaded.allocate()
+        assert loaded.update(data) is loaded
+        assert loaded.allocate().equals(loaded.allocate(data=data))
+
+    def test_loaded_model_continues_training_like_the_fitted_one(self, tmp_path):
+        model, _, path = self._saved(tmp_path)
+        loaded = AFM.load(path)
+        new = _panel(T=40, seed=5)
+        model.update(new, refit=True)
+        loaded.update(new, refit=True)
+        assert _same_state(_state(model), _state(loaded))
+        np.testing.assert_array_equal(model.result_.book_returns, loaded.result_.book_returns)
+        assert loaded.index_.equals(new.index)
+
+    def test_dfm_python_load_dispatches(self, tmp_path):
+        model, data, path = self._saved(tmp_path)
+        loaded = dfm_python.load(path)
+        assert type(loaded) is AFM
+        assert loaded.allocate(data=data).equals(model.allocate())
+
+    def test_load_device(self, tmp_path):
+        _, _, path = self._saved(tmp_path, device="auto")
+        with mock.patch.object(torch.cuda, "is_available", return_value=False):
+            auto = AFM.load(path)
+        assert auto.device_ == torch.device("cpu") and auto.network_.device == torch.device("cpu")
+        loaded = AFM.load(path, device="cpu")
+        assert loaded.device_ == torch.device("cpu") and loaded.get_params()["device"] == "auto"
+        assert all(p.device.type == "cpu" for p in loaded.network_.parameters())
+
+    def test_load_does_not_touch_the_global_rng(self, tmp_path):
+        _, _, path = self._saved(tmp_path)
+        rng = torch.random.get_rng_state()
+        AFM.load(path)
+        assert torch.equal(rng, torch.random.get_rng_state())
+
+    def test_save_warns_without_random_state(self, tmp_path):
+        model = _model(random_state=None).fit(_panel())
+        with pytest.warns(UserWarning, match="random_state=None"):
+            model.save(tmp_path / "run")
+        seeded = _model().fit(_panel())
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            seeded.save(tmp_path / "seeded")
+
+    def test_save_before_fit_raises(self, tmp_path):
+        with pytest.raises(NotFittedError):
+            _model().save(tmp_path / "run")
+        assert not (tmp_path / "run").exists()
+
+    def test_pca_without_characteristics(self, tmp_path):
+        returns, _ = _make_data()
+        data = PanelData.from_arrays(returns)
+        model, _, path = self._saved(tmp_path, data=data, factor_model="pca", trading="ou")
+        assert json.loads((path / "state.json").read_text())["n_char"] is None
+        loaded = AFM.load(path)
+        assert loaded.n_char_ is None and list(loaded.series_exog_names_in_) == []
+        assert loaded.allocate(data=data).equals(model.allocate())
+
+
+def test_afm_is_registered():
+    assert ("AFM", AFM) in all_estimators()
+    assert dfm_python.AFM is AFM and dfm_python.models.AFM is AFM
+
+
+_SHIPPED_YAML = Path(__file__).resolve().parents[3] / "config" / "afm_finance.yaml"
+_YAML = importlib.util.find_spec("omegaconf") is not None or importlib.util.find_spec("yaml") is not None
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+def test_shipped_yaml_builds_the_estimator():
+    cfg = AFMConfig.from_yaml(_SHIPPED_YAML)
+    expected = {**AFM().get_params(), "n_factors": 5, "factor_model": "attention", "trading": "longconv",
+                "embed_dim": 32, "hist_len": 20, "n_kernels": 32, "ridge": 0.01, "lambda_var": 0.1,
+                "turnover_cost": 0.0005, "short_cost": 0.0001, "risk_free": 0.0, "learning_rate": 0.001,
+                "max_epochs": 50, "patience": 10, "random_state": 0}
+    assert cfg.to_dict() == expected
+    assert AFM.from_config(cfg).get_params() == cfg.to_dict() == expected

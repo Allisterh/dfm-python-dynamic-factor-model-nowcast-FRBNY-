@@ -11,11 +11,18 @@ hyperparameters give the same residuals, weights and Sharpe ratio.
 AFM allocates rather than forecasts: :meth:`AFM.allocate` returns portfolio
 weights, :meth:`AFM.backtest` evaluates the fitted policy on new data, and
 ``predict`` raises ``TypeError``.
+
+``save(path)`` writes the pickle-free directory of the save layout
+(``state.npz``/``state.json`` with the training diagnostics, ``result.npz``/
+``result.json`` with ``result_`` and ``weights.pt`` with the network weights);
+``AFM.load(path, device=None)`` rebuilds the engine from them without data or
+seeding.
 """
 
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
@@ -24,9 +31,12 @@ import torch
 
 from ...base import BaseFactorModel
 from ...config.schema.model import AFMConfig
+from ...config.schema.params import AFMModelState
 from ...config.schema.results import AFMResult
 from ...dataset.afm_dataset import AFMDataset
 from ...dataset.panel import PanelData
+from ...io.codecs import read_json, read_npz
+from ...io.layout import RESULT_JSON, RESULT_NPZ
 from ...logger.progress import fit_verbosity
 from ...utils.errors import ConfigurationError, DataValidationError, UnsupportedInputError
 from ._engine import AFMEngine
@@ -37,6 +47,8 @@ _FACTOR_MODELS = ("attention", "pca")
 _TRADING = ("longconv", "ou")
 _POSITIVE_INTS = ("embed_dim", "hist_len", "n_kernels", "pca_window", "reestim", "max_epochs")
 _NON_NEGATIVE_FLOATS = ("ridge", "squash_lambda", "lambda_var", "turnover_cost", "short_cost")
+# AFMResult fields that hold the same array as residual_portfolios.
+_RESULT_ALIASES = ("Z", "x_sm")
 
 
 def _is_int(value: Any) -> bool:
@@ -124,7 +136,8 @@ class AFM(BaseFactorModel):
         The resolved device.
     data_ : PanelData
         The attached data that ``allocate()`` uses (the training data, or the
-        data of the last ``update``).
+        data of the last ``update``). A loaded model has none until
+        ``update(data)``; pass ``allocate(data=...)`` instead.
     n_features_in_, feature_names_in_, exog_names_in_, series_exog_names_in_, index_
         Number and names of the assets, exog names (always empty),
         characteristic names and the training index.
@@ -147,6 +160,8 @@ class AFM(BaseFactorModel):
     >>> data = PanelData.from_arrays(y=returns, series_exog=characteristics)  # doctest: +SKIP
     >>> model = AFM(n_factors=3, hist_len=20, max_epochs=20, random_state=0).fit(data)  # doctest: +SKIP
     >>> weights = model.allocate()  # doctest: +SKIP
+    >>> model.save("runs/afm")  # doctest: +SKIP
+    >>> AFM.load("runs/afm").allocate(data=data)  # doctest: +SKIP
     """
 
     _tags = {
@@ -212,11 +227,12 @@ class AFM(BaseFactorModel):
 
     @classmethod
     def get_test_params(cls) -> list[dict]:
-        """Small CPU parameter sets for the contract checks."""
+        """Small CPU parameter sets for the contract checks: the paper's three model classes."""
+        tiny = {"n_factors": 2, "hist_len": 5, "max_epochs": 2, "random_state": 0, "device": "cpu"}
         return [
-            {"n_factors": 2, "hist_len": 5, "embed_dim": 4, "n_kernels": 4, "max_epochs": 2, "random_state": 0},
-            {"n_factors": 1, "factor_model": "pca", "trading": "ou", "hist_len": 5, "pca_window": 20, "reestim": 5,
-             "max_epochs": 2, "random_state": 0},
+            {**tiny, "factor_model": "attention", "trading": "longconv", "embed_dim": 4, "n_kernels": 4},
+            {**tiny, "factor_model": "pca", "trading": "longconv", "n_kernels": 4, "pca_window": 20, "reestim": 5},
+            {**tiny, "factor_model": "pca", "trading": "ou", "pca_window": 20, "reestim": 5},
         ]
 
     # -- validation ----------------------------------------------------------
@@ -367,14 +383,18 @@ class AFM(BaseFactorModel):
         # The engine seeds the global torch RNG (random_state) and then builds its network, as before.
         engine = AFMEngine(dataset, None, n_char=None, **self._engine_params(), device=device)
         engine.fit()
+        self._set_fitted(engine, device)
+        self.data_ = data
+        self._set_results(data.index)
+
+    def _set_fitted(self, engine: AFMEngine, device: torch.device) -> None:
+        """Set the fitted attributes that come from the engine (shared by ``fit`` and ``load``)."""
         self.network_ = engine
         self.device_ = device
-        self.data_ = data
         self.n_factors_ = int(engine.n_factors)
         self.n_char_ = None if engine.n_char is None else int(engine.n_char)
         self.scaler_ = None
         self.random_state_ = self.random_state
-        self._set_results(data.index)
 
     def _set_results(self, index: pd.Index) -> None:
         """Set ``result_`` and the attributes derived from it from the engine's last training pass."""
@@ -413,7 +433,10 @@ class AFM(BaseFactorModel):
         self._check_is_fitted("allocate")
         if data is None:
             if "data_" not in vars(self):
-                raise DataValidationError("AFM has no attached data (it was loaded without it); call allocate(data=...).")
+                raise DataValidationError(
+                    "AFM has no attached data: a loaded model keeps no training data. Pass the panel to allocate on, "
+                    "allocate(data=...), or attach it once with update(data)."
+                )
             panel = self.data_
         else:
             panel = self._panel(data, "allocate")
@@ -482,3 +505,65 @@ class AFM(BaseFactorModel):
             self._set_results(panel.index)
         self.data_ = panel
         return self
+
+    # -- save / load ---------------------------------------------------------
+
+    def _save_state(self, path: Path) -> None:
+        """Write the AFM part of the saved run (spec section 7).
+
+        - ``state.npz``: ``residuals`` and ``book_returns`` of the last training
+          pass (plus the ``scaler/`` entry the base class adds);
+        - ``state.json``: ``num_iter``, ``converged``, ``loss_now``, ``sharpe``,
+          ``explained_variance`` and ``n_char``;
+        - ``result.npz`` / ``result.json``: ``result_``. ``Z`` and ``x_sm`` are
+          the same array as ``residual_portfolios`` and are restored as such
+          rather than written three times;
+        - ``weights.pt``: ``network_.state_dict()``.
+        """
+        state = self.network_.training_state
+        arrays = {"residuals": state.residuals, "book_returns": state.book_returns}
+        meta = {
+            "num_iter": state.num_iter,
+            "converged": state.converged,
+            "loss_now": state.loss_now,
+            "sharpe": state.sharpe,
+            "explained_variance": state.explained_variance,
+            "n_char": self.n_char_,
+        }
+        self._write_state(path, arrays, meta)
+        self._write_result(path, exclude=_RESULT_ALIASES)
+        self._write_weights(path)
+
+    @classmethod
+    def _load_state(cls, est: AFM, path: Path, device: Any, allow_pickle: bool) -> None:
+        """Rebuild the engine without data or seeding, load its weights and restore the fitted attributes.
+
+        A loaded model has no attached data (``data_``): pass ``data`` to
+        ``allocate``, or attach it with ``update(data)``.
+        """
+        arrays, meta = cls._read_state(path)
+        device = est._load_device(device)
+        engine = AFMEngine._from_saved(est._engine_params(), meta["n_char"], device)
+        engine.load_state_dict(cls._read_weights(path, device))
+        state = AFMModelState(
+            num_iter=meta["num_iter"],
+            converged=meta["converged"],
+            loss_now=meta["loss_now"],
+            sharpe=meta["sharpe"],
+            explained_variance=meta["explained_variance"],
+            residuals=arrays["residuals"],
+            book_returns=arrays["book_returns"],
+        )
+        state.apply_to_model(engine)
+        engine.training_state = state
+
+        result_arrays = read_npz(Path(path) / RESULT_NPZ)
+        residuals = result_arrays.get("residual_portfolios")
+        engine._result = cls._result_from_files(
+            AFMResult,
+            result_arrays,
+            read_json(Path(path) / RESULT_JSON),
+            **{name: residuals for name in _RESULT_ALIASES},
+        )
+        est._set_fitted(engine, device)
+        est._set_results(est.index_)  # result_ is the engine's (cached) result, as after fit
