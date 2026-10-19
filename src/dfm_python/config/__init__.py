@@ -25,6 +25,7 @@ from .constants import (
     MIN_STD,
 )
 from .schema.model import validate_frequency
+from .estimator import EstimatorConfig, load_yaml
 from .adapter import (
     ConfigSource,
     YamlSource,
@@ -95,6 +96,8 @@ def get_periods_per_year(frequency: str) -> int:
 __all__ = [
     # Base classes
     'BaseModelConfig', 'BaseResult',
+    # Constructor mirror and YAML layout
+    'EstimatorConfig', 'load_yaml',
     # 'DEFAULT_BLOCK_NAME',  # Removed to avoid circular import
     # Model-specific configs (from schema.py)
     'DFMConfig', 'DDFMConfig', 'iVDFMConfig', 'AFMConfig',
