@@ -3,15 +3,14 @@
 This module provides model-specific configuration dataclasses:
 - BaseModelConfig: Base class with shared model structure (series, clock, data handling)
 - DFMConfig(BaseModelConfig): Linear DFM with EM algorithm parameters and block structure
-- DDFMConfig(BaseModelConfig): Deep DFM with neural network training parameters (no blocks)
 - _iVDFMEngineConfig(BaseModelConfig): the private iVDFM engine's parameters (no blocks)
 - AFMConfig(EstimatorConfig): mirror of the AFM estimator's constructor
 - iVDFMConfig(EstimatorConfig): mirror of the iVDFM estimator's constructor
+- DDFMConfig(EstimatorConfig): mirror of the DDFM estimator's constructor
 
 The configuration hierarchy:
 - BaseModelConfig: Model structure (series, clock, data handling) - NO blocks
 - DFMConfig: Adds blocks structure and EM algorithm parameters (max_iter, threshold, regularization)
-- DDFMConfig: Adds neural network parameters (epochs, learning_rate, encoder_layers) - NO blocks
 
 Note: Series are specified via frequency dict mapping column names to frequencies. Result classes are in schema/results.py
 
@@ -144,7 +143,7 @@ class BaseModelConfig:
     Note: Blocks are DFM-specific and are NOT included in BaseModelConfig.
     DFMConfig adds block structure; the other model configs do not use blocks.
     
-    Subclasses (DFMConfig, DDFMConfig, _iVDFMEngineConfig) add model-specific training parameters.
+    Subclasses (DFMConfig, _iVDFMEngineConfig) add model-specific training parameters.
     
     Examples
     --------
@@ -523,12 +522,17 @@ class DFMConfig(BaseModelConfig):
         return result
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> Union['DFMConfig', 'DDFMConfig']:
-        """Create DFMConfig or DDFMConfig from dictionary.
+    def from_dict(cls, data: Dict[str, Any]) -> 'DFMConfig':
+        """Create DFMConfig from dictionary.
         
         Expected format: {'frequency': {'column_name': 'frequency'}, 'blocks': {...}, ...}
         
         Also accepts estimation parameters: threshold, max_iter, etc.
+
+        A dictionary that looks like a DDFM config (``model_type: ddfm`` or
+        ``deep``, or one of ``encoder_layers``, ``epochs``, ``learning_rate``,
+        ``batch_size`` without ``blocks``) raises ``ConfigurationError`` naming
+        ``DDFMConfig.from_dict`` and ``DDFM.from_config``.
         """
         from ...config.adapter import detect_config_type, MODEL_TYPE_DDFM, _normalize_blocks_dict
         from ...utils.errors import ConfigurationError
@@ -540,7 +544,11 @@ class DFMConfig(BaseModelConfig):
         config_type = detect_config_type(data)
         
         if config_type == MODEL_TYPE_DDFM:
-            return DDFMConfig(**base_params, **DDFMConfig._extract_ddfm(data))
+            raise ConfigurationError(
+                "DFMConfig.from_dict: this dictionary holds DDFM parameters (model_type, encoder_layers, epochs, "
+                "learning_rate or batch_size). DDFM has its own config: use DDFMConfig.from_dict(params) or "
+                "DDFM.from_config(params) with the DDFM constructor parameters (n_factors, encoder_layers, ...)."
+            )
         
         # Handle blocks for DFM
         from ...config.adapter import _raise_config_error, _is_dict_like
@@ -567,107 +575,6 @@ class DFMConfig(BaseModelConfig):
         # Pass base_params to _extract_dfm_params to avoid duplicate extraction
         dfm_params = DFMConfig._extract_dfm_params(data, base_params=base_params)
         return DFMConfig(blocks=blocks_dict_normalized, **dfm_params)
-
-
-@dataclass
-class DDFMConfig(BaseModelConfig):
-    """Deep Dynamic Factor Model configuration - neural network training parameters.
-    
-    This configuration class extends BaseModelConfig with parameters specific
-    to Deep Dynamic Factor Models trained using neural networks (autoencoders).
-    
-    Note: DDFM does NOT use block structure. Use num_factors directly to specify
-    the number of factors. Blocks are DFM-specific and not needed for DDFM.
-    
-    The configuration can be built from:
-    - Main settings (training parameters) from config/default.yaml
-    - Series definitions via frequency dict (column names -> frequencies)
-    """
-    # ========================================================================
-    # Neural Network Training Hyper Parameters
-    # ========================================================================
-    encoder_layers: Optional[List[int]] = None  # Hidden layer dimensions for encoder (default: [64, 32])
-    num_factors: Optional[int] = None  # Number of factors (inferred from config if None)
-    activation: str = 'relu'  # Activation function ('tanh', 'relu', 'sigmoid', default: 'relu' to match original DDFM)
-    use_batch_norm: bool = True  # Use batch normalization in encoder (default: True)
-    learning_rate: float = 0.001  # Learning rate for Adam optimizer (default: 0.001)
-    n_mc_samples: int = 10  # Number of MC samples per MCMC iteration (default: 10, matching original TensorFlow epochs=10 default, per experiment/config/model/ddfm.yaml)
-    window_size: int = 100  # Window size (time-step batch size) for training (default: 100 to match original DDFM)
-    # Note: factor_order removed - factors always use AR(1) dynamics (simplified)
-    use_idiosyncratic: bool = True  # Model idio components with AR(1) dynamics (default: True)
-    min_obs_idio: int = 5  # Minimum observations for idio AR(1) estimation (default: 5)
-    
-    # Additional training parameters
-    max_epoch: int = DEFAULT_MAX_MCMC_ITER  # Maximum number of epochs (MCMC iterations). One epoch = one MCMC iteration (MC sampling → training → convergence check)
-    tolerance: float = DEFAULT_TOLERANCE  # Convergence tolerance for MCMC iterations
-    disp: int = 10  # Display frequency for training progress
-    seed: Optional[int] = None  # Random seed for reproducibility
-    lags_input: int = 0  # Number of lags of inputs on encoder (default 0, matching original TensorFlow DDFM)
-    
-    # Interpolation parameters (for handling missing values)
-    interpolation_method: str = 'linear'  # Interpolation method: 'linear', 'spline', 'cubic', etc. (default: 'linear' for stability)
-    interpolation_limit: Optional[int] = 10  # Maximum consecutive NaNs to interpolate (default: 10, prevents extreme extrapolation)
-    interpolation_limit_direction: str = 'both'  # Direction to fill: 'forward', 'backward', or 'both' (default: 'both')
-    
-    
-    # ========================================================================
-    # Factory Methods
-    # ========================================================================
-    
-    @classmethod
-    def _extract_ddfm(cls, data: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract DDFM-specific parameters from config dict."""
-        # Don't extract base params here - they're already in base_params from from_dict
-        from ..constants import DEFAULT_N_MC_SAMPLES
-        ddfm_params = cls._extract_params(data, {
-            'encoder_layers': None,
-            'num_factors': None,
-            'activation': 'relu',
-            'use_batch_norm': True,
-            'learning_rate': DEFAULT_LEARNING_RATE,
-            'epochs': DEFAULT_N_MC_SAMPLES,  # Backward compatibility: map 'epochs' to n_mc_samples
-            'n_mc_samples': DEFAULT_N_MC_SAMPLES,  # Preferred name: number of MC samples per MCMC iteration
-            'window_size': DEFAULT_DDFM_WINDOW_SIZE,  # Window size (time-step batch size) for training
-            'use_idiosyncratic': True,
-            'min_obs_idio': DEFAULT_MIN_OBS_IDIO,
-            'max_epoch': DEFAULT_MAX_MCMC_ITER,  # Maximum epochs (MCMC iterations)
-            'tolerance': DEFAULT_TOLERANCE,
-            'disp': DEFAULT_DISP,
-            'seed': None,
-            'lags_input': 0,  # Number of lags (default 0, matching original TensorFlow)
-            'interpolation_method': 'linear',  # Interpolation method (default: 'linear' for stability)
-            'interpolation_limit': 10,  # Maximum consecutive NaNs to interpolate (default: 10)
-            'interpolation_limit_direction': 'both',  # Direction to fill (default: 'both')
-        })
-        # Map 'epochs' from config to 'n_mc_samples' for clarity (backward compatibility)
-        # Always remove 'epochs' if present (even if n_mc_samples is also present)
-        if 'epochs' in ddfm_params:
-            if 'n_mc_samples' not in ddfm_params:
-                ddfm_params['n_mc_samples'] = ddfm_params['epochs']
-            ddfm_params.pop('epochs')  # Always remove 'epochs' to avoid passing it to constructor
-        # Map 'batch_size' from config to 'window_size' for backward compatibility
-        if 'batch_size' in ddfm_params:
-            if 'window_size' not in ddfm_params:
-                ddfm_params['window_size'] = ddfm_params['batch_size']
-            ddfm_params.pop('batch_size')  # Always remove 'batch_size' to avoid passing it to constructor
-        # Only accept 'max_epoch' parameter (no backward compatibility)
-        # Remove any old parameter names if present
-        ddfm_params.pop('max_iter', None)
-        ddfm_params.pop('max_iterations', None)
-        ddfm_params.pop('max_mc_iter', None)
-        return ddfm_params
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'DDFMConfig':
-        """Create DDFMConfig from dictionary (delegates to DFMConfig.from_dict for type detection)."""
-        result = DFMConfig.from_dict(data)
-        if isinstance(result, DDFMConfig):
-            return result
-        from ...utils.errors import ConfigurationError
-        raise ConfigurationError(
-            "Expected DDFMConfig but got DFMConfig",
-            details=f"Result type: {type(result).__name__}, expected: DDFMConfig"
-        )
 
 
 @dataclass
@@ -1075,6 +982,39 @@ class iVDFMConfig(EstimatorConfig):
     scheduler_patience: int = 10
     scheduler_factor: float = 0.1
     scheduler_min_lr: float = 0.0
+    scaler: Any = None
+    random_state: Optional[int] = 3
+    device: str = "auto"
+    verbose: int = 0
+
+
+@dataclass
+class DDFMConfig(EstimatorConfig):
+    """Config mirror of the :class:`~dfm_python.models.ddfm.estimator.DDFM` estimator.
+
+    The fields and defaults are exactly the estimator's constructor
+    parameters, so ``DDFM.from_config(cfg)`` is ``DDFM(**cfg.to_dict())`` and
+    ``DDFM(...).get_config()`` returns one whose fields equal ``get_params()``.
+    Values are validated when the estimator is fitted, not here. Unknown keys
+    (including the old names ``encoder_size``, ``num_factors``, ``tolerance``,
+    ``seed``, ``disp``, ``max_epoch`` and the never-read ``use_batch_norm``,
+    ``use_idiosyncratic``, ``min_obs_idio`` and ``lags_input``) raise
+    ``ConfigurationError`` in ``from_dict`` and ``from_yaml``. A list given
+    for ``encoder_layers`` in YAML or JSON becomes a tuple.
+    """
+    n_factors: int = 4
+    encoder_layers: Tuple[int, ...] = (16,)
+    decoder_type: str = "linear"
+    activation: str = "relu"
+    learning_rate: float = 0.005
+    optimizer: str = "Adam"
+    n_mc_samples: int = 10
+    window_size: int = 100
+    max_iter: int = 200
+    tol: float = 5e-4
+    interpolation_method: str = "linear"
+    interpolation_limit: Optional[int] = 10
+    interpolation_limit_direction: str = "both"
     scaler: Any = None
     random_state: Optional[int] = 3
     device: str = "auto"

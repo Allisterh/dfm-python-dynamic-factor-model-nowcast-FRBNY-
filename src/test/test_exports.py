@@ -107,3 +107,11 @@ def test_ivdfm_config_is_the_estimator_mirror():
 
     assert dfm_python.iVDFMConfig is dfm_python.config.iVDFMConfig is iVDFM._config_class
     assert issubclass(dfm_python.iVDFMConfig, EstimatorConfig)
+
+
+def test_ddfm_config_is_the_estimator_mirror():
+    from dfm_python.config import EstimatorConfig
+    from dfm_python.models.ddfm.estimator import DDFM
+
+    assert dfm_python.DDFMConfig is dfm_python.config.DDFMConfig is DDFM._config_class
+    assert issubclass(dfm_python.DDFMConfig, EstimatorConfig)

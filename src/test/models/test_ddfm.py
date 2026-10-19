@@ -13,7 +13,6 @@ from dfm_python.utils.errors import DataError, DataValidationError, ModelNotTrai
 from dfm_python.config.constants import MIN_VARIABLES, MIN_DDFM_TIME_STEPS, DEFAULT_ENCODER_LAYERS
 from dfm_python.utils.checkpoint import infer_ddfm_input_dim, infer_input_dim_from_data
 from dfm_python.numeric.statistic import diagnose_variance_collapse
-from dfm_python.config.schema.model import DDFMConfig
 
 
 class TestDDFM:
@@ -115,28 +114,6 @@ class TestDDFM:
         # Verify window_size is set correctly
         assert model.window_size == 100
         assert model.n_mc_samples == 10
-
-    def test_ddfm_interpolation_params_from_config_are_applied(self):
-        """DDFM should prefer config interpolation settings over constructor defaults."""
-        dataset = self._create_test_dataset(num_series=5, time_steps=10)
-        cfg = DDFMConfig(
-            encoder_layers=[16, 4],
-            num_factors=2,
-            interpolation_method="linear",
-            interpolation_limit=7,
-            interpolation_limit_direction="both",
-        )
-        model = DDFM(
-            dataset=dataset,
-            config=cfg,
-            encoder_size=(16, 4),
-            interpolation_method="spline",  # should be ignored due to config
-            interpolation_limit=1,
-            interpolation_limit_direction="forward",
-        )
-        assert model.interpolation_method == "linear"
-        assert model.interpolation_limit == 7
-        assert model.interpolation_limit_direction == "both"
 
     def test_ddfm_build_inputs_for_pretrain_is_trivial_and_interpolates(self):
         """_build_inputs_for_pretrain should return dataset.data and optionally interpolate, without feature engineering."""

@@ -21,8 +21,15 @@ class TestModelSchema:
         assert config.block_names[0] == 'block1'
     
     def test_ddfm_config_with_grouped_frequency(self):
-        """Test DDFMConfig from_dict with grouped frequency format."""
-        from dfm_python.config.schema.model import DDFMConfig
+        """DDFMConfig mirrors the DDFM constructor; the old DFM-style dict is rejected with a pointer to it.
+
+        The old DDFMConfig took frequency, clock, num_factors and encoder_layers
+        (the encoder sizes including the factor count). DDFM has no frequency
+        or clock (mixed frequency is not a DDFM capability), so those keys are
+        unknown to the mirror, and DFMConfig.from_dict points DDFM dicts to it.
+        """
+        from dfm_python.config.schema.model import DDFMConfig, DFMConfig
+        from dfm_python.utils.errors import ConfigurationError
         config_dict = {
             'frequency': {
                 'w': ['series1', 'series2'],
@@ -35,13 +42,20 @@ class TestModelSchema:
             'interpolation_limit': 10,
             'interpolation_limit_direction': 'both',
         }
-        config = DDFMConfig.from_dict(config_dict)
-        assert config is not None
-        assert config.frequency['series1'] == 'w'
-        assert config.frequency['series2'] == 'w'
-        assert config.frequency['series3'] == 'm'
-        assert config.frequency['series4'] == 'm'
-        assert config.clock == 'w'
+        with pytest.raises(ConfigurationError, match="frequency"):
+            DDFMConfig.from_dict(config_dict)
+        with pytest.raises(ConfigurationError, match="DDFMConfig.from_dict"):
+            DFMConfig.from_dict(config_dict)
+        # The same model in the canonical names: encoder_layers are the hidden widths.
+        config = DDFMConfig.from_dict({
+            'n_factors': 2,
+            'encoder_layers': [64],
+            'interpolation_method': 'linear',
+            'interpolation_limit': 10,
+            'interpolation_limit_direction': 'both',
+        })
+        assert config.n_factors == 2
+        assert config.encoder_layers == (64,)
         assert config.interpolation_method == 'linear'
         assert config.interpolation_limit == 10
         assert config.interpolation_limit_direction == 'both'

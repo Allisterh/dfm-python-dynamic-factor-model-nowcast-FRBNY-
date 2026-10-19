@@ -5,7 +5,7 @@ from dfm_python.config import (
     DFMConfig,
     DDFMConfig,
 )
-from dfm_python.config.constants import DEFAULT_EM_THRESHOLD, DEFAULT_CLOCK_FREQUENCY, DEFAULT_MAX_ITER
+from dfm_python.config.constants import DEFAULT_EM_THRESHOLD, DEFAULT_MAX_ITER
 
 
 class TestDFMConfig:
@@ -32,8 +32,10 @@ class TestDDFMConfig:
     """Test suite for DDFMConfig."""
     
     def test_ddfm_config_initialization(self):
-        """Test DDFMConfig can be initialized."""
+        """DDFMConfig() holds the DDFM constructor defaults; it has no clock (DDFM is single frequency)."""
+        from dfm_python import DDFM
         config = DDFMConfig()
         assert config is not None
-        assert config.clock == DEFAULT_CLOCK_FREQUENCY  # Default clock frequency
+        assert config.to_dict() == DDFM().get_params()
+        assert not hasattr(config, "clock")
 

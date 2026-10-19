@@ -439,11 +439,23 @@ def _ddfm_update_outputs(model: Any, upd: Any) -> dict[str, np.ndarray]:
     }
 
 
+# The values of the flat config/ddfm_macro.yaml (commit 5d19c19) that the
+# ddfm_macro fixture was captured with (at 0add6b5, through the old
+# DDFMConfig.from_dict): the keys the case reads. The shipped file is being
+# rewritten in the model:/data: layout with the canonical names, and DDFMConfig
+# is now the estimator's mirror, so the case keeps its captured values here.
+# The data recipe still names the file the values came from.
+_DDFM_MACRO_FLAT_CONFIG: dict[str, Any] = {
+    "encoder_layers": [64, 32, 2], "activation": "relu", "learning_rate": 0.001, "n_mc_samples": 1,
+    "window_size": 100, "tolerance": 0.0005, "disp": 10, "interpolation_method": "linear",
+    "interpolation_limit": 10, "interpolation_limit_direction": "both",
+}
+
+
 def _ddfm_macro() -> CaseRun:
     from sklearn.preprocessing import StandardScaler
 
     from dfm_python.models.ddfm._engine import DDFMEngine as DDFM
-    from dfm_python.config.schema.model import DDFMConfig
     from dfm_python.dataset.ddfm_dataset import DDFMDataset
 
     # tutorial_macro_ddfm.py on the last rows of data/macro.csv, with a few MCMC
@@ -457,17 +469,19 @@ def _ddfm_macro() -> CaseRun:
 
     with force_cpu():
         _reset_global_rngs()
-        config = DDFMConfig.from_dict(_load_yaml("ddfm_macro.yaml"))
+        config = dict(_DDFM_MACRO_FLAT_CONFIG)
         dataset = DDFMDataset(data=df, time_idx="date", covariates=covariates, scaler=StandardScaler())
+        # The capture also passed the config object, which the engine read only
+        # for the interpolation values; they are passed explicitly here.
         model = DDFM(
-            dataset=dataset, config=config,
-            encoder_size=tuple(config.encoder_layers), decoder_type="linear",
-            activation=config.activation, learning_rate=config.learning_rate, optimizer="Adam",
-            n_mc_samples=config.n_mc_samples, window_size=config.window_size,
-            max_iter=_DDFM_MAX_ITER, tolerance=config.tolerance, disp=config.disp, seed=_DDFM_SEED,
-            interpolation_method=config.interpolation_method,
-            interpolation_limit=config.interpolation_limit,
-            interpolation_limit_direction=config.interpolation_limit_direction,
+            dataset=dataset, config=None,
+            encoder_size=tuple(config["encoder_layers"]), decoder_type="linear",
+            activation=config["activation"], learning_rate=config["learning_rate"], optimizer="Adam",
+            n_mc_samples=config["n_mc_samples"], window_size=config["window_size"],
+            max_iter=_DDFM_MAX_ITER, tolerance=config["tolerance"], disp=config["disp"], seed=_DDFM_SEED,
+            interpolation_method=config["interpolation_method"],
+            interpolation_limit=config["interpolation_limit"],
+            interpolation_limit_direction=config["interpolation_limit_direction"],
         )
         hyper = _ddfm_hyper(model)
         model.fit()

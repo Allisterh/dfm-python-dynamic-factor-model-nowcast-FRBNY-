@@ -20,6 +20,10 @@ change no math and no RNG order:
 
 ``get_result`` reports ``C = H`` (series x factors, the ``DFMResult.C``
 orientation) instead of ``H.T``; nothing else reads it.
+
+:meth:`DDFMEngine._from_saved` rebuilds a trained engine for the estimator's
+``load`` without ``__init__``: no dataset and no seeding (it replaces the
+minimal-dataset rebuild of the old ``load``).
 """
 
 import time
@@ -178,9 +182,112 @@ class DDFMEngine(BaseFactorModel, nn.Module):
         else:
             self.device = torch.device(device)
         self.training_state = DDFMModelState()
-        
+
         self.lags_input = 0
-    
+
+    @classmethod
+    def _from_saved(cls, params: dict, dims: dict, device: Any) -> 'DDFMEngine':
+        """Rebuild a trained engine without ``__init__``: no dataset, no seeding.
+
+        ``params`` holds the keyword arguments the estimator passes to
+        ``__init__`` (``encoder_size``, ``decoder_type``, ``seed``,
+        ``activation``, ``learning_rate``, ``optimizer``, ``n_mc_samples``,
+        ``window_size``, ``max_iter``, ``tolerance``, ``disp`` and the
+        interpolation values; ``config`` may be given too); a keyword left out
+        takes ``__init__``'s default. ``dims`` holds what ``__init__`` reads
+        from the dataset: ``input_dim``, ``output_dim``, ``num_series``,
+        ``target_series`` and ``covariates``. Every attribute ``__init__`` sets
+        is set the same way, except ``scaler``, which is None (the caller sets
+        the fitted one), and the device, which is ``device``.
+
+        The autoencoder is built as ``fit`` builds it, without its seed and
+        inside ``torch.random.fork_rng`` (its initialization draws from the
+        global torch RNG, which is restored), moved to ``device`` and put in
+        eval mode. There is no optimizer, scheduler or dataset, and
+        ``training_state`` is an empty ``DDFMModelState``: load the saved
+        weights, factors and state-space matrices over the engine.
+        """
+        import inspect
+
+        defaults = {
+            name: p.default for name, p in inspect.signature(cls.__init__).parameters.items()
+            if p.default is not inspect.Parameter.empty
+        }
+        defaults.pop("device")  # a separate argument
+        unknown = sorted(set(params) - set(defaults))
+        if unknown:
+            raise TypeError(f"DDFMEngine._from_saved got unexpected engine parameters {unknown}.")
+        values = {**defaults, **params}
+
+        self = cls.__new__(cls)
+        BaseFactorModel.__init__(self)
+        nn.Module.__init__(self)
+
+        config = values["config"]
+        self._config = config
+        self._dataset = None
+        self.target_series = list(dims["target_series"])
+        self.covariates = list(dims["covariates"])
+
+        encoder_size = values["encoder_size"]
+        if encoder_size is None:
+            encoder_size = tuple(DEFAULT_ENCODER_LAYERS)
+        self.encoder_size = encoder_size
+        self.decoder_size = None
+        decoder_type = values["decoder_type"]
+        if decoder_type not in ("linear", "mlp"):
+            raise ConfigurationError(f"decoder_type must be 'linear' or 'mlp', got '{decoder_type}'")
+        self.decoder_type = decoder_type
+        if decoder_type == "mlp":
+            self.decoder_size = tuple(reversed(self.encoder_size[:-1])) if len(self.encoder_size) > 1 else None
+
+        self.activation = values["activation"]
+        self.n_mc_samples = values["n_mc_samples"]
+        self.window_size = values["window_size"]
+        self.max_epoch_pre_train = values["max_epoch_pre_train"]
+        self.max_iter = values["max_iter"]
+        self.tolerance = values["tolerance"]
+        self.disp = values["disp"]
+
+        self.scaler = None
+        self.min_target_interporate_ratio = values["min_target_interporate_ratio"]
+        self.interpolation_method, self.interpolation_limit, self.interpolation_limit_direction = \
+            self._get_interpolation_params(
+                config, values["interpolation_method"], values["interpolation_limit"],
+                values["interpolation_limit_direction"],
+            )
+
+        self.num_series = int(dims["num_series"])
+        self.input_dim = int(dims["input_dim"])
+        self.output_dim = int(dims["output_dim"])
+
+        self.initializer_seed = values["seed"]
+        self.learning_rate = values["learning_rate"]
+        self.optimizer_type = values["optimizer"]
+        self.optimizer = None
+        self.scheduler = None
+        self.device = torch.device(device)
+        self.training_state = DDFMModelState()
+        self.lags_input = 0
+
+        # The layer initializers draw from the global torch RNG (the CUDA one too on CUDA).
+        devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+        with torch.random.fork_rng(devices=devices):
+            self.autoencoder = SimpleAutoencoder.build(
+                input_dim=self.input_dim,
+                encoder_size=self.encoder_size,
+                decoder_size=self.decoder_size,
+                decoder_type=self.decoder_type,
+                output_dim=self.output_dim,
+                activation=self.activation,
+                seed=None,
+            )
+        self.encoder = self.autoencoder.encoder
+        self.decoder = self.autoencoder.decoder
+        self.autoencoder.to(self.device)
+        self.autoencoder.eval()
+        return self
+
     def _get_interpolation_params(
         self,
         config: Optional[Any],
