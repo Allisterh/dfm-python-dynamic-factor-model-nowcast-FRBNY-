@@ -1,0 +1,364 @@
+{
+  "data": {
+    "covariates": [],
+    "dataset": "DDFMDataset(data=frame, time_idx='index', scaler=StandardScaler())",
+    "fit_input_sha256": "906c0dcde2591d9e1d51512f54d031d1455c73090dfe3d1e5a1810febf1e32d5",
+    "read": "pd.read_csv(path, index_col=0, parse_dates=True)",
+    "rows": "last 300 rows; fit on the first 288, update with all 300",
+    "source": "data/exchange_rate.csv",
+    "source_sha256": "65e429df9d16f78a073085cc3bb088b51a8a3bbdcdde98760117b62ae4a4b218",
+    "targets": [
+      "AUD_USD",
+      "GBP_USD",
+      "CAD_USD",
+      "CHF_USD",
+      "CNY_USD",
+      "JPY_USD",
+      "SGD_USD",
+      "NZD_USD"
+    ],
+    "update_input_sha256": "e111ed959c6549a25692f299e402359e725bb4a992e65add05e2cf03413f9a83"
+  },
+  "fingerprint": {
+    "blas": [
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.28"
+      },
+      {
+        "architecture": "SkylakeX",
+        "internal_api": "openblas",
+        "prefix": "libscipy_openblas",
+        "threading_layer": "pthreads",
+        "version": "0.3.30"
+      }
+    ],
+    "machine": "x86_64",
+    "numpy": "2.3.5",
+    "processor": "x86_64",
+    "torch": "2.9.1+cu128"
+  },
+  "git_commit": "d8c432b9e9d68ce21b7022da213c43c87133c59b",
+  "global_rng_preseed": 20251019,
+  "hyperparameters": {
+    "activation": "relu",
+    "decoder_size": null,
+    "decoder_type": "linear",
+    "device": "cpu",
+    "disp": 10,
+    "encoder_size": [
+      16,
+      4
+    ],
+    "initializer_seed": 3,
+    "input_dim": 8,
+    "interpolation_limit": 10,
+    "interpolation_limit_direction": "both",
+    "interpolation_method": "linear",
+    "lags_input": 0,
+    "learning_rate": 0.005,
+    "max_epoch_pre_train": 200,
+    "max_iter": 3,
+    "min_target_interporate_ratio": 0.3,
+    "n_mc_samples": 10,
+    "num_series": 8,
+    "optimizer_type": "Adam",
+    "output_dim": 8,
+    "scaler": "StandardScaler",
+    "tolerance": 0.0005,
+    "window_size": 200
+  },
+  "model": "ddfm",
+  "name": "ddfm_exchange",
+  "outputs": {
+    "F": {
+      "dtype": "float64",
+      "shape": [
+        4,
+        4
+      ]
+    },
+    "H": {
+      "dtype": "float32",
+      "shape": [
+        8,
+        4
+      ]
+    },
+    "Q": {
+      "dtype": "float64",
+      "shape": [
+        4,
+        4
+      ]
+    },
+    "R": {
+      "dtype": "float64",
+      "shape": [
+        8,
+        8
+      ]
+    },
+    "Sigma_0": {
+      "dtype": "float64",
+      "shape": [
+        4,
+        4
+      ]
+    },
+    "converged": {
+      "dtype": "bool",
+      "shape": []
+    },
+    "eps": {
+      "dtype": "float64",
+      "shape": [
+        288,
+        8
+      ]
+    },
+    "factors": {
+      "dtype": "float32",
+      "shape": [
+        10,
+        288,
+        4
+      ]
+    },
+    "last_neurons": {
+      "dtype": "float32",
+      "shape": [
+        10,
+        288,
+        4
+      ]
+    },
+    "loss_now": {
+      "dtype": "float64",
+      "shape": []
+    },
+    "mu_0": {
+      "dtype": "float64",
+      "shape": [
+        4
+      ]
+    },
+    "num_iter": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        8
+      ]
+    },
+    "predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        4
+      ]
+    },
+    "result_Z": {
+      "dtype": "float32",
+      "shape": [
+        288,
+        4
+      ]
+    },
+    "result_x_sm": {
+      "dtype": "float32",
+      "shape": [
+        288,
+        8
+      ]
+    },
+    "scaler_mean": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ]
+    },
+    "scaler_scale": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ]
+    },
+    "sd/autoencoder.decoder.decoder.bias": {
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "sd/autoencoder.decoder.decoder.weight": {
+      "dtype": "float32",
+      "shape": [
+        8,
+        4
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.0.num_batches_tracked": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "sd/autoencoder.encoder.batch_norms.0.running_mean": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.0.running_var": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/autoencoder.encoder.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/autoencoder.encoder.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        16,
+        8
+      ]
+    },
+    "sd/autoencoder.encoder.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        4
+      ]
+    },
+    "sd/autoencoder.encoder.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        4,
+        16
+      ]
+    },
+    "sd/decoder.decoder.bias": {
+      "dtype": "float32",
+      "shape": [
+        8
+      ]
+    },
+    "sd/decoder.decoder.weight": {
+      "dtype": "float32",
+      "shape": [
+        8,
+        4
+      ]
+    },
+    "sd/encoder.batch_norms.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/encoder.batch_norms.0.num_batches_tracked": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "sd/encoder.batch_norms.0.running_mean": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/encoder.batch_norms.0.running_var": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/encoder.batch_norms.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/encoder.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        16
+      ]
+    },
+    "sd/encoder.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        16,
+        8
+      ]
+    },
+    "sd/encoder.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        4
+      ]
+    },
+    "sd/encoder.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        4,
+        16
+      ]
+    },
+    "update_factors": {
+      "dtype": "float32",
+      "shape": [
+        10,
+        588,
+        4
+      ]
+    },
+    "update_predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        8
+      ]
+    },
+    "update_predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        4
+      ]
+    },
+    "update_scaler_mean": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ]
+    },
+    "update_scaler_scale": {
+      "dtype": "float64",
+      "shape": [
+        8
+      ]
+    }
+  },
+  "raised": null,
+  "src_dirty": false
+}

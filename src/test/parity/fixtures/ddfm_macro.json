@@ -44,7 +44,7 @@
     "processor": "x86_64",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "git_commit": "d8c432b9e9d68ce21b7022da213c43c87133c59b",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "activation": "relu",
@@ -113,6 +113,10 @@
         2
       ]
     },
+    "converged": {
+      "dtype": "bool",
+      "shape": []
+    },
     "eps": {
       "dtype": "float64",
       "shape": [
@@ -127,6 +131,18 @@
         400,
         2
       ]
+    },
+    "last_neurons": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        400,
+        2
+      ]
+    },
+    "loss_now": {
+      "dtype": "float64",
+      "shape": []
     },
     "mu_0": {
       "dtype": "float64",
@@ -150,6 +166,282 @@
       "shape": [
         6,
         2
+      ]
+    },
+    "result_Z": {
+      "dtype": "float32",
+      "shape": [
+        400,
+        2
+      ]
+    },
+    "result_x_sm": {
+      "dtype": "float32",
+      "shape": [
+        400,
+        1
+      ]
+    },
+    "scaler_mean": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "scaler_scale": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "sd/autoencoder.decoder.decoder.bias": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "sd/autoencoder.decoder.decoder.weight": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        2
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.0.num_batches_tracked": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "sd/autoencoder.encoder.batch_norms.0.running_mean": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.0.running_var": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.1.num_batches_tracked": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "sd/autoencoder.encoder.batch_norms.1.running_mean": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.1.running_var": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/autoencoder.encoder.batch_norms.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/autoencoder.encoder.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/autoencoder.encoder.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        64,
+        14
+      ]
+    },
+    "sd/autoencoder.encoder.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/autoencoder.encoder.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        32,
+        64
+      ]
+    },
+    "sd/autoencoder.encoder.layers.2.bias": {
+      "dtype": "float32",
+      "shape": [
+        2
+      ]
+    },
+    "sd/autoencoder.encoder.layers.2.weight": {
+      "dtype": "float32",
+      "shape": [
+        2,
+        32
+      ]
+    },
+    "sd/decoder.decoder.bias": {
+      "dtype": "float32",
+      "shape": [
+        1
+      ]
+    },
+    "sd/decoder.decoder.weight": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        2
+      ]
+    },
+    "sd/encoder.batch_norms.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/encoder.batch_norms.0.num_batches_tracked": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "sd/encoder.batch_norms.0.running_mean": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/encoder.batch_norms.0.running_var": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/encoder.batch_norms.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/encoder.batch_norms.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/encoder.batch_norms.1.num_batches_tracked": {
+      "dtype": "int64",
+      "shape": []
+    },
+    "sd/encoder.batch_norms.1.running_mean": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/encoder.batch_norms.1.running_var": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/encoder.batch_norms.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/encoder.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        64
+      ]
+    },
+    "sd/encoder.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        64,
+        14
+      ]
+    },
+    "sd/encoder.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/encoder.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        32,
+        64
+      ]
+    },
+    "sd/encoder.layers.2.bias": {
+      "dtype": "float32",
+      "shape": [
+        2
+      ]
+    },
+    "sd/encoder.layers.2.weight": {
+      "dtype": "float32",
+      "shape": [
+        2,
+        32
+      ]
+    },
+    "update_factors": {
+      "dtype": "float32",
+      "shape": [
+        1,
+        800,
+        2
+      ]
+    },
+    "update_predict_X": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        1
+      ]
+    },
+    "update_predict_Z": {
+      "dtype": "float64",
+      "shape": [
+        6,
+        2
+      ]
+    },
+    "update_scaler_mean": {
+      "dtype": "float64",
+      "shape": [
+        1
+      ]
+    },
+    "update_scaler_scale": {
+      "dtype": "float64",
+      "shape": [
+        1
       ]
     }
   },

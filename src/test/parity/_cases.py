@@ -369,6 +369,59 @@ _DDFM_ATTRS = ["encoder_size", "decoder_size", "decoder_type", "activation", "le
 _DDFM_ROWS = 400
 _DDFM_MAX_ITER = 3
 _DDFM_SEED = 3
+_DDFM_HORIZON = 6
+
+
+def _ddfm_hyper(model: Any) -> dict[str, Any]:
+    hyper = _attrs(model, _DDFM_ATTRS)
+    hyper["scaler"] = _class_name(model.scaler)
+    return hyper
+
+
+def _ddfm_fit_outputs(model: Any, X: Any, Z: Any) -> dict[str, np.ndarray]:
+    """The fitted engine's numbers, read after ``fit``, ``build_state_space`` and ``predict``."""
+    st = model.training_state
+    result = model.get_result()
+    outputs = {
+        "factors": _np(model.factors),
+        "eps": _np(model.eps),
+        "F": _np(st.F), "H": _np(st.H), "Q": _np(st.Q), "R": _np(st.R),
+        "mu_0": _np(st.mu_0), "Sigma_0": _np(st.Sigma_0),
+        "num_iter": np.int64(model._num_iter),
+        "predict_X": _np(X), "predict_Z": _np(Z),
+        # Set from the second MCMC iteration on (max_iter=3 reaches it).
+        "loss_now": np.float64(model.loss_now),
+        "converged": np.bool_(getattr(model, "_converged", False)),
+        "last_neurons": _np(model.last_neurons),
+        # result C is not pinned: its orientation changes with the estimator,
+        # and it is H (pinned above), transposed.
+        "result_Z": _np(result.Z),
+        "result_x_sm": _np(result.x_sm),
+        # The training dataset's target scaler; the engine's update refits
+        # this same object in place, so it is copied here, before any update.
+        "scaler_mean": np.array(model.scaler.mean_, copy=True),
+        "scaler_scale": np.array(model.scaler.scale_, copy=True),
+    }
+    for k, v in model.state_dict().items():
+        outputs[f"sd/{k}"] = _np(v)
+    return outputs
+
+
+def _ddfm_update_outputs(model: Any, upd: Any) -> dict[str, np.ndarray]:
+    """``predict(data=upd)`` as today's API runs it (update=True: mutates the model).
+
+    The update refits the model's target scaler on the training plus new
+    targets, encodes the new rows and appends their factors; the forecast then
+    conditions on the last appended factor row.
+    """
+    X_u, Z_u = model.predict(horizon=_DDFM_HORIZON, data=upd)
+    return {
+        "update_predict_X": _np(X_u),
+        "update_predict_Z": _np(Z_u),
+        "update_factors": _np(model.factors),
+        "update_scaler_mean": np.array(model.scaler.mean_, copy=True),
+        "update_scaler_scale": np.array(model.scaler.scale_, copy=True),
+    }
 
 
 def _ddfm_macro() -> CaseRun:
@@ -401,21 +454,123 @@ def _ddfm_macro() -> CaseRun:
             interpolation_limit=config.interpolation_limit,
             interpolation_limit_direction=config.interpolation_limit_direction,
         )
-        hyper = _attrs(model, _DDFM_ATTRS)
-        hyper["scaler"] = _class_name(model.scaler)
+        hyper = _ddfm_hyper(model)
         model.fit()
         model.build_state_space()
-        X, Z = model.predict(horizon=6)
+        X, Z = model.predict(horizon=_DDFM_HORIZON)
+        outputs = _ddfm_fit_outputs(model, X, Z)
+        # No rows newer than the fitted ones: the update panel is the same 400
+        # rows, in a dataset with a fresh scaler (DDFMDataset fits the scaler it
+        # is given, so passing the training scaler would refit that one).
+        upd = DDFMDataset(data=df, time_idx="date", covariates=covariates, scaler=StandardScaler())
+        outputs.update(_ddfm_update_outputs(model, upd))
+    return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
 
-    st = model.training_state
-    outputs = {
-        "factors": _np(model.factors),
-        "eps": _np(model.eps),
-        "F": _np(st.F), "H": _np(st.H), "Q": _np(st.Q), "R": _np(st.R),
-        "mu_0": _np(st.mu_0), "Sigma_0": _np(st.Sigma_0),
-        "num_iter": np.int64(model._num_iter),
-        "predict_X": _np(X), "predict_Z": _np(Z),
+
+_DDFM_TRUNC_ROWS = 300
+_DDFM_HOLDOUT = 12
+EXCHANGE_CSV = REPO_ROOT / "data" / "exchange_rate.csv"
+FINANCE_CSV = REPO_ROOT / "data" / "finance.csv"
+
+
+def _ddfm_rows_recipe() -> str:
+    return (f"last {_DDFM_TRUNC_ROWS} rows; fit on the first {_DDFM_TRUNC_ROWS - _DDFM_HOLDOUT}, "
+            f"update with all {_DDFM_TRUNC_ROWS}")
+
+
+def _ddfm_fit_and_update(panel: pd.DataFrame, time_idx: str, covariates: list[str] | None,
+                         **model_kwargs: Any) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
+    """Fit DDFM on ``panel`` minus the last rows, then update with the whole panel."""
+    from sklearn.preprocessing import StandardScaler
+
+    from dfm_python import DDFM
+    from dfm_python.dataset.ddfm_dataset import DDFMDataset
+
+    fit_df = panel.iloc[:-_DDFM_HOLDOUT]
+    with force_cpu():
+        _reset_global_rngs()
+        dataset = DDFMDataset(data=fit_df, time_idx=time_idx, covariates=covariates,
+                              scaler=StandardScaler())
+        model = DDFM(dataset=dataset, **model_kwargs)
+        hyper = _ddfm_hyper(model)
+        model.fit()
+        model.build_state_space()
+        X, Z = model.predict(horizon=_DDFM_HORIZON)
+        outputs = _ddfm_fit_outputs(model, X, Z)
+        upd = DDFMDataset(data=panel, time_idx=time_idx, covariates=covariates, scaler=StandardScaler())
+        outputs.update(_ddfm_update_outputs(model, upd))
+    return outputs, hyper
+
+
+def ddfm_exchange_panel() -> pd.DataFrame:
+    """The last rows of data/exchange_rate.csv, read as tutorial_exchange_ddfm.py reads it."""
+    df = pd.read_csv(EXCHANGE_CSV, index_col=0, parse_dates=True)
+    return df.iloc[-_DDFM_TRUNC_ROWS:]
+
+
+def _ddfm_exchange() -> CaseRun:
+    # tutorial_exchange_ddfm.py with config/ddfm_exchange.yaml's values written
+    # inline, a few MCMC iterations and seed 3. Every column is a target.
+    panel = ddfm_exchange_panel()
+    data = {
+        "source": "data/exchange_rate.csv", "source_sha256": _file_digest(EXCHANGE_CSV),
+        "read": "pd.read_csv(path, index_col=0, parse_dates=True)",
+        "rows": _ddfm_rows_recipe(),
+        "dataset": "DDFMDataset(data=frame, time_idx='index', scaler=StandardScaler())",
+        "targets": list(panel.columns), "covariates": [],
+        "fit_input_sha256": _digest(panel.iloc[:-_DDFM_HOLDOUT]),
+        "update_input_sha256": _digest(panel),
     }
+    outputs, hyper = _ddfm_fit_and_update(
+        panel, "index", None,
+        encoder_size=(16, 4), decoder_type="linear", activation="relu", learning_rate=0.005,
+        optimizer="Adam", n_mc_samples=10, window_size=200, max_iter=_DDFM_MAX_ITER,
+        tolerance=0.0005, disp=10, seed=_DDFM_SEED, interpolation_method="linear",
+        interpolation_limit=10, interpolation_limit_direction="both",
+    )
+    return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
+
+
+_FINANCE_TARGET = "market_forward_excess_returns"
+
+
+def ddfm_finance_panel() -> tuple[pd.DataFrame, list[str]]:
+    """The last rows of data/finance.csv as tutorial_finance_ddfm.py prepares it, and its covariates.
+
+    A daily ``date`` column from 1980-01-01 is added over the whole file,
+    ``forward_returns`` and ``risk_free_rate`` are dropped, and every other
+    non-date column (``date_id`` included) is a covariate of the target.
+    """
+    df = pd.read_csv(FINANCE_CSV)
+    df["date"] = pd.date_range(start="1980-01-01", periods=len(df), freq="D")
+    df = df.drop(columns=["forward_returns", "risk_free_rate"])
+    df = df.iloc[-_DDFM_TRUNC_ROWS:]
+    covariates = [c for c in df.columns if c not in ("date", _FINANCE_TARGET)]
+    return df, covariates
+
+
+def _ddfm_finance() -> CaseRun:
+    # tutorial_finance_ddfm.py with config/ddfm_finance.yaml's values written
+    # inline, a few MCMC iterations and seed 3 (the YAML's seed is null). The
+    # MLP decoder covers decoder_size and the MLP last_neurons.
+    panel, covariates = ddfm_finance_panel()
+    data = {
+        "source": "data/finance.csv", "source_sha256": _file_digest(FINANCE_CSV),
+        "read": ("pd.read_csv(path); date = pd.date_range('1980-01-01', periods=len(df), freq='D'); "
+                 "forward_returns and risk_free_rate dropped"),
+        "rows": _ddfm_rows_recipe(),
+        "dataset": "DDFMDataset(data=frame, time_idx='date', covariates=covariates, scaler=StandardScaler())",
+        "targets": [_FINANCE_TARGET], "covariates": covariates,
+        "fit_input_sha256": _digest(panel.iloc[:-_DDFM_HOLDOUT]),
+        "update_input_sha256": _digest(panel),
+    }
+    outputs, hyper = _ddfm_fit_and_update(
+        panel, "date", covariates,
+        encoder_size=(64, 32, 5), decoder_type="mlp", activation="relu", learning_rate=0.001,
+        optimizer="Adam", n_mc_samples=10, window_size=200, max_iter=_DDFM_MAX_ITER,
+        tolerance=0.0005, disp=10, seed=_DDFM_SEED, interpolation_method="linear",
+        interpolation_limit=10, interpolation_limit_direction="both",
+    )
     return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
 
 
@@ -623,6 +778,8 @@ CASES: dict[str, Case] = {c.name: c for c in [
     Case("dfm_macro_monthly_quarterly", "dfm", _dfm_macro_monthly_quarterly),
     Case("dfm_macro_monthly_quarterly_permuted", "dfm", _dfm_macro_monthly_quarterly_permuted),
     Case("ddfm_macro", "ddfm", _ddfm_macro),
+    Case("ddfm_exchange", "ddfm", _ddfm_exchange),
+    Case("ddfm_finance", "ddfm", _ddfm_finance),
     Case("ivdfm_macro", "ivdfm", _ivdfm_macro),
     Case("ivdfm_regimes", "ivdfm", _ivdfm_regimes),
     Case("ivdfm_exog_context", "ivdfm", _ivdfm_exog_context),
