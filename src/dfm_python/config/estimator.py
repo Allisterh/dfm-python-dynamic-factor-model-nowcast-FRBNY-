@@ -29,6 +29,7 @@ import dataclasses
 import difflib
 import os
 import re
+import sys
 import types
 import typing
 from collections.abc import Mapping
@@ -67,11 +68,18 @@ def _unknown_keys_message(unknown: list, valid: typing.Sequence[str], what: str)
     return f"Unknown {what} {', '.join(parts)}. Valid keys: {', '.join(valid)}."
 
 
+def _is_torch_device(value: Any) -> bool:
+    # torch is not imported here: a value can only be a torch.device once torch is loaded.
+    torch = sys.modules.get("torch")
+    return torch is not None and isinstance(value, torch.device)
+
+
 def _to_plain(value: Any, key: str) -> Any:
     """Return ``value`` as YAML/JSON-safe builtins, or raise ``ConfigurationError``.
 
-    Tuples become lists (``from_dict`` turns them back for tuple-typed fields)
-    and numpy scalars become Python scalars.
+    Tuples become lists (``from_dict`` turns them back for tuple-typed fields),
+    numpy scalars become Python scalars and a ``torch.device`` becomes its
+    string (``"cuda:0"``).
     """
     if isinstance(value, np.generic):  # before the builtins: np.float64 subclasses float
         return value.item()
@@ -88,6 +96,8 @@ def _to_plain(value: Any, key: str) -> Any:
                 )
             out[k] = _to_plain(v, key)
         return out
+    if _is_torch_device(value):
+        return str(value)
     raise _configuration_error(
         f"Parameter {key!r} holds a {type(value).__name__}, which cannot be written to YAML or JSON. "
         "Use a plain value (None, bool, int, float, str, or lists and dicts of these)."

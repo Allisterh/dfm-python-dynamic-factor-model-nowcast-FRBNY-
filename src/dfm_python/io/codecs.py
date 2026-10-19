@@ -18,6 +18,7 @@ import importlib
 import inspect
 import json
 import os
+import sys
 import zipfile
 from collections.abc import Mapping
 from pathlib import Path
@@ -63,12 +64,19 @@ def _is_estimator(obj: Any) -> bool:
     return isinstance(obj, BaseEstimator)
 
 
+def _is_torch_device(obj: Any) -> bool:
+    # torch is not imported here: an object can only be a torch.device once torch is loaded.
+    torch = sys.modules.get("torch")
+    return torch is not None and isinstance(obj, torch.device)
+
+
 def to_jsonable(obj: Any, *, where: str = "value") -> Any:
     """Convert ``obj`` to JSON-safe builtins, or raise ``TypeError`` naming ``where``.
 
     numpy scalars become Python scalars, arrays become (nested) lists, tuples
-    become lists and scikit-learn estimators become ``{"class", "params"}``.
-    Mapping keys must be strings.
+    become lists, a ``torch.device`` becomes its string (``"cuda:0"``) and
+    scikit-learn estimators become ``{"class", "params"}``. Mapping keys must
+    be strings.
     """
     if isinstance(obj, np.generic):  # before the builtins: np.float64 subclasses float
         if obj.dtype.kind in "biuf" or obj.dtype.kind == "U":
@@ -91,6 +99,8 @@ def to_jsonable(obj: Any, *, where: str = "value") -> Any:
                 raise TypeError(f"{where}: JSON needs string keys, got {key!r}.")
             out[key] = to_jsonable(value, where=f"{where}[{key!r}]")
         return out
+    if _is_torch_device(obj):
+        return str(obj)
     if _is_estimator(obj):
         return {
             "class": class_path(type(obj)),

@@ -37,6 +37,7 @@ from ...dataset.afm_dataset import AFMDataset
 from ...dataset.panel import PanelData
 from ...io.codecs import read_json, read_npz
 from ...io.layout import RESULT_JSON, RESULT_NPZ
+from ...logger import get_logger
 from ...logger.progress import fit_verbosity
 from ...utils.errors import ConfigurationError, DataValidationError, UnsupportedInputError
 from ._engine import AFMEngine
@@ -49,6 +50,8 @@ _POSITIVE_INTS = ("embed_dim", "hist_len", "n_kernels", "pca_window", "reestim",
 _NON_NEGATIVE_FLOATS = ("ridge", "squash_lambda", "lambda_var", "turnover_cost", "short_cost")
 # AFMResult fields that hold the same array as residual_portfolios.
 _RESULT_ALIASES = ("Z", "x_sm")
+
+_logger = get_logger(__name__)
 
 
 def _is_int(value: Any) -> bool:
@@ -117,9 +120,14 @@ class AFM(BaseFactorModel):
         Seed of the global torch RNG, applied just before the network is
         built. None (default) does not seed, so runs differ.
     device : str or torch.device, default "auto"
-        ``"auto"`` uses CUDA if available, else CPU.
+        ``"auto"`` uses CUDA if available, else CPU. A ``torch.device`` is
+        written to ``config.json`` and YAML as its string.
     verbose : int, default 0
-        0 is silent, 1 shows progress and 2 debug records during ``fit``.
+        0 is silent. 1 logs a record when training starts and one when it
+        ends (epochs run, early stop, loss, Sharpe ratio, explained
+        variance) during ``fit`` and ``update(refit=True)``; 2 also logs the
+        hyperparameters passed to the engine. The engine trains full-batch
+        and logs nothing per epoch.
 
     Attributes
     ----------
@@ -382,10 +390,36 @@ class AFM(BaseFactorModel):
         dataset = self._adapter(data)
         # The engine seeds the global torch RNG (random_state) and then builds its network, as before.
         engine = AFMEngine(dataset, None, n_char=None, **self._engine_params(), device=device)
-        engine.fit()
+        self._train(engine, dataset, lambda: engine.fit())
         self._set_fitted(engine, device)
         self.data_ = data
         self._set_results(data.index)
+
+    def _train(self, engine: AFMEngine, dataset: AFMDataset, run: Any) -> None:
+        """Call ``run()`` (the engine's training) between the progress records of ``verbose``.
+
+        The records only read values; the engine's numbers are unchanged.
+        """
+        if self.verbose >= 1:
+            _logger.info(
+                "AFM: training factor_model=%r, trading=%r, n_factors=%d on T=%d, N=%d for up to %d epochs on %s.",
+                engine.factor_model, engine.trading, engine.n_factors, dataset.T, dataset.N, engine.max_epochs, engine.device,
+            )
+        if self.verbose >= 2:
+            _logger.debug("AFM: engine hyperparameters %s", self._engine_params())
+        run()
+        if self.verbose >= 1:
+            state = engine.training_state
+            if not any(p.requires_grad for p in engine.parameters()):
+                stop = "no trainable parameters"
+            elif state.converged:
+                stop = f"early stop (patience={engine.patience})"
+            else:
+                stop = "no early stop"
+            _logger.info(
+                "AFM: finished after %d epoch(s), %s; loss %.6g, Sharpe %.6g, explained variance %.6g.",
+                state.num_iter, stop, state.loss_now, state.sharpe, state.explained_variance,
+            )
 
     def _set_fitted(self, engine: AFMEngine, device: torch.device) -> None:
         """Set the fitted attributes that come from the engine (shared by ``fit`` and ``load``)."""
@@ -499,8 +533,9 @@ class AFM(BaseFactorModel):
         self._check_is_fitted("update")
         panel = self._panel(data, "update")
         if refit:
+            dataset = self._adapter(panel)
             with fit_verbosity(self.verbose):
-                self.network_.update(self._adapter(panel), retrain=True)
+                self._train(self.network_, dataset, lambda: self.network_.update(dataset, retrain=True))
             self._set_data_attributes(panel)
             self._set_results(panel.index)
         self.data_ = panel

@@ -47,7 +47,11 @@ Check                       What it asserts
                             data attributes, ``scaler_``, a bitwise-equal
                             ``result_`` and bitwise-equal ``predict`` /
                             ``allocate`` outputs; ``dfm_python.load``
-                            dispatches registered estimators
+                            dispatches registered estimators; with tag
+                            ``capability:device``, a run saved with a CUDA
+                            ``device`` loads on CPU where CUDA is missing
+                            (simulated), and a model fitted on CUDA loads
+                            with ``device="cpu"`` (skipped without CUDA)
 ==========================  ================================================
 
 Each check builds its own estimator from the parameter set, so they do not
@@ -69,12 +73,14 @@ import inspect
 import io
 import json
 import logging
+import shutil
 import tempfile
 import types
 import warnings
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Optional
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -1019,6 +1025,63 @@ def _check_save_load(ctx: _Context) -> None:
         assert {p.name for p in path.iterdir()} == files, "save(overwrite=True) wrote a different file set."
         debris = sorted(p.name for p in root.iterdir() if p.name != "run")
         assert not debris, f"save(overwrite=True) left {debris} next to the run."
+
+        if tags["capability:device"]:
+            _check_cuda_saved_loads_on_cpu(est, path, root, ctx)
+
+
+def _assert_on_cpu(loaded: BaseFactorModel, what: str) -> None:
+    assert str(loaded.device_) == "cpu", f"{what} gave device_={loaded.device_!r}."
+    off_cpu = [n for n, t in [*loaded.network_.named_parameters(), *loaded.network_.named_buffers()]
+               if t.device.type != "cpu"]
+    assert not off_cpu, f"{what} left {off_cpu} off the CPU."
+
+
+def _check_cuda_saved_loads_on_cpu(est: BaseFactorModel, path: Path, root: Path, ctx: _Context) -> None:
+    """A CUDA-saved run loads on CPU (spec section 7).
+
+    Always: the saved run with its ``device`` parameter rewritten to ``"cuda"``
+    loads where CUDA is unavailable (simulated) on CPU with a ``UserWarning``,
+    and an explicit ``load(device="cuda")`` there raises ``ConfigurationError``.
+    With CUDA: a model fitted on CUDA loads with ``device="cpu"``.
+    """
+    cls = ctx.cls
+    simulated = root / "cuda_saved"
+    shutil.copytree(path, simulated)
+    config_path = simulated / CONFIG_FILE
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["params"]["device"] = "cuda"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    pickled = (simulated / SCALER_PKL).is_file()
+    with mock.patch.object(torch.cuda, "is_available", return_value=False):
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            loaded = cls.load(simulated, allow_pickle=pickled)
+        assert any(issubclass(w.category, UserWarning) and "CUDA is not available" in str(w.message)
+                   for w in caught), "loading a CUDA-saved run without CUDA did not warn that it falls back to CPU."
+        _assert_on_cpu(loaded, f"{cls.__name__}.load of a CUDA-saved run without CUDA")
+        assert _network_hash(loaded) == _network_hash(est), (
+            f"{cls.__name__}.load of a CUDA-saved run without CUDA: network_ weights are not bitwise identical."
+        )
+        err = _expect_raises(ConfigurationError, lambda: cls.load(simulated, device="cuda", allow_pickle=pickled),
+                             "load(device='cuda') without CUDA")
+        assert "device='cpu'" in str(err), f"the load(device='cuda') error does not suggest device='cpu': {err}"
+    shutil.rmtree(simulated)
+
+    if not torch.cuda.is_available():
+        return  # the real CUDA round trip is skipped without CUDA
+    on_cuda = ctx.make(cpu=False).set_params(device="cuda")
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        on_cuda.fit(ctx.train)
+    cuda_path = root / "cuda_run"
+    _save_quietly(on_cuda, cuda_path)
+    loaded = cls.load(cuda_path, device="cpu", allow_pickle=(cuda_path / SCALER_PKL).is_file())
+    _assert_on_cpu(loaded, f"{cls.__name__}.load(device='cpu') of a CUDA-fitted run")
+    assert _network_hash(loaded) == _network_hash(on_cuda), (
+        f"{cls.__name__}.load(device='cpu') of a CUDA-fitted run: network_ weights are not bitwise identical."
+    )
+    shutil.rmtree(cuda_path)
 
 
 def _always(tags: dict) -> bool:

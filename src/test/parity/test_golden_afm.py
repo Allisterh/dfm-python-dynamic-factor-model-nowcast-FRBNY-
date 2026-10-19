@@ -47,6 +47,8 @@ def _outputs(model: AFM, weights) -> dict:
         "sharpe": np.float32(model.result_.sharpe),
         "explained_variance": np.float32(model.result_.explained_variance),
         "num_iter": np.int64(model.n_iter_),
+        "converged": np.bool_(model.converged_),
+        "loss_now": np.float64(model.network_.training_state.loss_now),
         # float32 -> float64 -> float32 is exact, so this stays a bitwise comparison.
         "predict_weights": weights.to_numpy().astype(np.float32)[None],
     }

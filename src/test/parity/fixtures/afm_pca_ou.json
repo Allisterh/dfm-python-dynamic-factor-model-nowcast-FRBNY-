@@ -33,7 +33,7 @@
     "processor": "x86_64",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "git_commit": "e7fe3bdf3f44b06c83db2548044f8bda1dae2103",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "device": "cpu",
@@ -67,8 +67,16 @@
         50
       ]
     },
+    "converged": {
+      "dtype": "bool",
+      "shape": []
+    },
     "explained_variance": {
       "dtype": "float32",
+      "shape": []
+    },
+    "loss_now": {
+      "dtype": "float64",
       "shape": []
     },
     "num_iter": {

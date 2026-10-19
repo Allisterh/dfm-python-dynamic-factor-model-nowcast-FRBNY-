@@ -431,7 +431,10 @@ class BaseFactorModel(BaseEstimator):
         device : str or torch.device, optional
             Device for torch models; None uses the ``device`` parameter
             (``"auto"``: CUDA if available, else CPU). Weights are read with
-            ``map_location``, so a GPU-saved run loads on a CPU-only machine.
+            ``map_location``, so a GPU-saved run loads on a CPU-only machine:
+            a saved CUDA ``device`` parameter falls back to CPU there with a
+            ``UserWarning``, and an explicit CUDA ``device`` raises
+            ``ConfigurationError``.
         allow_pickle : bool, default False
             Allow reading ``scaler.pkl`` and importing estimator classes outside
             ``sklearn.preprocessing`` named in ``config.json``. Both can run
@@ -606,14 +609,40 @@ class BaseFactorModel(BaseEstimator):
         return read_weights(Path(path) / WEIGHTS_FILE, map_location=device)
 
     def _load_device(self, device: Any = None) -> Any:
-        """Resolve the load device: ``device``, else the ``device`` parameter; ``"auto"`` means CUDA if available."""
+        """Resolve the load device: ``device``, else the ``device`` parameter; ``"auto"`` means CUDA if available.
+
+        A saved CUDA ``device`` parameter falls back to CPU with a
+        ``UserWarning`` when CUDA is not available, so a GPU-saved run loads on
+        a CPU-only machine. An explicit ``load(device=...)`` naming CUDA there
+        raises ``ConfigurationError``.
+        """
         import torch
 
+        explicit = device is not None
         if device is None:
             device = self.get_params(deep=False).get("device", "auto")
         if device is None or (isinstance(device, str) and device == "auto"):
             return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        return torch.device(device)
+        name = type(self).__name__
+        try:
+            resolved = torch.device(device)
+        except (RuntimeError, TypeError, ValueError) as err:
+            source = "load(device=...)" if explicit else "the saved device parameter"
+            raise ConfigurationError(f"{name}.load: {source} {device!r} is not a valid torch device ({err}).") from err
+        if resolved.type == "cuda" and not torch.cuda.is_available():
+            if explicit:
+                raise ConfigurationError(
+                    f"{name}.load(device={device!r}): CUDA is not available on this machine. "
+                    "Pass device='cpu' (or 'auto')."
+                )
+            warnings.warn(
+                f"The {name} run was saved with device={str(device)!r}, but CUDA is not available on this machine; "
+                "loading it on CPU. Pass load(path, device='cpu') to choose the device explicitly.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return torch.device("cpu")
+        return resolved
 
 
 def _contains_encoded_estimator(value: Any) -> bool:

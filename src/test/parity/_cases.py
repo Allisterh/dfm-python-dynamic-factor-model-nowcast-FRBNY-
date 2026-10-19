@@ -178,10 +178,11 @@ def afm_inputs(factor_model: str) -> tuple[np.ndarray, np.ndarray | None, dict[s
     return returns, (characteristics if use_chars else None), data
 
 
-def _afm_case(factor_model: str, trading: str) -> CaseRun:
+def _afm_case(factor_model: str, trading: str, **overrides: Any) -> CaseRun:
     # The engine path: the pre-redesign AFM class, now the private AFMEngine,
     # called exactly as the old public constructor was (dataset in __init__).
     # test_golden_afm.py also runs the public AFM estimator against the same fixtures.
+    # ``overrides`` replace the common keywords (the early-stopping case).
     from dfm_python.dataset.afm_dataset import AFMDataset
     from dfm_python.models.afm._engine import AFMEngine
 
@@ -190,8 +191,8 @@ def _afm_case(factor_model: str, trading: str) -> CaseRun:
     with force_cpu():
         _reset_global_rngs()
         ds = AFMDataset(returns=returns, characteristics=characteristics)
-        model = AFMEngine(dataset=ds, n_factors=3, hist_len=10, max_epochs=5,
-                          factor_model=factor_model, trading=trading, seed=0)
+        kwargs = {"n_factors": 3, "hist_len": 10, "max_epochs": 5, "seed": 0, **overrides}
+        model = AFMEngine(dataset=ds, factor_model=factor_model, trading=trading, **kwargs)
         hyper = _attrs(model, AFM_ATTRS)
         state = model.fit()
         weights = model.predict()["weights"]
@@ -204,6 +205,9 @@ def _afm_case(factor_model: str, trading: str) -> CaseRun:
         "sharpe": np.float32(state.sharpe),
         "explained_variance": np.float32(state.explained_variance),
         "num_iter": np.int64(state.num_iter),
+        "converged": np.bool_(state.converged),
+        # The last epoch's objective, a Python float (float64 of the float32 loss).
+        "loss_now": np.float64(state.loss_now),
         "predict_weights": _np(weights),
     }
     for k, v in model.state_dict().items():
@@ -512,6 +516,10 @@ CASES: dict[str, Case] = {c.name: c for c in [
     Case("afm_attention_longconv", "afm", lambda: _afm_case("attention", "longconv")),
     Case("afm_pca_longconv", "afm", lambda: _afm_case("pca", "longconv")),
     Case("afm_pca_ou", "afm", lambda: _afm_case("pca", "ou")),
+    # patience stops training early (at epoch 17 of 40); the learning rate is
+    # high enough that the loss stalls.
+    Case("afm_pca_longconv_patience", "afm",
+         lambda: _afm_case("pca", "longconv", max_epochs=40, learning_rate=0.1, patience=3)),
     Case("dfm_synthetic", "dfm", _dfm_synthetic),
     Case("dfm_macro_weekly_monthly", "dfm", _dfm_macro_weekly_monthly),
     Case("dfm_macro_monthly_quarterly", "dfm", _dfm_macro_monthly_quarterly),

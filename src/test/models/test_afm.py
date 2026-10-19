@@ -406,6 +406,35 @@ class TestAFM:
         assert auto.device_ == torch.device("cpu")
         assert _model(device=torch.device("cpu")).fit(_panel()).device_ == torch.device("cpu")
 
+    def test_verbose_progress(self, capsys):
+        _model(verbose=0).fit(_panel())
+        assert capsys.readouterr().out == ""
+        model = _model(verbose=1, factor_model="pca", trading="longconv", learning_rate=0.1, patience=2,
+                       max_epochs=40).fit(_panel(chars=False))
+        out = capsys.readouterr().out
+        assert "AFM: training factor_model='pca', trading='longconv', n_factors=3 on T=60, N=6" in out
+        assert f"AFM: finished after {model.n_iter_} epoch(s)" in out
+        assert ("early stop (patience=2)" if model.converged_ else "no early stop") in out
+        assert "engine hyperparameters" not in out
+        _model(verbose=2).fit(_panel())
+        assert "AFM: engine hyperparameters" in capsys.readouterr().out
+        model.set_params(verbose=1).update(_panel(T=40, seed=5, chars=False), refit=True)
+        assert "AFM: finished after" in capsys.readouterr().out
+
+    def test_verbose_leaves_the_numbers_unchanged(self):
+        assert _same_state(_state(_model(verbose=0).fit(_panel())), _state(_model(verbose=2).fit(_panel())))
+
+    def test_torch_device_param_saves_and_writes_yaml(self, tmp_path):
+        model = _model(device=torch.device("cpu")).fit(_panel())
+        model.save(tmp_path / "run")
+        assert json.loads((tmp_path / "run" / "config.json").read_text())["params"]["device"] == "cpu"
+        loaded = AFM.load(tmp_path / "run")
+        assert loaded.get_params()["device"] == "cpu" and loaded.device_ == torch.device("cpu")
+        assert model.get_config().to_plain_dict()["device"] == "cpu"
+        if _YAML:
+            model.get_config().to_yaml(tmp_path / "afm.yaml")
+            assert AFMConfig.from_yaml(tmp_path / "afm.yaml").device == "cpu"
+
     def test_sklearn_machinery(self):
         model = _model(embed_dim=8)
         assert clone(model).get_params() == model.get_params()
@@ -646,6 +675,31 @@ class TestAFMSaveLoad:
         loaded = AFM.load(path, device="cpu")
         assert loaded.device_ == torch.device("cpu") and loaded.get_params()["device"] == "auto"
         assert all(p.device.type == "cpu" for p in loaded.network_.parameters())
+
+    @pytest.mark.parametrize("factor_model, trading", [("attention", "longconv"), ("pca", "ou")])
+    @pytest.mark.parametrize("saved_device", ["cuda", "cuda:0"])
+    def test_cuda_saved_run_loads_on_cpu_without_cuda(self, tmp_path, factor_model, trading, saved_device):
+        model, data, path = self._saved(tmp_path, factor_model=factor_model, trading=trading)
+        config = json.loads((path / "config.json").read_text())
+        config["params"]["device"] = saved_device  # as if saved on a GPU machine
+        (path / "config.json").write_text(json.dumps(config))
+        with mock.patch.object(torch.cuda, "is_available", return_value=False):
+            for load in (AFM.load, dfm_python.load):
+                with pytest.warns(UserWarning, match="CUDA is not available on this machine; loading it on CPU"):
+                    loaded = load(path)
+                assert loaded.device_ == torch.device("cpu") and loaded.get_params()["device"] == saved_device
+                assert all(p.device.type == "cpu" for p in loaded.network_.parameters())
+                assert loaded.allocate(data=data).equals(model.allocate())
+            with pytest.raises(ConfigurationError, match=r"CUDA is not available.*device='cpu'"):
+                AFM.load(path, device="cuda")
+            with warnings.catch_warnings():
+                warnings.simplefilter("error")
+                assert AFM.load(path, device="cpu").device_ == torch.device("cpu")
+
+    def test_load_rejects_an_invalid_device(self, tmp_path):
+        _, _, path = self._saved(tmp_path)
+        with pytest.raises(ConfigurationError, match="not a valid torch device"):
+            AFM.load(path, device="nonsense")
 
     def test_load_does_not_touch_the_global_rng(self, tmp_path):
         _, _, path = self._saved(tmp_path)
