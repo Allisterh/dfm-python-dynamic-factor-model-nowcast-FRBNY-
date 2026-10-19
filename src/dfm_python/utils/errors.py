@@ -2,9 +2,28 @@
 
 This module provides specialized exception classes for different error types,
 enabling better error handling and more informative error messages.
+
+Every library error derives from :class:`DFMError`. The concrete classes also
+derive from the matching built-in (or scikit-learn) exception, so callers can
+catch them the standard way:
+
+==========================  ============================================
+Exception                   Bases
+==========================  ============================================
+``ConfigurationError``      ``DFMError``, ``ValueError``
+``ConfigValidationError``   ``ConfigurationError``
+``DataValidationError``     ``DFMError``, ``ValueError``
+``UnsupportedInputError``   ``DataValidationError``
+``NotFittedError``          ``DFMError``, ``sklearn.exceptions.NotFittedError``
+``ModelNotTrainedError``    alias of ``NotFittedError``
+``NumericalError``          ``DFMError``, ``ArithmeticError``
+``NumericalStabilityError`` ``NumericalError``
+==========================  ============================================
 """
 
 from typing import Optional
+
+from sklearn.exceptions import NotFittedError as _SklearnNotFittedError
 
 
 class DFMError(Exception):
@@ -33,12 +52,20 @@ class ModelNotInitializedError(DFMError):
     pass
 
 
-class ModelNotTrainedError(DFMError):
-    """Raised when prediction or result extraction is attempted before training."""
+class NotFittedError(DFMError, _SklearnNotFittedError):
+    """Raised when a fitted-only operation is attempted before ``fit``.
+
+    Subclasses :class:`sklearn.exceptions.NotFittedError`, so it is also a
+    ``ValueError`` and an ``AttributeError``.
+    """
     pass
 
 
-class ConfigurationError(DFMError):
+# Engines raise ``ModelNotTrainedError``; the alias keeps their raise sites unchanged.
+ModelNotTrainedError = NotFittedError
+
+
+class ConfigurationError(DFMError, ValueError):
     """Raised when configuration is invalid or missing."""
     pass
 
@@ -48,7 +75,7 @@ class DataError(DFMError):
     pass
 
 
-class NumericalError(DFMError):
+class NumericalError(DFMError, ArithmeticError):
     """Raised when numerical stability issues are detected."""
     pass
 
@@ -58,8 +85,13 @@ class PredictionError(DFMError):
     pass
 
 
-class DataValidationError(DFMError):
+class DataValidationError(DFMError, ValueError):
     """Raised when data validation fails (e.g., scale mismatches)."""
+    pass
+
+
+class UnsupportedInputError(DataValidationError):
+    """Raised when an input slot, frequency layout or option is not supported by the model."""
     pass
 
 

@@ -71,11 +71,13 @@ from .errors import (
     DFMError,
     ModelNotInitializedError,
     ModelNotTrainedError,
+    NotFittedError,
     ConfigurationError,
     DataError,
     NumericalError,
     PredictionError,
     DataValidationError,
+    UnsupportedInputError,
     NumericalStabilityError,
     ConfigValidationError,
 )
@@ -154,11 +156,13 @@ __all__ = [
     'DFMError',  # Base exception class
     'ModelNotInitializedError',
     'ModelNotTrainedError',
+    'NotFittedError',
     'ConfigurationError',
     'DataError',
     'NumericalError',
     'PredictionError',
     'DataValidationError',
+    'UnsupportedInputError',
     'NumericalStabilityError',
     'ConfigValidationError',
     # Stability utilities (from numeric.stability)
