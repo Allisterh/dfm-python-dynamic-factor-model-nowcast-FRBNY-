@@ -5,21 +5,29 @@ from dfm_python.config import (
     DFMConfig,
     DDFMConfig,
 )
+from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.config.constants import DEFAULT_EM_THRESHOLD, DEFAULT_MAX_ITER
 
 
 class TestDFMConfig:
-    """Test suite for DFMConfig."""
-    
+    """Test suite for DFMConfig (the estimator mirror) and the private engine config."""
+
     def test_dfm_config_initialization(self):
-        """Test DFMConfig can be initialized with default values."""
-        # DFMConfig requires at least one block
-        config = DFMConfig(blocks={'block1': {'num_factors': 2, 'series': []}})
+        """DFMConfig() holds the DFM constructor defaults."""
+        from dfm_python import DFM
+        config = DFMConfig()
+        assert config.to_dict() == DFM().get_params()
+        assert config.tol == 1e-5 and config.max_iter == 5000 and config.blocks is None
+
+    def test_engine_config_initialization(self):
+        """The engine config can be initialized with default values."""
+        # The engine config requires at least one block
+        config = _DFMEngineConfig(blocks={'block1': {'num_factors': 2, 'series': []}})
         assert config is not None
     
     def test_dfm_config_parameters(self):
-        """Test DFMConfig parameter setting."""
-        config = DFMConfig(
+        """Test the engine config's parameter setting."""
+        config = _DFMEngineConfig(
             blocks={'block1': {'num_factors': 2, 'series': []}},
             max_iter=DEFAULT_MAX_ITER,
             threshold=DEFAULT_EM_THRESHOLD

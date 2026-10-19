@@ -22,7 +22,8 @@ import dfm_python
 import dfm_python.models
 import dfm_python.models.ddfm
 from dfm_python import PanelData
-from dfm_python.config import DDFMConfig, DFMConfig, load_yaml
+from dfm_python.config import DDFMConfig, load_yaml
+from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.config.schema.params import DDFMModelState
 from dfm_python.config.schema.results import DDFMResult
 from dfm_python.dataset.ddfm_dataset import DDFMDataset
@@ -756,7 +757,7 @@ def test_config_rejects_old_names(old):
 @pytest.mark.parametrize("params", [{"encoder_layers": [64, 32]}, {"model_type": "ddfm"}, {"learning_rate": 0.01}])
 def test_dfm_config_from_dict_points_ddfm_configs_to_the_mirror(params):
     with pytest.raises(ConfigurationError, match=r"DDFMConfig\.from_dict.*DDFM\.from_config"):
-        DFMConfig.from_dict({"clock": "m", **params})
+        _DFMEngineConfig.from_dict({"clock": "m", **params})
 
 
 @pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")

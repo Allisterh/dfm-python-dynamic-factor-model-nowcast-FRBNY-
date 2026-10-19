@@ -1,12 +1,12 @@
 """Configuration source adapters for DFM.
 
-This module provides adapters for loading DFMConfig from various sources:
+This module provides adapters for loading _DFMEngineConfig from various sources:
 - YAML files (with Hydra/OmegaConf support)
 - Dictionary configurations
 - Hydra DictConfig objects
 - Merged configurations from multiple sources
 
-All adapters implement the ConfigSource protocol and return DFMConfig objects.
+All adapters implement the ConfigSource protocol and return _DFMEngineConfig objects.
 """
 
 from typing import Protocol, Optional, Dict, Any, Union, TYPE_CHECKING, NoReturn
@@ -22,7 +22,7 @@ else:
     except ImportError:
         DDFMConfig = None  # Fallback if not available
 
-from .schema.model import DFMConfig
+from .schema.model import _DFMEngineConfig
 from .constants import DEFAULT_CLOCK_FREQUENCY
 
 # Error helper to reduce repetitive imports
@@ -233,11 +233,11 @@ def _normalize_blocks_dict(blocks_dict: Dict[str, Any]) -> Dict[str, Dict[str, A
 class ConfigSource(Protocol):
     """Protocol for configuration sources.
     
-    Any object that implements a `load()` method returning a DFMConfig
+    Any object that implements a `load()` method returning a _DFMEngineConfig
     can be used as a configuration source.
     """
-    def load(self) -> DFMConfig:
-        """Load and return a DFMConfig object."""
+    def load(self) -> _DFMEngineConfig:
+        """Load and return a _DFMEngineConfig object."""
         ...
 
 
@@ -253,7 +253,7 @@ class YamlSource:
         """
         self.yaml_path = Path(yaml_path)
     
-    def load(self) -> Union[DFMConfig, 'DDFMConfig']:
+    def load(self) -> Union[_DFMEngineConfig, 'DDFMConfig']:
         """Load configuration from YAML file.
         
         This method loads a configuration from a YAML file, automatically detecting
@@ -262,9 +262,9 @@ class YamlSource:
         
         Returns
         -------
-        DFMConfig or DDFMConfig
+        _DFMEngineConfig or DDFMConfig
             Configuration object. Type is automatically detected based on config content.
-            Returns DDFMConfig if DDFM-specific parameters are present, otherwise DFMConfig.
+            Returns DDFMConfig if DDFM-specific parameters are present, otherwise _DFMEngineConfig.
             
         Raises
         ------
@@ -280,7 +280,7 @@ class YamlSource:
         >>> from pathlib import Path
         >>> source = YamlSource(Path('config/dfm_config.yaml'))
         >>> config = source.load()
-        >>> assert isinstance(config, DFMConfig)
+        >>> assert isinstance(config, _DFMEngineConfig)
         """
         try:
             from omegaconf import OmegaConf
@@ -324,7 +324,7 @@ class YamlSource:
         if not _is_dict_like(blocks_dict):
             blocks_dict = {}
         
-        # Blocks dict is required for DFM - will be validated in DFMConfig.__post_init__
+        # Blocks dict is required for DFM - will be validated in _DFMEngineConfig.__post_init__
         if not blocks_dict:
             _raise_config_error("blocks dict is required for DFM config")
         
@@ -338,7 +338,7 @@ class YamlSource:
         }
         if frequency_dict is not None:
             config_dict['frequency'] = frequency_dict
-        return DFMConfig.from_dict(config_dict)
+        return _DFMEngineConfig.from_dict(config_dict)
 
 
 class DictSource:
@@ -372,7 +372,7 @@ class DictSource:
         else:
             _raise_config_error(f"mapping must be a dict or DictConfig, got {type(mapping).__name__}")
     
-    def load(self) -> DFMConfig:
+    def load(self) -> _DFMEngineConfig:
         """Load configuration from dictionary.
         
         If the dictionary is partial (e.g., only max_iter, threshold),
@@ -393,9 +393,9 @@ class DictSource:
             }
             # Merge: mapping takes precedence
             merged = {**minimal_default, **self.mapping}
-            return DFMConfig.from_dict(merged)
+            return _DFMEngineConfig.from_dict(merged)
         
-        return DFMConfig.from_dict(self.mapping)
+        return _DFMEngineConfig.from_dict(self.mapping)
 
 
 
@@ -486,12 +486,12 @@ def make_config_source(
             pass
         return DictSource(source)
     
-    if isinstance(source, DFMConfig):
-        # DFMConfig can be used directly - return a simple callable wrapper
+    if isinstance(source, _DFMEngineConfig):
+        # _DFMEngineConfig can be used directly - return a simple callable wrapper
         class _ConfigWrapper:
-            def __init__(self, cfg: DFMConfig):
+            def __init__(self, cfg: _DFMEngineConfig):
                 self._cfg = cfg
-            def load(self) -> DFMConfig:
+            def load(self) -> _DFMEngineConfig:
                 return self._cfg
         return _ConfigWrapper(source)
     
@@ -501,7 +501,7 @@ def make_config_source(
     if is_dataclass(source):
         return DictSource(asdict(source))
     
-    _raise_config_error(f"Unsupported source type: {type(source)}. Expected str, Path, dict, ConfigSource, or DFMConfig.")
+    _raise_config_error(f"Unsupported source type: {type(source)}. Expected str, Path, dict, ConfigSource, or _DFMEngineConfig.")
 
 
 

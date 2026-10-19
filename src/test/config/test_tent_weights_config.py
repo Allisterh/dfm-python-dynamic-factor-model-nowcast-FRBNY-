@@ -1,10 +1,10 @@
-"""Tests for tent weights parameterization in DFMConfig."""
+"""Tests for tent weights parameterization in _DFMEngineConfig."""
 
 import pytest
 import numpy as np
 import yaml
 from pathlib import Path
-from dfm_python.config import DFMConfig
+from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.config.adapter import YamlSource
 from dfm_python.dataset import DFMDataset
 from dfm_python.models.dfm.tent import get_agg_structure
@@ -22,7 +22,7 @@ class TestTentWeightsConfig:
             'tent_weights': {'m:w': [1, 2, 1]},  # Custom tent weights
         }
         
-        config = DFMConfig.from_dict(config_dict)
+        config = _DFMEngineConfig.from_dict(config_dict)
         assert config.tent_weights is not None
         assert 'm:w' in config.tent_weights
         assert config.tent_weights['m:w'] == [1, 2, 1]
@@ -38,7 +38,7 @@ class TestTentWeightsConfig:
             'tent_weights': {'m:w': custom_weights},
         }
         
-        config = DFMConfig.from_dict(config_dict)
+        config = _DFMEngineConfig.from_dict(config_dict)
         
         # Verify config has custom weights
         assert config.tent_weights['m:w'] == custom_weights
@@ -59,7 +59,7 @@ class TestTentWeightsConfig:
             # No tent_weights specified - should raise error for mixed-frequency data
         }
         
-        config = DFMConfig.from_dict(config_dict)
+        config = _DFMEngineConfig.from_dict(config_dict)
         assert config.tent_weights is None
         
         # Should raise error when trying to get aggregation structure for mixed-frequency data
@@ -75,7 +75,7 @@ class TestTentWeightsConfig:
             'tent_weights': {'m': [1, 2, 1]},  # Shorthand: just frequency, uses clock
         }
         
-        config = DFMConfig.from_dict(config_dict)
+        config = _DFMEngineConfig.from_dict(config_dict)
         assert config.tent_weights is not None
         assert 'm' in config.tent_weights
         assert config.tent_weights['m'] == [1, 2, 1]
@@ -92,7 +92,7 @@ class TestTentWeightsConfig:
             },
         }
         
-        config = DFMConfig.from_dict(config_dict)
+        config = _DFMEngineConfig.from_dict(config_dict)
         assert config.tent_weights is not None
         assert 'm:w' in config.tent_weights
         assert 'q:w' in config.tent_weights
@@ -225,7 +225,7 @@ class TestDatasetTentWeightsIntegration:
             'tent_weights': {'m:w': [1, 2, 1]},  # 3-period tent kernel
         }
         
-        config = DFMConfig.from_dict(config_dict)
+        config = _DFMEngineConfig.from_dict(config_dict)
         
         # Create dataset
         dataset = DFMDataset(config=config, data=data, time_index='date')

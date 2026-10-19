@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, Optional
 
-from dfm_python.config import DFMConfig
+from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.config.constants import DEFAULT_CONVERGENCE_THRESHOLD
 
 # Note: PyTorch Lightning warnings removed - package now uses plain PyTorch
@@ -33,10 +33,10 @@ def sample_data():
 
 @pytest.fixture
 def sample_config():
-    """Create a basic DFMConfig for testing."""
-    # DFMConfig requires blocks with at least one block
+    """Create a basic _DFMEngineConfig for testing."""
+    # _DFMEngineConfig requires blocks with at least one block
     # Also needs frequency dict or columns for validation
-    config = DFMConfig(
+    config = _DFMEngineConfig(
         max_iter=TEST_MAX_ITER,
         threshold=DEFAULT_CONVERGENCE_THRESHOLD,
         blocks={'block1': {'num_factors': 2, 'series': ['series_0', 'series_1']}},

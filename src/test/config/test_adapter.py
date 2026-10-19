@@ -23,7 +23,7 @@ class TestDictSource:
     
     def test_dict_source_loading(self):
         """Test loading configuration from dictionary."""
-        # Provide minimal valid config with blocks (required for DFMConfig)
+        # Provide minimal valid config with blocks (required for _DFMEngineConfig)
         mapping = {
             'frequency': {'series1': 'm'},
             'blocks': {'block1': {'num_factors': 1, 'series': ['series1']}},
@@ -222,10 +222,10 @@ class TestConfigSource:
         # Verify it has the required load() method
         assert hasattr(source, 'load')
         assert callable(source.load)
-        # Verify load() returns a DFMConfig
+        # Verify load() returns a _DFMEngineConfig
         config = source.load()
-        from dfm_python.config.schema.model import DFMConfig
-        assert isinstance(config, DFMConfig)
+        from dfm_python.config.schema.model import _DFMEngineConfig
+        assert isinstance(config, _DFMEngineConfig)
         assert hasattr(config, 'blocks')
         assert 'block1' in config.blocks
 

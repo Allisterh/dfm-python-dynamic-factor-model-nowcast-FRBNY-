@@ -19,7 +19,7 @@ import pytest
 from sklearn.preprocessing import StandardScaler
 
 import dfm_python
-from dfm_python.config import DFMConfig
+from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.dataset.dfm_dataset import DFMDataset
 from dfm_python.models.dfm._engine import DFMEngine
 from dfm_python.ssm.kalman import DFMKalmanFilter
@@ -43,7 +43,7 @@ def _panel(T: int, seed: int) -> pd.DataFrame:
 def fitted():
     df = _panel(60, seed=0)
     cols = [c for c in df.columns if c != "date"]
-    config = DFMConfig.from_dict({
+    config = _DFMEngineConfig.from_dict({
         "blocks": {"Block_Global": {"num_factors": 1, "series": cols}},
         "frequency": {c: "m" for c in cols},
         "clock": "m",

@@ -18,7 +18,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from dfm_python import DFMDataset
 from dfm_python.models.dfm._engine import DFMEngine as DFM
-from dfm_python.config import DFMConfig
+from dfm_python.config.schema.model import _DFMEngineConfig as DFMConfig
 import hydra
 from omegaconf import DictConfig, OmegaConf
 

@@ -16,6 +16,7 @@ __all__ = ["all_estimators"]
 _ESTIMATORS: tuple[tuple[str, str, str], ...] = (
     ("AFM", "dfm_python.models.afm.estimator", "AFM"),
     ("DDFM", "dfm_python.models.ddfm.estimator", "DDFM"),
+    ("DFM", "dfm_python.models.dfm.estimator", "DFM"),
     ("iVDFM", "dfm_python.models.ivdfm.estimator", "iVDFM"),
 )
 

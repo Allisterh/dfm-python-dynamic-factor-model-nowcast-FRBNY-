@@ -18,10 +18,10 @@ except ImportError:
     PolarsDataFrame = type(None)  # Dummy type for type hints when polars not available
 
 if TYPE_CHECKING:
-    from ..config import DFMConfig
+    from ..config.schema.model import _DFMEngineConfig
 
 from ..logger import get_logger
-from ..config import DFMConfig
+from ..config.schema.model import _DFMEngineConfig
 from ..config.constants import FREQUENCY_HIERARCHY, DEFAULT_HIERARCHY_VALUE
 from ..dataset.time import TimeIndex
 from ..utils.errors import DataValidationError, ConfigurationError
@@ -38,7 +38,7 @@ class DFMDataset:
     
     Parameters
     ----------
-    config : DFMConfig
+    config : _DFMEngineConfig
         DFM configuration object
     data : pd.DataFrame, PolarsDataFrame, str, or Path
         Preprocessed data DataFrame or path to CSV file. Data must be preprocessed (imputation, scaling, etc.)
@@ -49,7 +49,7 @@ class DFMDataset:
     
     def __init__(
         self,
-        config: DFMConfig,
+        config: _DFMEngineConfig,
         data: Union[pd.DataFrame, PolarsDataFrame, str, Path],
         time_index: str
     ):
@@ -57,7 +57,7 @@ class DFMDataset:
         
         Parameters
         ----------
-        config : DFMConfig
+        config : _DFMEngineConfig
             DFM configuration object (required)
         data : pd.DataFrame, PolarsDataFrame, str, or Path
             Preprocessed data DataFrame or path to CSV file (required). 
@@ -69,7 +69,7 @@ class DFMDataset:
         if config is None:
             raise ConfigurationError(
                 "DFMDataset: config is required",
-                details="Please provide a DFMConfig object"
+                details="Please provide a _DFMEngineConfig object"
             )
         if data is None:
             raise DataValidationError(

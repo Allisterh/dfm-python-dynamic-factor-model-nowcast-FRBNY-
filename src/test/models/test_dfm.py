@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from dfm_python.models.dfm._engine import DFMEngine as DFM
 from dfm_python.models.dfm.mixed_freq import find_slower_frequency
-from dfm_python.config import DFMConfig
+from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.dataset.dfm_dataset import DFMDataset
 from dfm_python.utils.errors import ModelNotTrainedError, ConfigurationError, ModelNotInitializedError
 from dfm_python.config.constants import DEFAULT_DTYPE
@@ -24,7 +24,7 @@ class TestDFM:
             np.random.randn(T, n_series),
             columns=['series_0', 'series_1', 'series_2']
         )
-        config = DFMConfig(
+        config = _DFMEngineConfig(
             blocks={'block1': {'num_factors': 1, 'series': ['series_0', 'series_1', 'series_2']}},
             frequency={'series_0': 'w', 'series_1': 'w', 'series_2': 'w'},
             clock='w'
@@ -139,7 +139,7 @@ class TestDFM:
         data = data.reset_index()
         data.rename(columns={'index': 'date'}, inplace=True)
         
-        config = DFMConfig(
+        config = _DFMEngineConfig(
             blocks={
                 'Block_Global': {
                     'num_factors': 2,

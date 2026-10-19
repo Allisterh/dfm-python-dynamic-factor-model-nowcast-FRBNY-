@@ -256,7 +256,7 @@ What `data` means keeps today's per-model semantics, stated by tag `predict_data
 
 | Model | `predict_data` | What `data` is |
 |---|---|---|
-| DFM | `new_rows` | rows strictly after `index_[-1]`; overlap raises `DataValidationError` |
+| DFM | `new_rows` | rows strictly after the last conditioning timestamp (`index_[-1]` until `update`); overlap raises `DataValidationError`; same series and `freq` (`None` keeps the fitted one); a `RangeIndex` must continue the model's index |
 | DDFM | `full_panel` | the full panel including the new rows, as today |
 | iVDFM | `window` | every row passed is encoded, and the last state starts the forecast |
 
@@ -292,12 +292,12 @@ Tag-dependent fitted attributes:
 
 | Model | `update_kind` | `refit=False` | `refit=True` |
 |---|---|---|---|
-| DFM | `filter` | Kalman filter over new rows with fixed parameters | today's `retrain=True` |
+| DFM | `filter` | Kalman filter and smoother over the new rows with fixed parameters, from the last smoothed state and the last filtered covariance; `result_` unchanged | today's `retrain=True`: one EM iteration on all rows with threshold `tol`; `result_` refreshed |
 | DDFM | `encoder_forward_rescale` | encoder forward pass; refits the target scaler (today's `_update`) | raises `UnsupportedInputError` |
 | iVDFM | `encoder_forward` | encoder forward under `no_grad`; appends factors | raises `UnsupportedInputError` |
 | AFM | `reattach` | attaches data for later `allocate()` | today's `retrain=True`: training continues from the current weights |
 
-DFM's `rescale` and iVDFM's `append` and `store_full_history` flags are not part of the estimator. It calls the engine with today's default values for them.
+DFM's `rescale` and iVDFM's `append` and `store_full_history` flags are not part of the estimator. It calls the engine with today's default values for them. DFM's `predict(h, data=new)` is today's other engine path (the filter starts from `V_0`, and the forecast from the last filtered state), so it differs numerically from `update(new).predict(h)`; both are kept and documented.
 
 ### Tags
 
@@ -316,7 +316,7 @@ DFM's `rescale` and iVDFM's `append` and `store_full_history` flags are not part
 |---|---|
 | `config.json` | `format_version` (a file-format counter, independent of releases); `model_type`; `library_version` (read at save time); `params` (`get_params()`, with estimators written as `{"class", "params"}`, and `random_state` always present); `tags`; `runtime` (device, torch and numpy versions, determinism flag, thread count) |
 | `data_spec.json` | target names in user order and internal order, exog and series-exog names, normalized `freq`, index kind, freq, name, first, last and length |
-| `state.npz` | every array that is not a parameter or buffer, saved with `allow_pickle=False` and namespaced keys. DFM: `ssm/A`, `ssm/C`, `ssm/Q`, `ssm/R`, `ssm/Z_0`, `ssm/V_0`, `mixed_freq/*` (constraint matrix and vector, idio indicator), `structure/blocks`, `data/data_processed`, `data/last_smoothed_state`, `data/last_smoothed_cov`. DDFM: `factors` (MC x T x r), `eps`, `last_neurons`, `ssm/F`, `ssm/H`, `ssm/Q`, `ssm/R`, `ssm/mu_0`, `ssm/Sigma_0`, and `data/frame`, the scaled training frame `[exog | y]` with its NaN (an addition to this list: `update` refits the target scaler on the training targets read from that frame, so without it a reloaded model could not update like the fitted one; its column names, `target_series` and `covariates` are in `state.json`). The DDFM arrays keep their memory order (the transition matrix is column-major after fit, and a row-major copy rounds the forecast differently). iVDFM: `factors`, `innovations`, regime weights. AFM: `residuals`, `book_returns`. All models: `scaler/<attr>` arrays |
+| `state.npz` | every array that is not a parameter or buffer, saved with `allow_pickle=False` and namespaced keys. DFM: `ssm/A`, `ssm/C`, `ssm/Q`, `ssm/R`, `ssm/Z_0`, `ssm/V_0`, `mixed_freq/*` (constraint matrix and vector when set, idio indicator), `structure/blocks`, `structure/r`, `data/data_processed`, `data/last_smoothed_state`, `data/last_smoothed_cov` (P_T\|T from the filter call `update` starts from), and `data/smoothed_state`, the engine's smoothed state including the rows `update` appended (an addition to this list, as DDFM's `data/frame`: `update` extends it and forecasts from its last row, so without it a reloaded model that was updated could not forecast or update like the saved one); the engine config, the block order (JSON sorts keys, and the block order is the factor order), the training diagnostics and the conditioning index are in `state.json`, and `data_spec.json` adds `internal_feature_names_` and `freq_`. DDFM: `factors` (MC x T x r), `eps`, `last_neurons`, `ssm/F`, `ssm/H`, `ssm/Q`, `ssm/R`, `ssm/mu_0`, `ssm/Sigma_0`, and `data/frame`, the scaled training frame `[exog | y]` with its NaN (an addition to this list: `update` refits the target scaler on the training targets read from that frame, so without it a reloaded model could not update like the fitted one; its column names, `target_series` and `covariates` are in `state.json`). The DDFM arrays keep their memory order (the transition matrix is column-major after fit, and a row-major copy rounds the forecast differently). iVDFM: `factors`, `innovations`, regime weights. AFM: `residuals`, `book_returns`. All models: `scaler/<attr>` arrays |
 | `state.json` | non-array `*ModelState` fields: `r`, `p`, block names, `mixed_freq`, tent weights, frequencies, `num_iter`, `converged`, `loglik` or `sharpe` |
 | `result.npz`, `result.json` | arrays and scalars of `result_`, so a loaded model reports exactly what the fitted one did. `model_state_dict` and `fit_params` are rebuilt from the weights and state files, not duplicated |
 | `weights.pt` | torch models only: `network_.state_dict()`, loaded with `torch.load(path, map_location=device, weights_only=True)` |

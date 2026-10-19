@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Optional, List, Dict, Any, Tuple, Union
 from datetime import datetime
 
-from .model import DFMConfig
 from .params import DDFMModelState
 
 

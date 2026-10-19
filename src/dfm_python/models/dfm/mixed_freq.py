@@ -96,7 +96,7 @@ def setup_mixed_frequency_params(
     Parameters
     ----------
     config : Any
-        DFMConfig instance with get_frequencies() method
+        _DFMEngineConfig instance with get_frequencies() method
     clock : str
         Clock frequency (e.g., 'w' for weekly)
     columns : Optional[List[str]]

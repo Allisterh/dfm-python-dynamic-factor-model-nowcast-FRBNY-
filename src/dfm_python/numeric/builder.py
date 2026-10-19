@@ -32,7 +32,7 @@ def build_dfm_structure(config: Any, *, columns: Optional[List[str]] = None) -> 
     Parameters
     ----------
     config : Any
-        DFMConfig instance with get_blocks_array() method
+        _DFMEngineConfig instance with get_blocks_array() method
     columns : list[str], optional
         If provided, used to auto-create a single-frequency mapping (all series use clock)
         when config.frequency is missing. This enables "minimal" configs that omit frequency.

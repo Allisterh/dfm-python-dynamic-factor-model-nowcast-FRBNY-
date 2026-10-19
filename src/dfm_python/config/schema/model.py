@@ -2,15 +2,16 @@
 
 This module provides model-specific configuration dataclasses:
 - BaseModelConfig: Base class with shared model structure (series, clock, data handling)
-- DFMConfig(BaseModelConfig): Linear DFM with EM algorithm parameters and block structure
+- _DFMEngineConfig(BaseModelConfig): the private DFM engine's parameters (EM and block structure)
 - _iVDFMEngineConfig(BaseModelConfig): the private iVDFM engine's parameters (no blocks)
 - AFMConfig(EstimatorConfig): mirror of the AFM estimator's constructor
 - iVDFMConfig(EstimatorConfig): mirror of the iVDFM estimator's constructor
 - DDFMConfig(EstimatorConfig): mirror of the DDFM estimator's constructor
+- DFMConfig(EstimatorConfig): mirror of the DFM estimator's constructor
 
-The configuration hierarchy:
+The engine configuration hierarchy:
 - BaseModelConfig: Model structure (series, clock, data handling) - NO blocks
-- DFMConfig: Adds blocks structure and EM algorithm parameters (max_iter, threshold, regularization)
+- _DFMEngineConfig: Adds blocks structure and EM algorithm parameters (max_iter, threshold, regularization)
 
 Note: Series are specified via frequency dict mapping column names to frequencies. Result classes are in schema/results.py
 
@@ -141,28 +142,28 @@ class BaseModelConfig:
     - When data is loaded, missing columns in `frequency` dict are automatically added with `clock` frequency
     
     Note: Blocks are DFM-specific and are NOT included in BaseModelConfig.
-    DFMConfig adds block structure; the other model configs do not use blocks.
+    _DFMEngineConfig adds block structure; the other model configs do not use blocks.
     
-    Subclasses (DFMConfig, _iVDFMEngineConfig) add model-specific training parameters.
+    Subclasses (_DFMEngineConfig, _iVDFMEngineConfig) add model-specific training parameters.
     
     Examples
     --------
     >>> # With grouped frequency mapping (recommended for large configs)
-    >>> config = DFMConfig(
+    >>> config = _DFMEngineConfig(
     ...     frequency={'q': ['gdp'], 'm': ['unemployment', 'interest_rate']},
     ...     clock='m',
     ...     blocks={...}
     ... )
     >>> 
     >>> # With individual frequency mapping (backward compatible)
-    >>> config = DFMConfig(
+    >>> config = _DFMEngineConfig(
     ...     frequency={'gdp': 'q', 'unemployment': 'm', 'interest_rate': 'm'},
     ...     clock='m',
     ...     blocks={...}
     ... )
     >>> 
     >>> # Without frequency (all use clock)
-    >>> config = DFMConfig(
+    >>> config = _DFMEngineConfig(
     ...     frequency=None,  # or omit it
     ...     clock='m',
     ...     blocks={...}
@@ -286,9 +287,14 @@ class BaseModelConfig:
 
 
 @dataclass
-class DFMConfig(BaseModelConfig):
-    """Linear DFM configuration - EM algorithm parameters and block structure.
-    
+class _DFMEngineConfig(BaseModelConfig):
+    """Configuration of the private DFM engine (the pre-redesign ``DFMConfig``).
+
+    Used only by :class:`~dfm_python.models.dfm._engine.DFMEngine` and the
+    dataset it reads; the DFM estimator builds it from its constructor
+    parameters, and the public :class:`DFMConfig` mirrors that constructor
+    instead.
+
     This configuration class extends BaseModelConfig with parameters specific
     to linear Dynamic Factor Models trained using the Expectation-Maximization
     (EM) algorithm. DFM uses block structure to organize factors (global + sector-specific).
@@ -416,10 +422,10 @@ class DFMConfig(BaseModelConfig):
         object.__setattr__(self, '_augment_idio_slow', is_mixed_freq)
     
     def to_em_config(self) -> 'EMConfig':
-        """Create EMConfig from DFMConfig consolidated parameters.
+        """Create EMConfig from the engine config's consolidated parameters.
         
         Automatically passes all numerical stability parameters (regularization, ar_clip,
-        damping_factor, data_clip) from DFMConfig to EMConfig for use in EM algorithm.
+        damping_factor, data_clip) from the engine config to EMConfig for use in EM algorithm.
         """
         from ...functional.em import EMConfig
         from ..constants import DEFAULT_REGULARIZATION, VAR_STABILITY_THRESHOLD
@@ -438,7 +444,7 @@ class DFMConfig(BaseModelConfig):
             regularization=reg_scale,
             min_norm=min_eigenval,
             max_eigenval=max_eigenval,
-            # Pass numerical stability parameters from DFMConfig
+            # Pass numerical stability parameters from the engine config
             ar_clip=self.ar_clip,
             damping_factor=self.damping_factor,
             data_clip=self.data_clip,
@@ -522,8 +528,8 @@ class DFMConfig(BaseModelConfig):
         return result
     
     @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> 'DFMConfig':
-        """Create DFMConfig from dictionary.
+    def from_dict(cls, data: Dict[str, Any]) -> '_DFMEngineConfig':
+        """Create the engine config from a dictionary.
         
         Expected format: {'frequency': {'column_name': 'frequency'}, 'blocks': {...}, ...}
         
@@ -545,7 +551,7 @@ class DFMConfig(BaseModelConfig):
         
         if config_type == MODEL_TYPE_DDFM:
             raise ConfigurationError(
-                "DFMConfig.from_dict: this dictionary holds DDFM parameters (model_type, encoder_layers, epochs, "
+                "_DFMEngineConfig.from_dict: this dictionary holds DDFM parameters (model_type, encoder_layers, epochs, "
                 "learning_rate or batch_size). DDFM has its own config: use DDFMConfig.from_dict(params) or "
                 "DDFM.from_config(params) with the DDFM constructor parameters (n_factors, encoder_layers, ...)."
             )
@@ -573,8 +579,8 @@ class DFMConfig(BaseModelConfig):
         
         blocks_dict_normalized = _normalize_blocks_dict(blocks_dict)
         # Pass base_params to _extract_dfm_params to avoid duplicate extraction
-        dfm_params = DFMConfig._extract_dfm_params(data, base_params=base_params)
-        return DFMConfig(blocks=blocks_dict_normalized, **dfm_params)
+        dfm_params = cls._extract_dfm_params(data, base_params=base_params)
+        return cls(blocks=blocks_dict_normalized, **dfm_params)
 
 
 @dataclass
@@ -1018,4 +1024,32 @@ class DDFMConfig(EstimatorConfig):
     scaler: Any = None
     random_state: Optional[int] = 3
     device: str = "auto"
+    verbose: int = 0
+
+
+@dataclass
+class DFMConfig(EstimatorConfig):
+    """Config mirror of the :class:`~dfm_python.models.dfm.estimator.DFM` estimator.
+
+    The fields and defaults are exactly the estimator's constructor
+    parameters, so ``DFM.from_config(cfg)`` is ``DFM(**cfg.to_dict())`` and
+    ``DFM(...).get_config()`` returns one whose fields equal ``get_params()``.
+    Values are validated when the estimator is fitted, not here. Unknown keys
+    (including the old names ``threshold``, ``num_factors``, ``frequency``,
+    ``target_scaler``, ``idio_rho0`` and ``idio_min_var``) raise
+    ``ConfigurationError`` in ``from_dict`` and ``from_yaml``. A block is
+    ``{"n_factors": int, "series": [names]}``; the order of ``blocks`` is the
+    order of the factors.
+    """
+    n_factors: Optional[int] = None
+    blocks: Optional[Dict[str, Dict[str, Any]]] = None
+    clock: str = "m"
+    tent_weights: Optional[Dict[str, List[float]]] = None
+    max_iter: int = 5000
+    tol: float = 1e-5
+    ar_clip: Optional[Dict[str, float]] = None
+    data_clip: Optional[float] = None
+    regularization: Optional[Dict[str, float]] = None
+    damping_factor: Optional[float] = None
+    scaler: Any = None
     verbose: int = 0

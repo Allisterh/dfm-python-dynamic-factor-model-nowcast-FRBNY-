@@ -55,13 +55,18 @@ df = pd.DataFrame(np.random.default_rng(0).standard_normal((120, 4)),
                   index=idx, columns=["gdp", "s0", "s1", "s2"])
 df.loc[df.index.month % 3 != 0, "gdp"] = np.nan        # quarterly series, any column position
 
-data = PanelData(y=df, freq={"gdp": "q"})
+data = PanelData(y=df.iloc[:-6], freq={"gdp": "q"})
+new = PanelData(y=df.iloc[-6:], freq={"gdp": "q"})     # rows after the last fitted date
 model = DFM(n_factors=1, clock="m", tent_weights={"q:m": [1, 2, 3, 2, 1]},
             max_iter=50, scaler="standard")             # blocks=None: one global block
 model.fit(data)                                         # EM + Kalman smoother
 fc = model.predict(6)                                   # DataFrame 6 x 4, columns in your order
 zf = model.predict_factors(6)                           # DataFrame 6 x state dim
 model.result_.loglik, model.n_iter_, model.converged_
+fc_new = model.predict(6, data=new)                     # filters the new rows; model unchanged
+model.update(new)                                       # Kalman update, fixed parameters; returns model
+model.save("runs/dfm")
+model = DFM.load("runs/dfm")                            # or dfm_python.load("runs/dfm"); no data needed
 ```
 
 `scaler=None` (the default) fits on the data as given; pass
@@ -71,6 +76,16 @@ orders the series `[clock | slower]` internally (`internal_feature_names_`),
 and the series-indexed matrices of `result_` (`C`, `R`, `x_sm`) are in that
 order. `blocks={"name": {"n_factors": 2, "series": [...]}, ...}` replaces the
 single global block.
+
+`predict(h, data=new)` and `update(new)` take only the rows after the last
+conditioning date (tag `predict_data="new_rows"`; an overlap raises). They are
+today's two engine paths and give different numbers: `predict(h, data=)`
+filters the new rows from the initial covariance and forecasts from the last
+filtered state, while `update` filters and smooths from the last filtered
+covariance and appends the smoothed states, keeping `result_` and the
+parameters. `update(new, refit=True)` runs one EM iteration on all rows and
+refreshes `result_`. `save` writes a pickle-free directory (no `weights.pt`);
+`DFMConfig` mirrors the constructor (`DFM.from_config`, `DFMConfig.from_yaml`).
 
 AFM, iVDFM and DDFM below are estimators on the same `PanelData` container.
 Every model and config class is importable from `dfm_python`. YAML

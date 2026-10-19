@@ -12,7 +12,7 @@ initialization, EM (``functional/em.py``) and Kalman filter and smoother
   user's series (the relative order is kept within each group), the order the
   engine requires and :class:`~dfm_python.dataset.dfm_dataset.DFMDataset`
   builds. Input already in that order gives the identity permutation;
-- the engine's :class:`~dfm_python.config.DFMConfig`, with every
+- the engine's config (the private ``_DFMEngineConfig``), with every
   hyperparameter passed explicitly, and its dataset on that order.
 
 Same data and same hyperparameters give the same numbers as the engine called
@@ -20,6 +20,18 @@ directly. ``predict(h)`` returns the series forecast in data units, in the
 user's column order, and ``predict_factors(h)`` the forecast of the whole
 state vector. The engine's matrices in ``result_`` (``C``, ``R``, ``x_sm``) are
 in the internal order, ``internal_feature_names_``.
+
+``update(data)`` runs the engine's Kalman update on new rows (strictly after
+the conditioning data; tag ``predict_data="new_rows"``) with fixed
+parameters, and ``update(data, refit=True)`` today's single EM iteration on
+all rows; ``predict(h, data=new_rows)`` filters the new rows on a copy of the
+engine, so the model is unchanged.
+
+``save(path)`` writes the pickle-free directory of the save layout
+(``state.npz``/``state.json`` with the state-space matrices, the
+mixed-frequency structure, the scaled data and the smoothed state;
+``result.npz``/``result.json`` with ``result_``); ``DFM.load(path)`` rebuilds
+the engine from them without data through ``DFMEngine._from_saved``.
 """
 
 from __future__ import annotations
@@ -29,6 +41,7 @@ import logging
 import math
 import warnings
 from collections.abc import Mapping
+from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
@@ -41,11 +54,14 @@ from sklearn.utils.validation import check_is_fitted
 from ...base import BaseFactorModel
 from ...config.constants import FREQUENCY_HIERARCHY, MAX_TENT_SIZE, PERIODS_PER_YEAR, VALID_FREQUENCIES
 from ...config.estimator import _unknown_keys_message
-from ...config.schema.model import DFMConfig
+from ...config.schema.model import DFMConfig, _DFMEngineConfig
+from ...config.schema.params import DFMModelState
+from ...config.schema.results import DFMResult
 from ...dataset.dfm_dataset import DFMDataset
 from ...dataset.panel import PanelData
+from ...io.layout import index_from_spec, index_to_spec
 from ...logger import get_logger
-from ...logger.progress import quiet_engine_loggers
+from ...logger.progress import fit_verbosity, quiet_engine_loggers
 from ...utils.errors import ConfigurationError, DataValidationError, UnsupportedInputError
 from ._engine import DFMEngine
 from .tent import generate_tent_weights
@@ -84,6 +100,12 @@ _ENGINE_LOGGERS = (
 _TIME_COLUMN = "__dfm_python_time__"
 # The name of the default block (blocks=None), which spans every series.
 _GLOBAL_BLOCK = "Block_Global"
+# result_ fields not written to result.npz/json: always None for DFM (the scaler is scaler_).
+_RESULT_REBUILT = ("target_scaler",)
+# The engine's state-space matrices (training_state fields), saved as ssm/<name>.
+_SSM_FIELDS = ("A", "C", "Q", "R", "Z_0", "V_0")
+# Optional mixed-frequency arrays (training_state fields), saved as mixed_freq/<name> when set.
+_MIXED_FREQ_ARRAYS = ("constraint_matrix", "constraint_vector", "idio_indicator")
 
 
 def _is_int(value: Any) -> bool:
@@ -221,6 +243,9 @@ class DFM(BaseFactorModel):
     ...             max_iter=50, scaler="standard").fit(data)  # doctest: +SKIP
     >>> model.predict(6)  # doctest: +SKIP
     >>> model.predict_factors(6)  # doctest: +SKIP
+    >>> model.predict(6, data=new_rows)  # filters the rows after index_[-1]; model unchanged  # doctest: +SKIP
+    >>> model.update(new_rows).save("dfm_run")  # doctest: +SKIP
+    >>> DFM.load("dfm_run").predict(6)  # doctest: +SKIP
     """
 
     _tags = {
@@ -234,6 +259,7 @@ class DFM(BaseFactorModel):
         "predict_data": "new_rows",
         "non_deterministic": False,
     }
+    _config_class = DFMConfig
 
     def __init__(
         self,
@@ -266,15 +292,17 @@ class DFM(BaseFactorModel):
 
     @classmethod
     def get_test_params(cls) -> list[dict]:
-        """Small parameter sets for the contract fixture (a quarterly series on a monthly clock).
+        """Small parameter sets for the contract fixture (the quarterly ``s0`` first, then two monthly series).
 
-        One global factor, and a standardized fit with two factors.
+        One global factor, and two blocks (a global one and one over ``s1``
+        and ``s2``), both standardized.
         """
-        tent = {"q:m": [1, 2, 3, 2, 1]}
-        return [
-            {"tent_weights": tent, "max_iter": 5},
-            {"n_factors": 2, "tent_weights": tent, "max_iter": 5, "scaler": "standard"},
-        ]
+        base = {"clock": "m", "tent_weights": {"q:m": [1, 2, 3, 2, 1]}, "max_iter": 3, "scaler": "standard"}
+        blocks = {
+            "global": {"n_factors": 1, "series": ["s0", "s1", "s2"]},
+            "pair": {"n_factors": 1, "series": ["s1", "s2"]},
+        }
+        return [base, {**base, "blocks": blocks}]
 
     # -- validation ----------------------------------------------------------
 
@@ -491,10 +519,10 @@ class DFM(BaseFactorModel):
     # -- adapter and engine --------------------------------------------------
 
     def _engine_config_dict(self, freq: dict, internal: list) -> dict:
-        """The engine's config as the dict ``DFMConfig.from_dict`` reads, every value explicit."""
+        """The engine's config as the dict ``_DFMEngineConfig.from_dict`` reads, every value explicit."""
         if self.blocks is None:
             n = 1 if self.n_factors is None else int(self.n_factors)
-            # An empty series list is DFMConfig's global block: every series of the dataset.
+            # An empty series list is the engine config's global block: every series of the dataset.
             blocks = {_GLOBAL_BLOCK: {"num_factors": n, "series": []}}
         else:
             blocks = {
@@ -520,7 +548,7 @@ class DFM(BaseFactorModel):
             "tent_weights": tent,
         }
 
-    def _adapter(self, panel: PanelData, freq: dict, internal: list) -> tuple[DFMConfig, DFMDataset]:
+    def _adapter(self, panel: PanelData, freq: dict, internal: list) -> tuple[_DFMEngineConfig, DFMDataset]:
         """The engine's config and dataset, built from ``panel`` in the internal order.
 
         The frame is ``panel.y`` in the internal order on a RangeIndex, with an
@@ -528,7 +556,7 @@ class DFM(BaseFactorModel):
         and keeps the column order (its own ``[clock | slower]`` reorder is the
         identity on this order).
         """
-        config = DFMConfig.from_dict(self._engine_config_dict(freq, internal))
+        config = _DFMEngineConfig.from_dict(self._engine_config_dict(freq, internal))
         frame = panel.y[internal].reset_index(drop=True)
         time_col = _TIME_COLUMN
         while time_col in set(frame.columns):
@@ -641,18 +669,166 @@ class DFM(BaseFactorModel):
         values = np.asarray(Z, dtype=np.float64)
         return pd.DataFrame(values, index=index, columns=cls._state_columns(values.shape[1]))
 
+    # -- new rows ------------------------------------------------------------
+
+    def _new_rows(self, data: Any, method: str) -> tuple[np.ndarray, pd.Index]:
+        """Validate new rows for a fitted model; return them in the internal order and the extended index.
+
+        ``data`` must hold the training series (``feature_names_in_``, same
+        order), the same per-series frequencies (``freq=None`` inherits
+        ``freq_``), an index of the training index's type, and at least one
+        row, all strictly after the last conditioning time stamp.
+
+        Returns
+        -------
+        X_new : numpy.ndarray
+            float64, ``(T_new, N)``, the series in ``internal_feature_names_``
+            order, in data units (the engine applies ``scaler_``).
+        extended : pandas.Index
+            ``conditioning_index_`` followed by ``data.index``.
+        """
+        panel = self._validate_data(data)  # inputs the tags exclude raise UnsupportedInputError first
+        name = f"DFM.{method}"
+        expected = list(self.feature_names_in_)
+        if list(panel.series_names) != expected:
+            raise DataValidationError(
+                f"{name}: data has series {list(panel.series_names)}, but the model was fitted on {expected}. "
+                "Pass the same series in the same order."
+            )
+        if panel.freq is not None:
+            freq = {series: panel.freq.get(series, self.clock) for series in expected}
+            if freq != self.freq_:
+                raise DataValidationError(
+                    f"{name}: data has frequencies {freq}, but the model was fitted with {self.freq_}. Pass the "
+                    "same freq, or freq=None to keep the fitted frequencies."
+                )
+        if panel.n_timesteps < 1:
+            raise DataValidationError(f"{name}: data has no time steps.")
+        index, last = panel.index, self.conditioning_index_
+        if type(index) is not type(last):
+            raise DataValidationError(
+                f"{name}: data has a {type(index).__name__}, but the model's time index is a "
+                f"{type(last).__name__}. Pass the new rows on the same kind of index."
+            )
+        if not index[0] > last[-1]:
+            raise DataValidationError(
+                f"{name}: data starts at {index[0]!r}, which overlaps the conditioning data (it ends at "
+                f"{last[-1]!r}). Pass only the rows after {last[-1]!r} (tag predict_data='new_rows')."
+            )
+        extended = self._extend_index(last, index, name)
+        X_new = panel.y[list(self.internal_feature_names_)].to_numpy(dtype=np.float64)
+        return X_new, extended
+
+    @staticmethod
+    def _extend_index(index: pd.Index, new: pd.Index, name: str) -> pd.Index:
+        """``index`` followed by ``new`` (later stamps), keeping the training index's type, name and frequency.
+
+        A ``RangeIndex`` stays a ``RangeIndex``: the new rows must continue it
+        (start at its stop, same step), since positions count clock periods.
+        A ``DatetimeIndex`` keeps its ``freq`` when the new stamps continue it
+        at that frequency (otherwise the forecast index infers the step).
+
+        Raises
+        ------
+        DataValidationError
+            For a ``RangeIndex`` that the new rows do not continue.
+        """
+        if isinstance(index, pd.RangeIndex):
+            if new.start != index.stop or (len(new) > 1 and new.step != index.step):
+                raise DataValidationError(
+                    f"{name}: the new rows are at positions {new.start}..{new[-1]} (step {new.step}), but a RangeIndex "
+                    f"must continue the model's index at {index.stop} with step {index.step}: each row is one clock "
+                    "period."
+                )
+            return pd.RangeIndex(index.start, new.start + index.step * len(new), index.step, name=index.name)
+        out = index.append(new).rename(index.name)
+        if isinstance(index, pd.DatetimeIndex) and index.freq is not None:
+            expected = pd.date_range(index[0], periods=len(out), freq=index.freq, tz=index.tz)
+            if out.equals(expected):
+                out = pd.DatetimeIndex(out, freq=index.freq, name=index.name)
+        return out
+
+    def update(self, data: Any, *, refit: bool = False) -> DFM:
+        """Condition later forecasts on new rows ``data`` and return ``self``.
+
+        This is the engine's update, unchanged (tag ``update_kind`` is
+        ``"filter"``): ``data`` holds only the rows after the last conditioning
+        time stamp (tag ``predict_data="new_rows"``), scaled with ``scaler_``
+        (never refitted).
+
+        - ``refit=False``: the Kalman filter and smoother run over the new rows
+          with the fitted parameters, starting from the last smoothed state
+          and the last filtered covariance of the conditioning data (one new
+          row takes a single filter step). The smoothed states of the new rows
+          are appended to the engine's state, so ``predict(h)`` then starts
+          from the last new row. ``result_``, ``factors_`` and the parameters
+          are unchanged.
+        - ``refit=True``: one EM iteration (today's ``retrain=True``, with
+          threshold ``tol``) on all rows, starting from the fitted parameters.
+          ``result_``, ``n_iter_``, ``converged_``, ``loglik_`` and
+          ``factors_`` then describe the refitted model on all rows.
+
+        In both cases ``conditioning_index_`` is extended by ``data.index``.
+
+        ``predict(h, data=new)`` is not ``update(new).predict(h)``: it starts
+        its filter from the initial covariance ``V_0`` and forecasts from the
+        last filtered state, while ``update`` starts from the last filtered
+        covariance and forecasts from the last smoothed state. Both are
+        today's engine paths, kept for identical numbers.
+
+        Parameters
+        ----------
+        data : PanelData, DataFrame or 2-D array
+            The new rows of the training series (same names and order, same
+            frequencies; ``freq=None`` keeps the fitted ones), on an index of
+            the training index's type, strictly after ``conditioning_index_``.
+            A ``RangeIndex`` must continue the model's index. Missing values
+            are allowed.
+        refit : bool, default False
+            Run one EM iteration on all rows instead of filtering.
+
+        Raises
+        ------
+        DataValidationError
+            If the series or frequencies differ from the training data, the
+            index type differs, the rows overlap the conditioning data or
+            ``data`` is empty.
+        UnsupportedInputError
+            For ``exog`` or ``series_exog``.
+        """
+        self._check_is_fitted("update")
+        X_new, extended = self._new_rows(data, "update")
+        engine = self.engine_
+        with fit_verbosity(self.verbose), quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
+            if not refit:
+                engine.update(X_new)
+            else:
+                engine.update(X_new, retrain=True)
+                result = engine.get_result()
+        self.conditioning_index_ = extended
+        if refit:
+            self.result_ = copy.deepcopy(result)
+            self.n_iter_ = int(result.num_iter)
+            self.converged_ = bool(result.converged)
+            self.loglik_ = float(result.loglik)
+            self.factors_ = self._state_frame(self.result_.Z, extended)
+        return self
+
     # -- forecasting ---------------------------------------------------------
 
     def _run_forecast(self, method: str, h: Any, data: Any) -> tuple[np.ndarray, np.ndarray, int, pd.Index]:
         self._check_is_fitted(method)
         h = self._validate_horizon(h)
-        if data is not None:
-            raise NotImplementedError(
-                f"DFM.{method}(h, data=...) is not available yet; call {method}(h) to forecast from the training data."
-            )
+        if data is None:
+            with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
+                X, Z = self.engine_.predict(horizon=h)
+            return X, Z, h, self.conditioning_index_
+        X_new, extended = self._new_rows(data, method)
+        # Today's predict(data=): filter the new rows from the last smoothed
+        # state with V_0, on a copy of the engine (the model is unchanged).
         with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
-            X, Z = self.engine_.predict(horizon=h)
-        return X, Z, h, self.conditioning_index_
+            X, Z = copy.deepcopy(self.engine_).predict(horizon=h, data=X_new)
+        return X, Z, h, extended
 
     def _frame(self, values: np.ndarray, h: int, columns: list, kind: str, origin_index: pd.Index) -> pd.DataFrame:
         frame = pd.DataFrame(
@@ -676,15 +852,28 @@ class DFM(BaseFactorModel):
         h : int
             Forecast horizon (a positive integer; anything else raises
             ``TypeError``).
-        data : optional
-            Not available yet (raises ``NotImplementedError``).
+        data : PanelData, DataFrame or 2-D array, optional
+            New rows to condition on (tag ``predict_data="new_rows"``: only
+            the rows strictly after ``conditioning_index_``, as for
+            :meth:`update`). The Kalman filter runs over them from the last
+            smoothed state with the initial covariance ``V_0``, on a copy of
+            the engine, and the forecast starts from the last filtered state
+            after ``data.index[-1]``. The model is unchanged. This is today's
+            engine path; it differs numerically from ``update(data)`` followed
+            by ``predict(h)`` (see :meth:`update`).
 
         Returns
         -------
         pandas.DataFrame
-            float64, ``h`` rows after the last training time stamp, one column
-            per series in the user's order; ``attrs`` holds ``model``,
+            float64, ``h`` rows after the last conditioning time stamp, one
+            column per series in the user's order; ``attrs`` holds ``model``,
             ``kind="forecast"`` and ``origin``.
+
+        Raises
+        ------
+        DataValidationError
+            For ``data`` that does not hold the training series, overlaps the
+            conditioning data or is empty (see :meth:`update`).
         """
         X, _, h, origin = self._run_forecast("predict", h, data)
         internal = list(self.internal_feature_names_)
@@ -704,3 +893,144 @@ class DFM(BaseFactorModel):
         """
         _, Z, h, origin = self._run_forecast("predict_factors", h, data)
         return self._frame(Z, h, self._state_columns(np.asarray(Z).shape[1]), "factors", origin)
+
+    # -- save / load ---------------------------------------------------------
+
+    def _saved_data_spec(self) -> dict:
+        """``data_spec.json``: the base spec plus ``internal_feature_names_`` and ``freq_``."""
+        spec = super()._saved_data_spec()
+        spec["internal_feature_names_"] = list(self.internal_feature_names_)
+        spec["freq_"] = dict(self.freq_)
+        return spec
+
+    def _restore_data_attributes(self, spec: Mapping) -> None:
+        super()._restore_data_attributes(spec)
+        self.internal_feature_names_ = np.asarray(list(spec["internal_feature_names_"]), dtype=object)
+        # JSON sorts the keys; freq_ follows the user's order.
+        self.freq_ = {name: spec["freq_"][name] for name in self.feature_names_in_}
+
+    def _save_state(self, path: Path) -> None:
+        """Write the DFM part of the saved run (spec section 7).
+
+        - ``state.npz``: ``ssm/A``, ``ssm/C``, ``ssm/Q``, ``ssm/R``,
+          ``ssm/Z_0``, ``ssm/V_0``; ``mixed_freq/constraint_matrix`` and
+          ``mixed_freq/constraint_vector`` (when set) and
+          ``mixed_freq/idio_indicator``; ``structure/blocks`` and
+          ``structure/r``; ``data/data_processed`` (the scaled data the filter
+          reads, update rows included), ``data/smoothed_state`` (the engine's
+          smoothed state, update rows included, which ``update`` extends),
+          ``data/last_smoothed_state`` (its last row) and
+          ``data/last_smoothed_cov`` (the last filtered state covariance
+          P_T|T, from the filter call ``update`` starts from); plus the
+          ``scaler/`` entries. Every array keeps its memory order.
+        - ``state.json``: the engine config dict, ``num_factors``, ``p``,
+          ``n_slower_freq``, ``n_clock_freq``, ``max_lag_size``,
+          ``mixed_freq``, ``tent_weights_dict`` (lists), the series
+          ``frequencies`` in the internal order, the block order, the
+          engine's ``num_iter``, ``converged`` and ``loglik`` and
+          ``conditioning_index``.
+        - ``result.npz`` / ``result.json``: ``result_`` without
+          ``target_scaler`` (always None for DFM).
+        """
+        engine = self.engine_
+        state = engine.training_state
+        smoothed = engine._result.Z
+        with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
+            # The filter call update() starts from: its last covariance is P_T|T.
+            _, filtered_cov = engine._create_kalman_filter().filter(np.ma.masked_invalid(engine.data_processed))
+        arrays = {
+            **{f"ssm/{name}": getattr(state, name) for name in _SSM_FIELDS},
+            **{f"mixed_freq/{name}": getattr(state, name) for name in _MIXED_FREQ_ARRAYS
+               if getattr(state, name) is not None},
+            "structure/blocks": engine.blocks,
+            "structure/r": engine.r,
+            "data/data_processed": engine.data_processed,
+            "data/smoothed_state": smoothed,
+            "data/last_smoothed_state": smoothed[-1],
+            "data/last_smoothed_cov": filtered_cov[-1],
+        }
+        # Keep each array's memory order (data_processed is column-major), so
+        # a loaded model filters and forecasts bitwise like the fitted one.
+        arrays = {key: np.array(value, order="K", copy=True) for key, value in arrays.items()}
+        tent = state.tent_weights_dict
+        meta = {
+            "engine_config": self._engine_config_dict(self.freq_, list(self.internal_feature_names_)),
+            "block_order": None if self.blocks is None else list(self.blocks),
+            "num_factors": int(state.num_factors),
+            "p": int(state.p),
+            "n_slower_freq": int(state.n_slower_freq),
+            "n_clock_freq": None if state.n_clock_freq is None else int(state.n_clock_freq),
+            "max_lag_size": None if state.max_lag_size is None else int(state.max_lag_size),
+            "mixed_freq": None if state.mixed_freq is None else bool(state.mixed_freq),
+            "tent_weights_dict": None if tent is None else {key: np.asarray(v).tolist() for key, v in tent.items()},
+            "frequencies": None if state.frequencies is None else [str(f) for f in state.frequencies],
+            "num_iter": int(engine._training_num_iter),
+            "converged": bool(engine._training_converged),
+            "loglik": float(engine._training_loglik),
+            "conditioning_index": index_to_spec(self.conditioning_index_),
+        }
+        self._write_state(path, arrays, meta)
+        self._write_result(path, exclude=_RESULT_REBUILT)
+
+    @classmethod
+    def _load_state(cls, est: DFM, path: Path, device: Any, allow_pickle: bool) -> None:
+        """Rebuild the engine without data (``DFMEngine._from_saved``) and restore the fitted attributes."""
+        arrays, meta = cls._read_state(path)
+        # JSON sorts dict keys; the block order is the order of the factors.
+        if est.blocks is not None:
+            order = list(meta["block_order"] or [])
+            if sorted(order) != sorted(est.blocks):
+                raise ConfigurationError(
+                    f"{str(path)!r}: state.json lists blocks {order}, but config.json has {sorted(est.blocks)}; the "
+                    "run is inconsistent."
+                )
+            est.blocks = {name: est.blocks[name] for name in order}
+        internal = list(est.internal_feature_names_)
+        engine_config = est._engine_config_dict(est.freq_, internal)
+        if engine_config != meta["engine_config"]:
+            raise ConfigurationError(
+                f"{str(path)!r}: state.json holds the engine config {meta['engine_config']}, but config.json and "
+                f"data_spec.json give {engine_config}; the run is inconsistent."
+            )
+        tent = meta["tent_weights_dict"]
+        frequencies = meta["frequencies"]
+        state = DFMModelState(
+            num_factors=meta["num_factors"],
+            r=arrays["structure/r"],
+            p=meta["p"],
+            blocks=arrays["structure/blocks"],
+            mixed_freq=meta["mixed_freq"],
+            constraint_matrix=arrays.get("mixed_freq/constraint_matrix"),
+            constraint_vector=arrays.get("mixed_freq/constraint_vector"),
+            n_slower_freq=meta["n_slower_freq"],
+            n_clock_freq=meta["n_clock_freq"],
+            # As get_agg_structure builds them: numpy arrays of the weights.
+            tent_weights_dict=None if tent is None else {key: np.array(v) for key, v in tent.items()},
+            frequencies=None if frequencies is None else np.array(frequencies),
+            idio_indicator=arrays.get("mixed_freq/idio_indicator"),
+            max_lag_size=meta["max_lag_size"],
+            **{name: arrays[f"ssm/{name}"] for name in _SSM_FIELDS},
+        )
+        result = cls._read_result(path, DFMResult, target_scaler=None)
+        engine_meta = {
+            "training_columns": internal,
+            "num_iter": int(meta["num_iter"]),
+            "converged": np.bool_(meta["converged"]),
+            "loglik": np.float64(meta["loglik"]),
+        }
+        scaler = vars(est).get("scaler_")
+        engine = DFMEngine._from_saved(
+            engine_config, state, arrays["data/data_processed"], arrays["data/smoothed_state"], engine_meta,
+            scaler, result,
+        )
+        est.engine_ = engine
+        est.result_ = result
+        est.scaler_ = scaler
+        est.n_iter_ = int(result.num_iter)
+        est.converged_ = bool(result.converged)
+        est.loglik_ = float(result.loglik)
+        est.n_factors_ = int(engine.num_factors)
+        est.conditioning_index_ = index_from_spec(meta["conditioning_index"])
+        n_rows = result.Z.shape[0]
+        est.factors_ = cls._state_frame(result.Z, est.conditioning_index_[:n_rows] if n_rows != len(est.index_)
+                                        else est.index_)

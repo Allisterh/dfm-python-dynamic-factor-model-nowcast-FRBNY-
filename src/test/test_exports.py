@@ -177,3 +177,16 @@ def test_ddfm_config_is_the_estimator_mirror():
 
     assert dfm_python.DDFMConfig is dfm_python.config.DDFMConfig is DDFM._config_class
     assert issubclass(dfm_python.DDFMConfig, EstimatorConfig)
+
+
+def test_dfm_config_is_the_estimator_mirror():
+    from dfm_python.config import EstimatorConfig
+    from dfm_python.config.schema.model import _DFMEngineConfig
+    from dfm_python.models.dfm.estimator import DFM
+
+    assert dfm_python.DFMConfig is dfm_python.config.DFMConfig is DFM._config_class
+    assert issubclass(dfm_python.DFMConfig, EstimatorConfig)
+    # The engine's config is private.
+    assert dfm_python.DFMConfig is not _DFMEngineConfig
+    for namespace in (dfm_python, dfm_python.config, dfm_python.config.schema):
+        assert "_DFMEngineConfig" not in getattr(namespace, "__all__", ()), namespace.__name__

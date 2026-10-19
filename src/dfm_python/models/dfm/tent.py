@@ -11,7 +11,7 @@ from ...logger import get_logger
 from ...utils.errors import DataValidationError
 
 if TYPE_CHECKING:
-    from ...config.schema import DFMConfig
+    from ...config.schema.model import _DFMEngineConfig
 
 _logger = get_logger(__name__)
 
@@ -184,7 +184,7 @@ def get_slower_freq_tent_weights(
 
 
 def get_agg_structure(
-    config: 'DFMConfig', 
+    config: '_DFMEngineConfig', 
     clock: Optional[str] = None
 ) -> Dict[str, Any]:
     """Get aggregation structure for all frequency combinations in config based on clock.
@@ -195,7 +195,7 @@ def get_agg_structure(
     
     Parameters
     ----------
-    config : DFMConfig
+    config : _DFMEngineConfig
         Model configuration containing series frequencies and structure
     clock : str, optional
         Base frequency (global clock) for latent factors, by default 'm' (monthly).

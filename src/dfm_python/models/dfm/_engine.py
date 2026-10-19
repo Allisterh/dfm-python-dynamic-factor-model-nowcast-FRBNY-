@@ -10,16 +10,24 @@ apart from these edits, none of which changes math or numbers:
     ``dfm_python.numeric.validator`` (``...numeric.validator``). The old
     ``..numeric.validator`` resolved to the non-existent
     ``dfm_python.models.numeric``, so ``update()`` always raised
-    ``ModuleNotFoundError``.
+    ``ModuleNotFoundError``;
+(c) the engine's config class is the private ``_DFMEngineConfig`` (the old
+    ``DFMConfig``; ``dfm_python.DFMConfig`` now mirrors the estimator).
+
+:meth:`DFMEngine._from_saved` rebuilds a trained engine for the estimator's
+``load`` without ``__init__`` (no dataset): it sets what ``__init__`` and
+``fit`` set from the saved state.
 
 The public :class:`~dfm_python.models.dfm.estimator.DFM` estimator builds
 this engine from ``PanelData`` (``dfm_python.DFM`` names the estimator). The
 ``dataset=``/``config=`` constructor, the pickle ``save``/``load``,
 ``load_config``, ``result`` and the old ``models.base.BaseFactorModel`` base
-class stay until the estimator covers update and save/load.
+class stay until the cleanup that removes the old entry points.
 """
 
 # Standard library imports
+import copy
+import dataclasses
 from pathlib import Path
 import pickle
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -33,10 +41,10 @@ from ...ssm.kalman import DFMKalmanFilter
 
 # Local imports
 from ...config import (
-    DFMConfig,
     ConfigSource,
     DFMResult,
 )
+from ...config.schema.model import _DFMEngineConfig
 from ...config.schema.params import DFMModelState
 # get_agg_structure and get_slower_freq_tent_weights are now used in dfm.mixed_frequency and dfm.initialization modules
 from ...config.constants import (
@@ -87,7 +95,7 @@ class DFMEngine(BaseFactorModel):
     def __init__(
         self,
         dataset: DFMDataset,
-        config: Optional[DFMConfig] = None,
+        config: Optional[_DFMEngineConfig] = None,
         scaler: Optional[Any] = None,
         **kwargs: Any
     ) -> None:
@@ -101,16 +109,16 @@ class DFMEngine(BaseFactorModel):
         ----------
         dataset : DFMDataset
             DFMDataset instance (required). Variables and time_index are extracted during fit().
-        config : DFMConfig, optional
-            DFM configuration. If None, config will be created from kwargs using DFMConfig.from_dict().
-            All DFMConfig parameters can be passed directly as kwargs when config=None.
+        config : _DFMEngineConfig, optional
+            DFM configuration. If None, config will be created from kwargs using _DFMEngineConfig.from_dict().
+            All _DFMEngineConfig parameters can be passed directly as kwargs when config=None.
         scaler : StandardScaler, RobustScaler, MinMaxScaler, or None, optional
             Sklearn scaler instance for data standardization. If provided, it's used directly via isinstance() check.
             If None, a scaler will be created during fit() based on config.scaler or defaults to StandardScaler.
             If provided, it will be fitted during fit() if not already fitted.
         **kwargs : Any
-            If config is None: All kwargs are used to create DFMConfig via DFMConfig.from_dict(kwargs).
-            If config is provided: kwargs are used as parameter overrides (keys should match DFMConfig attribute names).
+            If config is None: All kwargs are used to create _DFMEngineConfig via _DFMEngineConfig.from_dict(kwargs).
+            If config is provided: kwargs are used as parameter overrides (keys should match _DFMEngineConfig attribute names).
             Example: `DFM(dataset=ds, blocks={...}, threshold=1e-6)` creates config from kwargs.
             Example: `DFM(dataset=ds, config=cfg, threshold=1e-6)` overrides config.threshold.
             Precedence: kwargs > config > defaults.
@@ -158,17 +166,17 @@ class DFMEngine(BaseFactorModel):
             if not kwargs:
                 raise ConfigurationError(
                     "DFM: Either config or kwargs must be provided",
-                    details="Provide a DFMConfig object, or pass all config parameters as kwargs (e.g., blocks, threshold, max_iter, etc.)"
+                    details="Provide a _DFMEngineConfig object, or pass all config parameters as kwargs (e.g., blocks, threshold, max_iter, etc.)"
                 )
-            # Remove dataset and scaler from kwargs (they're not part of DFMConfig)
+            # Remove dataset and scaler from kwargs (they're not part of _DFMEngineConfig)
             config_kwargs = {k: v for k, v in kwargs.items() if k not in ('dataset', 'scaler')}
             if not config_kwargs:
                 raise ConfigurationError(
                     "DFM: No config parameters provided in kwargs",
-                    details="Provide DFMConfig parameters like blocks, threshold, max_iter, etc."
+                    details="Provide _DFMEngineConfig parameters like blocks, threshold, max_iter, etc."
                 )
             # Create config from kwargs
-            self._config = DFMConfig.from_dict(config_kwargs)
+            self._config = _DFMEngineConfig.from_dict(config_kwargs)
             # Clear kwargs since they were used to create config
             kwargs = {}
         else:
@@ -235,6 +243,75 @@ class DFMEngine(BaseFactorModel):
         self.data_processed: Optional[np.ndarray] = None
         self.scaler: Optional[Any] = scaler  # Sklearn scaler for data standardization and inverse transformation
     
+    @classmethod
+    def _from_saved(
+        cls,
+        engine_config: Dict[str, Any],
+        state: DFMModelState,
+        data_processed: np.ndarray,
+        smoothed_state: np.ndarray,
+        meta: Dict[str, Any],
+        scaler: Optional[Any],
+        result: DFMResult,
+    ) -> 'DFMEngine':
+        """Rebuild a trained engine without ``__init__``: no dataset is needed.
+
+        Sets every attribute ``__init__`` and ``fit`` set:
+
+        - ``_config``: ``_DFMEngineConfig.from_dict(engine_config)``, the dict
+          the estimator built the engine config from;
+        - ``blocks``, ``r``, ``num_factors``, ``p`` and ``training_state``
+          from ``state``, a complete ``DFMModelState`` (structure,
+          mixed-frequency parameters and ``A`` .. ``V_0``), and the
+          mixed-frequency attributes (``_mixed_freq``, ``_constraint_matrix``,
+          ``_constraint_vector``, ``_n_slower_freq``, ``_n_clock_freq``,
+          ``_tent_weights_dict``, ``_frequencies``, ``_idio_indicator``,
+          ``_max_lag_size``) from the same fields;
+        - ``data_processed`` (the scaled data the filter reads, update rows
+          included), ``scaler``, ``_dataset=None`` and
+          ``_cached_smoothed_factors=None``;
+        - ``_training_columns``, ``_training_num_iter``,
+          ``_training_converged`` and ``_training_loglik`` from ``meta``
+          (keys ``training_columns``, ``num_iter``, ``converged``, ``loglik``);
+        - ``_result``: a copy of ``result`` with ``Z=smoothed_state`` (the
+          smoothed state ``update`` extends) and, when ``smoothed_state`` has
+          more rows than ``result.Z``, ``x_sm = smoothed_state @ C.T`` as
+          ``update`` computes it.
+        """
+        engine = cls.__new__(cls)
+        # What models.base.BaseFactorModel.__init__ and __init__ set.
+        engine._config = _DFMEngineConfig.from_dict(dict(engine_config))
+        engine._dataset = None
+        engine.training_state = state
+        engine.blocks = state.blocks
+        engine.r = state.r
+        engine.num_factors = state.num_factors
+        engine.p = state.p
+        engine.data_processed = data_processed
+        engine.scaler = scaler
+        engine._cached_smoothed_factors = None
+        # What fit sets.
+        engine._mixed_freq = state.mixed_freq
+        engine._constraint_matrix = state.constraint_matrix
+        engine._constraint_vector = state.constraint_vector
+        engine._n_slower_freq = state.n_slower_freq
+        engine._n_clock_freq = state.n_clock_freq
+        engine._tent_weights_dict = state.tent_weights_dict
+        engine._frequencies = state.frequencies
+        engine._idio_indicator = state.idio_indicator
+        engine._max_lag_size = state.max_lag_size
+        engine._training_columns = list(meta["training_columns"])
+        engine._training_num_iter = meta["num_iter"]
+        engine._training_converged = meta["converged"]
+        engine._training_loglik = meta["loglik"]
+        result = copy.deepcopy(result)
+        if smoothed_state.shape[0] == result.Z.shape[0]:
+            x_sm = result.x_sm
+        else:
+            x_sm = smoothed_state @ result.C.T
+        engine._result = dataclasses.replace(result, Z=smoothed_state, x_sm=x_sm)
+        return engine
+
     @property
     def A(self) -> Optional[np.ndarray]:
         """Transition matrix (m x m) - VAR dynamics for factors."""
@@ -457,7 +534,7 @@ class DFMEngine(BaseFactorModel):
         
         initial_state = self.training_state
         
-        # Create EMConfig from DFMConfig (uses consolidated parameters)
+        # Create EMConfig from _DFMEngineConfig (uses consolidated parameters)
         em_config = self._config.to_em_config() if self._config is not None else _EM_CONFIG
         
         # Run EM algorithm using run_em_algorithm() directly
@@ -804,7 +881,7 @@ class DFMEngine(BaseFactorModel):
     
     def load_config(
         self,
-        source: Optional[Union[str, Path, Dict[str, Any], DFMConfig, ConfigSource]] = None,
+        source: Optional[Union[str, Path, Dict[str, Any], _DFMEngineConfig, ConfigSource]] = None,
         *,
         yaml: Optional[Union[str, Path]] = None,
         mapping: Optional[Dict[str, Any]] = None,
@@ -1048,14 +1125,14 @@ class DFMEngine(BaseFactorModel):
             raise
     
     @classmethod
-    def load(cls, path: Union[str, Path], config: Optional[DFMConfig] = None, dataset: Optional[DFMDataset] = None) -> 'DFMEngine':
+    def load(cls, path: Union[str, Path], config: Optional[_DFMEngineConfig] = None, dataset: Optional[DFMDataset] = None) -> 'DFMEngine':
         """Load DFM model from checkpoint file.
         
         Parameters
         ----------
         path : str or Path
             Path to the checkpoint file
-        config : DFMConfig, optional
+        config : _DFMEngineConfig, optional
             Configuration (if None, loaded from checkpoint)
         dataset : DFMDataset, optional
             DFMDataset instance (required)

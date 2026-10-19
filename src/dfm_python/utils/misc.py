@@ -14,7 +14,8 @@ import pandas as pd
 
 if TYPE_CHECKING:
     import torch
-    from ..config.schema import DFMConfig, DFMResult
+    from ..config.schema import DFMResult
+    from ..config.schema.model import _DFMEngineConfig
 else:
     torch = None
 
@@ -134,12 +135,12 @@ def get_config_attr(
     return default
 
 
-def get_clock_frequency(config: Optional["DFMConfig"], default: Optional[str] = None) -> str:
+def get_clock_frequency(config: Optional["_DFMEngineConfig"], default: Optional[str] = None) -> str:
     """Get clock frequency from config.
     
     Parameters
     ----------
-    config : DFMConfig, optional
+    config : _DFMEngineConfig, optional
         Configuration object
     default : str, optional
         Default clock frequency if config is None
@@ -154,14 +155,14 @@ def get_clock_frequency(config: Optional["DFMConfig"], default: Optional[str] = 
 
 
 def compute_default_horizon(
-    config: Optional["DFMConfig"] = None,
+    config: Optional["_DFMEngineConfig"] = None,
     default: Optional[int] = None
 ) -> int:
     """Compute default forecast horizon from clock frequency.
     
     Parameters
     ----------
-    config : DFMConfig, optional
+    config : _DFMEngineConfig, optional
         Configuration object to extract clock frequency from
     default : int, optional
         Default value to use if clock frequency cannot be determined.

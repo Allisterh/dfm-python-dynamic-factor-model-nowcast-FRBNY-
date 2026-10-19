@@ -305,14 +305,14 @@ def _dfm_fit(config_dict: dict[str, Any], df: pd.DataFrame,
     """Fit DFM on ``df``; with ``new_rows`` (same columns as ``df``) also run the update path."""
     from sklearn.preprocessing import StandardScaler
 
-    from dfm_python.config import DFMConfig
+    from dfm_python.config.schema.model import _DFMEngineConfig
     from dfm_python.dataset.dfm_dataset import DFMDataset
     from dfm_python.models.dfm._engine import DFMEngine
 
     # The engine path: the pre-redesign DFM class, now the private DFMEngine,
     # called as tutorial/tutorial_macro_dfm.py called the old public class.
     _reset_global_rngs()
-    config = DFMConfig.from_dict(dict(config_dict))
+    config = _DFMEngineConfig.from_dict(dict(config_dict))
     dataset = DFMDataset(config=config, data=df, time_index="date")
     model = DFMEngine(dataset=dataset, config=config, scaler=StandardScaler())
     hyper = _dfm_hyper(model)

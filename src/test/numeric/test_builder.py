@@ -7,7 +7,7 @@ from dfm_python.numeric.builder import (
     build_dfm_structure, build_dfm_blocks,
     build_ddfm_optimizer, build_ddfm_state_space
 )
-from dfm_python.config import DFMConfig
+from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.models.ddfm.encoder import SimpleAutoencoder
 from dfm_python.utils.errors import ModelNotTrainedError
 
@@ -17,7 +17,7 @@ class TestBuilder:
     
     def test_build_dfm_structure(self):
         """Test build_dfm_structure."""
-        config = DFMConfig(
+        config = _DFMEngineConfig(
             blocks={'block1': {'num_factors': 2, 'series': ['s1', 's2']}},
             frequency={'s1': 'w', 's2': 'w'},
             clock='w'
@@ -31,7 +31,7 @@ class TestBuilder:
     
     def test_build_dfm_blocks(self):
         """Test build_dfm_blocks."""
-        config = DFMConfig(
+        config = _DFMEngineConfig(
             blocks={'block1': {'num_factors': 1, 'series': ['s1', 's2', 's3']}},
             frequency={'s1': 'w', 's2': 'w', 's3': 'w'},
             clock='w'

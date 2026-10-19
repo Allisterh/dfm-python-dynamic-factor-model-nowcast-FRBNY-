@@ -2,26 +2,34 @@
 
 from __future__ import annotations
 
+import copy
+import importlib.util
+import inspect
+import json
 import logging
 
 import numpy as np
 import pandas as pd
 import pytest
+from sklearn.base import clone
 from sklearn.preprocessing import RobustScaler, StandardScaler
 
 import dfm_python
 import dfm_python.models
 import dfm_python.models.dfm
 from dfm_python import PanelData
-from dfm_python.config import DFMConfig
+from dfm_python.config import DFMConfig, load_yaml
+from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.config.schema.results import DFMResult
 from dfm_python.dataset.dfm_dataset import DFMDataset
 from dfm_python.models.dfm._engine import DFMEngine
 from dfm_python.models.dfm.estimator import _TIME_COLUMN, DFM
 from dfm_python.models.dfm.tent import generate_tent_weights
-from dfm_python.testing import _CHECKS, _Context, _instance_tags, _split, _state_hash, make_panel
+from dfm_python.registry import all_estimators
+from dfm_python.testing import _state_hash, make_panel
 from dfm_python.utils.errors import ConfigurationError, DataValidationError, NotFittedError, UnsupportedInputError
 
+_YAML = importlib.util.find_spec("omegaconf") is not None or importlib.util.find_spec("yaml") is not None
 TENT = {"q:m": [1, 2, 3, 2, 1]}
 TINY = {"max_iter": 5, "tent_weights": TENT}
 _MONTHLY = ["m0", "m1", "m2", "m3"]
@@ -70,8 +78,8 @@ def test_defaults_are_the_values_that_ran_when_omitted():
         "verbose": 0,
     }
     # The engine config defaults these came from.
-    assert DFMConfig(blocks={"b": {"num_factors": 1, "series": []}}).max_iter == 5000
-    assert DFMConfig(blocks={"b": {"num_factors": 1, "series": []}}).threshold == 1e-5
+    assert _DFMEngineConfig(blocks={"b": {"num_factors": 1, "series": []}}).max_iter == 5000
+    assert _DFMEngineConfig(blocks={"b": {"num_factors": 1, "series": []}}).threshold == 1e-5
 
 
 def test_constructor_only_stores_and_is_keyword_only():
@@ -108,25 +116,93 @@ def test_exports():
     assert not hasattr(dfm_python.models.dfm, "DFMEngine")
 
 
-@pytest.mark.parametrize("params", DFM.get_test_params())
-@pytest.mark.parametrize("check", ["tags", "pure_construction", "unfitted_result", "fit", "fit_attributes", "silence"])
-def test_contract_checks_that_apply_before_update_and_save(params, check):
-    """The contract checks the estimator passes already (update, predict(data=) and save/load come next)."""
-    checks = {name: fn for name, fn, _ in _CHECKS}
+def test_registered_for_the_contract_suite():
+    """check_estimator(DFM) runs in src/test/contract for both parameter sets, update and save/load included."""
+    assert dict(all_estimators())["DFM"] is DFM
+    sets = DFM.get_test_params()
+    assert len(sets) == 2 and all(p["tent_weights"] == {"q:m": [1, 2, 3, 2, 1]} for p in sets)
+    assert sets[1]["blocks"] == {"global": {"n_factors": 1, "series": ["s0", "s1", "s2"]},
+                                 "pair": {"n_factors": 1, "series": ["s1", "s2"]}}
+    # The contract fixture puts the quarterly s0 first, so the stable partition moves it last.
     panel = make_panel(DFM)
-    train, new = _split(panel)
-    ctx = _Context(cls=DFM, params=params, data=panel, train=train, new=new,
-                   tags=_instance_tags(DFM, params, DFM.get_tags()), label="DFM")
-    if check == "unfitted_result":
-        est = ctx.make()
-        assert not hasattr(est, "result_")
-        for call in (lambda: est.predict(3), lambda: est.predict_factors(3)):
-            with pytest.raises(NotFittedError):
-                call()
-        return
-    if check == "fit_attributes":
-        checks["fit"](ctx)
-    checks[check](ctx)
+    assert list(panel.series_names) == ["s0", "s1", "s2"] and panel.freq == {"s0": "q", "s1": "m", "s2": "m"}
+    for params in sets:
+        model = DFM(**params).fit(panel)
+        assert list(model.internal_feature_names_) == ["s1", "s2", "s0"]
+        assert np.isfinite(model.result_.Z).all() and np.isfinite(model.predict(3).to_numpy()).all()
+
+
+# -- config mirror ----------------------------------------------------------------
+
+
+def test_config_mirror():
+    assert DFM._config_class is DFMConfig
+    assert dfm_python.DFMConfig is DFMConfig and dfm_python.config.DFMConfig is DFMConfig
+    assert DFMConfig.field_names() == tuple(inspect.signature(DFM.__init__).parameters)[1:]
+    assert DFMConfig().to_dict() == DFM().get_params()
+    blocks = {"g": {"n_factors": 2, "series": ["m0", "gdp"]}}
+    est = DFM.from_config({"blocks": blocks, "tent_weights": TENT, "tol": 1e-3, "scaler": "robust"})
+    assert est.blocks == blocks and est.tent_weights == TENT and est.tol == 1e-3 and est.scaler == "robust"
+    assert est.get_config() == DFMConfig(blocks=blocks, tent_weights=TENT, tol=1e-3, scaler="robust")
+
+
+@pytest.mark.parametrize(
+    "old, canonical",
+    [("threshold", "tol"), ("num_factors", "n_factors"), ("frequency", None), ("target_scaler", "scaler"),
+     ("idio_rho0", None), ("idio_min_var", None), ("dataset", None), ("config", None)],
+)
+def test_config_rejects_old_names(old, canonical):
+    with pytest.raises(ConfigurationError, match=old) as info:
+        DFMConfig.from_dict({old: 1})
+    if canonical is not None:
+        assert canonical in str(info.value)
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+def test_yaml_old_keys_name_the_canonical_ones(tmp_path):
+    path = tmp_path / "dfm.yaml"
+    path.write_text("model:\n  threshold: 1.0e-05\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match=r"'threshold'.*\btol\b"):
+        DFMConfig.from_yaml(path)
+    path.write_text("model:\n  num_factors: 2\n", encoding="utf-8")
+    with pytest.raises(ConfigurationError, match=r"'num_factors' \(did you mean 'n_factors'\?\)"):
+        DFMConfig.from_yaml(path)
+
+
+@pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")
+def test_yaml_values_reach_the_engine(tmp_path, monkeypatch):
+    """Spec section 11, check 14: what the YAML sets is what the engine runs with (block order included)."""
+    seen = {}
+    original = DFMEngine.fit
+
+    def fit(self, *args, **kwargs):
+        seen["config"], seen["scaler"] = self._config, self.scaler
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(DFMEngine, "fit", fit)
+    path = tmp_path / "dfm.yaml"
+    path.write_text(
+        "model:\n"
+        "  blocks:\n"
+        "    zeta: {n_factors: 1, series: [m0, m1, m2, m3, gdp]}\n"
+        "    alpha: {n_factors: 1, series: [m2, m3]}\n"
+        "  clock: m\n  tent_weights: {'q:m': [1, 2, 3, 2, 1]}\n  max_iter: 4\n  tol: 1.0e-03\n"
+        "  ar_clip: {min: -0.9, max: 0.9}\n  data_clip: 6.0\n  regularization: {scale: 1.0e-05}\n"
+        "  damping_factor: 0.9\n  scaler: robust\n"
+        "data:\n  freq: {gdp: q}\n",
+        encoding="utf-8",
+    )
+    model = DFM.from_config(DFMConfig.from_yaml(path))
+    assert list(model.blocks) == ["zeta", "alpha"] and model.tol == 1e-3 and model.max_iter == 4
+    model.fit(PanelData(y=_frame(), freq=load_yaml(path)["data"]["freq"]))
+    config = seen["config"]
+    assert list(config.blocks) == ["zeta", "alpha"]
+    assert config.blocks["alpha"] == {"num_factors": 1, "series": ["m2", "m3"]}
+    assert config.tent_weights == {"q:m": [1, 2, 3, 2, 1]} and config.max_iter == 4 and config.threshold == 1e-3
+    assert config.ar_clip == {"min": -0.9, "max": 0.9} and config.data_clip == 6.0
+    assert config.regularization == {"scale": 1e-5} and config.damping_factor == 0.9
+    assert config.frequency == {"m0": "m", "m1": "m", "m2": "m", "m3": "m", "gdp": "q"}
+    assert type(seen["scaler"]) is RobustScaler and model.n_factors_ == 2
 
 
 # -- validation -----------------------------------------------------------------
@@ -317,7 +393,7 @@ def test_fit_matches_the_engine_on_the_internal_order():
 
     frame = _frame()[_MONTHLY + ["gdp"]].reset_index(drop=True)
     frame.insert(0, "t", np.arange(len(frame)))
-    config = DFMConfig.from_dict({
+    config = _DFMEngineConfig.from_dict({
         "blocks": {"Block_Global": {"num_factors": 1, "series": []}},
         "frequency": {**{c: "m" for c in _MONTHLY}, "gdp": "q"},
         "clock": "m", "max_iter": 5, "threshold": 1e-5, "tent_weights": TENT,
@@ -499,12 +575,6 @@ def test_predict_does_not_change_the_model(fitted):
     assert fitted.predict(3).equals(first)
 
 
-def test_predict_data_is_not_available_yet(fitted):
-    for method in (fitted.predict, fitted.predict_factors):
-        with pytest.raises(NotImplementedError, match="data="):
-            method(3, data=_mixed())
-
-
 @pytest.mark.parametrize("h", [1.0, "3", None, True])
 def test_horizon_must_be_an_integer(fitted, h):
     with pytest.raises(TypeError):
@@ -516,3 +586,302 @@ def test_horizon_must_be_an_integer(fitted, h):
 def test_horizon_must_be_positive(fitted):
     with pytest.raises(ValueError):
         fitted.predict(0)
+
+
+# -- new rows: predict(data=) and update ----------------------------------------------
+
+_FIT_ROWS = 54
+
+
+def _split_frame(order=None, *, index: str = "datetime", n_fit: int = _FIT_ROWS):
+    """The mixed panel's first ``n_fit`` rows (to fit) and the rest (the new rows), as PanelData."""
+    df = _frame(index=index)
+    if order is not None:
+        df = df[order]
+    return PanelData(y=df.iloc[:n_fit], freq={"gdp": "q"}), PanelData(y=df.iloc[n_fit:], freq={"gdp": "q"})
+
+
+@pytest.fixture(scope="module")
+def split_fit():
+    train, new = _split_frame(["gdp", "m0", "m1", "m2", "m3"])
+    return DFM(**TINY, scaler="standard").fit(train), train, new
+
+
+def _internal_rows(new: PanelData) -> np.ndarray:
+    return new.y[_MONTHLY + ["gdp"]].to_numpy(np.float64)
+
+
+def test_predict_data_is_the_engine_path_on_a_copy(split_fit):
+    model, train, new = split_fit
+    before = _state_hash(model)
+    forecast = model.predict(4, data=new)
+    factors = model.predict_factors(4, data=new)
+    assert _state_hash(model) == before
+    X, Z = copy.deepcopy(model.engine_).predict(horizon=4, data=_internal_rows(new))
+    assert forecast.to_numpy().tobytes() == pd.DataFrame(X, columns=_MONTHLY + ["gdp"])[
+        ["gdp", "m0", "m1", "m2", "m3"]].to_numpy().tobytes()
+    assert factors.to_numpy().tobytes() == np.asarray(Z, dtype=np.float64).tobytes()
+    expected_index = pd.date_range(new.index[-1], periods=5, freq="ME")[1:].rename("date")
+    assert forecast.index.equals(expected_index) and factors.index.equals(expected_index)
+    assert forecast.attrs == {"model": "DFM", "kind": "forecast", "origin": new.index[-1]}
+    assert factors.attrs["origin"] == new.index[-1] and factors.attrs["kind"] == "factors"
+    # Repeated calls are bitwise equal, and the model still forecasts from its training data.
+    assert model.predict(4, data=new).equals(forecast)
+    assert model.predict(4).index[0] == train.index[-1] + pd.offsets.MonthEnd(1)
+
+
+def test_predict_data_with_freq_none_inherits_the_fitted_frequencies(split_fit):
+    model, _, new = split_fit
+    assert model.predict(3, data=new.y).equals(model.predict(3, data=new))
+
+
+@pytest.mark.parametrize("method", ["predict", "predict_factors", "update"])
+def test_new_rows_are_validated(split_fit, method):
+    model, train, new = split_fit
+    model = copy.deepcopy(model)
+    before = _state_hash(model)
+
+    def call(data):
+        if method == "update":
+            return model.update(data)
+        return getattr(model, method)(3, data=data)
+
+    y = new.y
+    with pytest.raises(DataValidationError, match="overlaps"):
+        call(PanelData(y=pd.concat([train.y.iloc[-2:], y]), freq={"gdp": "q"}))
+    with pytest.raises(DataValidationError, match="overlaps"):
+        call(train)
+    with pytest.raises(DataValidationError, match="series"):
+        call(PanelData(y=y[["m0", "gdp", "m1", "m2", "m3"]], freq={"gdp": "q"}))
+    with pytest.raises(DataValidationError, match="series"):
+        call(PanelData(y=y.drop(columns="m3"), freq={"gdp": "q"}))
+    with pytest.raises(DataValidationError, match="frequencies"):
+        call(PanelData(y=y, freq={"gdp": "q", "m0": "q"}))
+    with pytest.raises(DataValidationError, match="DatetimeIndex"):
+        call(PanelData.from_arrays(y.to_numpy(), names=list(y.columns), freq={"gdp": "q"}))
+    with pytest.raises(UnsupportedInputError, match="capability:exog"):
+        call(PanelData(y=y, exog=y[["m0"]].rename(columns={"m0": "x"}), freq={"gdp": "q"}))
+    assert _state_hash(model) == before
+
+
+def test_new_rows_on_a_range_index_must_continue_it():
+    train, new = _split_frame(index="range")
+    model = DFM(**TINY).fit(train)
+    assert model.predict(2, data=new).index.equals(pd.RangeIndex(60, 62, name="time"))
+    gap = PanelData(y=new.y.set_axis(pd.RangeIndex(55, 61)), freq={"gdp": "q"})
+    with pytest.raises(DataValidationError, match="continue the model's index at 54"):
+        model.predict(2, data=gap)
+    model.update(new)
+    assert model.conditioning_index_.equals(pd.RangeIndex(60)) and type(model.conditioning_index_) is pd.RangeIndex
+    assert model.predict(2).index.equals(pd.RangeIndex(60, 62, name="time"))
+
+
+def test_extend_index_keeps_the_datetime_frequency():
+    index = pd.date_range("2010-01-31", periods=5, freq="ME", name="date")
+    extended = DFM._extend_index(index, pd.date_range("2010-06-30", periods=2, freq="ME"), "DFM.update")
+    assert extended.freq == "ME" and extended.name == "date" and len(extended) == 7
+    # A gap keeps the stamps; the forecast index then infers the step.
+    gap = DFM._extend_index(index, pd.DatetimeIndex(["2010-08-31"]), "DFM.update")
+    assert gap.freq is None and gap[-1] == pd.Timestamp("2010-08-31") and gap.name == "date"
+    periods = pd.period_range("2010-01", periods=3, freq="M", name="p")
+    extended = DFM._extend_index(periods, pd.period_range("2010-04", periods=2, freq="M"), "DFM.update")
+    assert isinstance(extended, pd.PeriodIndex) and len(extended) == 5 and extended.name == "p"
+
+
+def test_update_filters_the_new_rows_with_fixed_parameters(split_fit):
+    fitted, train, new = split_fit
+    model = copy.deepcopy(fitted)
+    engine = copy.deepcopy(fitted.engine_)
+    result, factors = model.result_, model.factors_.copy()
+    params = {name: np.array(getattr(model.engine_, name), copy=True) for name in ("A", "C", "Q", "R", "Z_0", "V_0")}
+    assert model.update(new) is model
+
+    engine.update(_internal_rows(new))
+    np.testing.assert_array_equal(model.engine_.result.Z, engine.result.Z, strict=True)
+    np.testing.assert_array_equal(model.engine_.data_processed, engine.data_processed, strict=True)
+    assert model.engine_.result.Z.shape[0] == 60 and model.engine_.data_processed.shape[0] == 60
+    for name, value in params.items():
+        np.testing.assert_array_equal(getattr(model.engine_, name), value, strict=True)
+    # result_, factors_ and the training diagnostics are unchanged; the conditioning index grows.
+    assert model.result_ is result and result.Z.shape[0] == _FIT_ROWS and model.factors_.equals(factors)
+    assert model.conditioning_index_.equals(_frame().index) and model.conditioning_index_.freq == "ME"
+    assert model.index_.equals(train.index)
+    X, Z = engine.predict(horizon=3)
+    forecast = model.predict(3)
+    assert forecast[_MONTHLY + ["gdp"]].to_numpy().tobytes() == np.asarray(X).tobytes()
+    assert model.predict_factors(3).to_numpy().tobytes() == np.asarray(Z).tobytes()
+    assert forecast.index[0] == _frame().index[-1] + pd.offsets.MonthEnd(1)
+    # predict(h, data=new) on the fitted model is today's other path (V_0, filtered state): different numbers.
+    assert not np.allclose(fitted.predict(3, data=new).to_numpy(), forecast.to_numpy())
+    assert fitted.predict(3, data=new).index.equals(forecast.index)
+
+
+def test_update_one_row_then_more(split_fit):
+    fitted, _, new = split_fit
+    model = copy.deepcopy(fitted)
+    engine = copy.deepcopy(fitted.engine_)
+    rows = _internal_rows(new)
+    model.update(PanelData(y=new.y.iloc[:1], freq={"gdp": "q"}))
+    model.update(PanelData(y=new.y.iloc[1:], freq={"gdp": "q"}))
+    engine.update(rows[:1])
+    engine.update(rows[1:])
+    np.testing.assert_array_equal(model.engine_.result.Z, engine.result.Z, strict=True)
+    assert model.predict(2).equals(model.predict(2)) and model.conditioning_index_.equals(_frame().index)
+    with pytest.raises(DataValidationError, match="overlaps"):
+        model.update(new)
+
+
+def test_update_refit_runs_one_em_iteration_on_all_rows(split_fit):
+    fitted, _, new = split_fit
+    model = copy.deepcopy(fitted)
+    engine = copy.deepcopy(fitted.engine_)
+    assert model.update(new, refit=True) is model
+    engine.update(_internal_rows(new), retrain=True)
+    result = engine.get_result()
+    for name in ("A", "C", "Q", "R", "Z_0", "V_0", "Z", "x_sm"):
+        np.testing.assert_array_equal(getattr(model.result_, name), getattr(result, name), err_msg=name, strict=True)
+    assert model.result_ is not model.engine_.result
+    assert model.n_iter_ == result.num_iter == 1 and model.converged_ == bool(result.converged)
+    assert model.loglik_ == float(result.loglik)
+    assert model.factors_.index.equals(model.conditioning_index_) and model.factors_.shape[0] == 60
+    np.testing.assert_array_equal(model.factors_.to_numpy(), result.Z, strict=True)
+    assert model.engine_._config.threshold == fitted.tol
+    X, _ = engine.predict(horizon=3)
+    assert model.predict(3)[_MONTHLY + ["gdp"]].to_numpy().tobytes() == np.asarray(X).tobytes()
+
+
+def test_update_logs_nothing_with_verbose_zero(split_fit, caplog):
+    model = copy.deepcopy(split_fit[0])
+    with caplog.at_level(logging.DEBUG, logger="dfm_python"):
+        model.predict(3, data=split_fit[2])
+        model.update(split_fit[2], refit=True)
+    assert [r for r in caplog.records if r.levelno < logging.ERROR] == []
+
+
+def test_update_before_fit_raises():
+    with pytest.raises(NotFittedError):
+        DFM(**TINY).update(_mixed())
+
+
+# -- save / load ----------------------------------------------------------------------
+
+
+def _assert_same_model(loaded: DFM, model: DFM, new: PanelData | None = None) -> None:
+    assert type(loaded) is DFM
+    for got, expected in ((loaded.predict(4), model.predict(4)), (loaded.predict_factors(4), model.predict_factors(4))):
+        assert got.index.equals(expected.index) and list(got.columns) == list(expected.columns)
+        assert got.to_numpy().tobytes() == expected.to_numpy().tobytes() and got.attrs == expected.attrs
+    if new is not None:
+        assert loaded.predict(4, data=new).to_numpy().tobytes() == model.predict(4, data=new).to_numpy().tobytes()
+    for name in ("A", "C", "Q", "R", "Z_0", "V_0", "Z", "x_sm"):
+        assert getattr(loaded.result_, name).tobytes() == getattr(model.result_, name).tobytes(), name
+    assert loaded.result_.loglik == model.result_.loglik and loaded.n_iter_ == model.n_iter_
+    assert loaded.converged_ == model.converged_ and loaded.loglik_ == model.loglik_
+    assert loaded.n_factors_ == model.n_factors_ and loaded.freq_ == model.freq_
+    assert list(loaded.freq_) == list(model.freq_)
+    assert list(loaded.internal_feature_names_) == list(model.internal_feature_names_)
+    assert list(loaded.feature_names_in_) == list(model.feature_names_in_)
+    assert loaded.index_.equals(model.index_) and loaded.conditioning_index_.equals(model.conditioning_index_)
+    assert getattr(loaded.conditioning_index_, "freq", None) == getattr(model.conditioning_index_, "freq", None)
+    assert type(loaded.conditioning_index_) is type(model.conditioning_index_)
+    assert loaded.factors_.equals(model.factors_)
+    assert loaded.get_params() == model.get_params()
+    np.testing.assert_array_equal(loaded.engine_.data_processed, model.engine_.data_processed, strict=True)
+    np.testing.assert_array_equal(loaded.engine_.result.Z, model.engine_.result.Z, strict=True)
+
+
+def test_save_writes_the_numpy_layout(split_fit, tmp_path):
+    model, _, _ = split_fit
+    model.save(tmp_path / "run")
+    files = {p.name for p in (tmp_path / "run").iterdir()}
+    assert files == {"config.json", "data_spec.json", "state.npz", "state.json", "result.npz", "result.json",
+                     "scaler.json"}
+    with np.load(tmp_path / "run" / "state.npz", allow_pickle=False) as npz:
+        keys = set(npz.files)
+        assert npz["data/data_processed"].flags.f_contiguous == model.engine_.data_processed.flags.f_contiguous
+        np.testing.assert_array_equal(npz["data/last_smoothed_state"], model.engine_.result.Z[-1], strict=True)
+        filtered = model.engine_._create_kalman_filter().filter(np.ma.masked_invalid(model.engine_.data_processed))[1]
+        np.testing.assert_array_equal(npz["data/last_smoothed_cov"], filtered[-1], strict=True)
+    assert {key for key in keys if not key.startswith("scaler/")} == {
+        "ssm/A", "ssm/C", "ssm/Q", "ssm/R", "ssm/Z_0", "ssm/V_0", "mixed_freq/constraint_matrix",
+        "mixed_freq/constraint_vector", "mixed_freq/idio_indicator", "structure/blocks", "structure/r",
+        "data/data_processed", "data/smoothed_state", "data/last_smoothed_state", "data/last_smoothed_cov",
+    }
+    state = json.loads((tmp_path / "run" / "state.json").read_text())
+    assert state["frequencies"] == ["m", "m", "m", "m", "q"] and state["tent_weights_dict"] == {"q": [1, 2, 3, 2, 1]}
+    assert state["mixed_freq"] is True and state["n_slower_freq"] == 1 and state["num_iter"] == model.n_iter_
+    spec = json.loads((tmp_path / "run" / "data_spec.json").read_text())
+    assert spec["internal_feature_names_"] == _MONTHLY + ["gdp"] and spec["freq_"]["gdp"] == "q"
+
+
+@pytest.mark.parametrize("loader", ["DFM.load", "dfm_python.load"])
+def test_save_load_round_trip(split_fit, tmp_path, loader):
+    model, _, new = split_fit
+    model.save(tmp_path / "run")
+    loaded = (DFM.load if loader == "DFM.load" else dfm_python.load)(tmp_path / "run")
+    _assert_same_model(loaded, model, new)
+    assert type(loaded.scaler_) is StandardScaler and loaded.engine_.scaler is loaded.scaler_
+    assert loaded.engine_._dataset is None
+    # The loaded model updates and refits like the fitted one.
+    for refit in (False, True):
+        a, b = copy.deepcopy(model).update(new, refit=refit), copy.deepcopy(loaded).update(new, refit=refit)
+        _assert_same_model(b, a)
+
+
+def test_save_load_after_update_and_refit(split_fit, tmp_path):
+    fitted, _, new = split_fit
+    first, rest = (PanelData(y=new.y.iloc[:2], freq={"gdp": "q"}), PanelData(y=new.y.iloc[2:], freq={"gdp": "q"}))
+    updated = copy.deepcopy(fitted).update(first)
+    updated.save(tmp_path / "updated")
+    loaded = DFM.load(tmp_path / "updated")
+    _assert_same_model(loaded, updated, rest)
+    _assert_same_model(copy.deepcopy(loaded).update(rest), copy.deepcopy(updated).update(rest))
+    _assert_same_model(copy.deepcopy(loaded).update(rest, refit=True), copy.deepcopy(updated).update(rest, refit=True))
+
+    refitted = copy.deepcopy(updated).update(rest, refit=True)
+    refitted.save(tmp_path / "refitted")
+    _assert_same_model(DFM.load(tmp_path / "refitted"), refitted)
+    # Refit, then filter more rows: the engine's smoothed state is longer than result_.Z.
+    more = PanelData(y=_frame(T=66)[["gdp"] + _MONTHLY].iloc[60:], freq={"gdp": "q"})
+    extended = copy.deepcopy(refitted).update(more)
+    extended.save(tmp_path / "extended")
+    loaded = DFM.load(tmp_path / "extended")
+    _assert_same_model(loaded, extended)
+    assert loaded.factors_.index.equals(extended.factors_.index) and len(loaded.factors_) == 60
+    np.testing.assert_array_equal(loaded.engine_.result.x_sm, extended.engine_.result.x_sm, strict=True)
+
+
+def test_save_load_keeps_the_block_order_and_needs_no_data(tmp_path):
+    """JSON sorts dict keys; the loaded model keeps the block (factor) order and refits like the original."""
+    blocks = {"zeta": {"n_factors": 1, "series": _MONTHLY + ["gdp"]}, "alpha": {"series": ["m2", "m3"]}}
+    train, new = _split_frame()
+    model = DFM(**TINY, blocks=blocks).fit(train)
+    model.save(tmp_path / "run")
+    loaded = DFM.load(tmp_path / "run")
+    assert list(loaded.blocks) == ["zeta", "alpha"] and loaded.scaler_ is None
+    _assert_same_model(loaded, model, new)
+    _assert_same_model(copy.deepcopy(loaded).update(new, refit=True), copy.deepcopy(model).update(new, refit=True))
+    # A clone of the loaded estimator refits to the same numbers as the original parameters.
+    again = clone(loaded).fit(train)
+    np.testing.assert_array_equal(again.result_.Z, model.result_.Z, strict=True)
+
+
+def test_save_load_single_frequency_and_range_index(tmp_path):
+    model = DFM(n_factors=2, max_iter=3).fit(PanelData(y=_frame(index="range")[_MONTHLY]))
+    model.save(tmp_path / "run")
+    with np.load(tmp_path / "run" / "state.npz", allow_pickle=False) as npz:
+        assert "mixed_freq/idio_indicator" in npz.files
+    loaded = DFM.load(tmp_path / "run")
+    _assert_same_model(loaded, model)
+    assert type(loaded.index_) is pd.RangeIndex
+
+
+def test_load_rejects_an_inconsistent_run(split_fit, tmp_path):
+    model, _, _ = split_fit
+    model.save(tmp_path / "run")
+    path = tmp_path / "run" / "state.json"
+    state = json.loads(path.read_text())
+    state["engine_config"]["max_iter"] = 99
+    path.write_text(json.dumps(state))
+    with pytest.raises(ConfigurationError, match="inconsistent"):
+        DFM.load(tmp_path / "run")

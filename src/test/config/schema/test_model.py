@@ -8,9 +8,9 @@ class TestModelSchema:
     
     def test_model_schema_validation(self):
         """Test model schema validation."""
-        from dfm_python.config.schema.model import DFMConfig
-        # Test that DFMConfig validates blocks structure
-        config = DFMConfig(
+        from dfm_python.config.schema.model import _DFMEngineConfig
+        # Test that _DFMEngineConfig validates blocks structure
+        config = _DFMEngineConfig(
             blocks={'block1': {'num_factors': 2, 'series': ['series1', 'series2']}},
             frequency={'series1': 'm', 'series2': 'm'}
         )
@@ -26,9 +26,9 @@ class TestModelSchema:
         The old DDFMConfig took frequency, clock, num_factors and encoder_layers
         (the encoder sizes including the factor count). DDFM has no frequency
         or clock (mixed frequency is not a DDFM capability), so those keys are
-        unknown to the mirror, and DFMConfig.from_dict points DDFM dicts to it.
+        unknown to the mirror, and _DFMEngineConfig.from_dict points DDFM dicts to it.
         """
-        from dfm_python.config.schema.model import DDFMConfig, DFMConfig
+        from dfm_python.config.schema.model import DDFMConfig, _DFMEngineConfig
         from dfm_python.utils.errors import ConfigurationError
         config_dict = {
             'frequency': {
@@ -45,7 +45,7 @@ class TestModelSchema:
         with pytest.raises(ConfigurationError, match="frequency"):
             DDFMConfig.from_dict(config_dict)
         with pytest.raises(ConfigurationError, match="DDFMConfig.from_dict"):
-            DFMConfig.from_dict(config_dict)
+            _DFMEngineConfig.from_dict(config_dict)
         # The same model in the canonical names: encoder_layers are the hidden widths.
         config = DDFMConfig.from_dict({
             'n_factors': 2,
@@ -61,8 +61,8 @@ class TestModelSchema:
         assert config.interpolation_limit_direction == 'both'
     
     def test_dfm_config_from_dict_grouped_frequency(self):
-        """Test DFMConfig.from_dict with grouped frequency format."""
-        from dfm_python.config.schema.model import DFMConfig
+        """Test _DFMEngineConfig.from_dict with grouped frequency format."""
+        from dfm_python.config.schema.model import _DFMEngineConfig
         config_dict = {
             'frequency': {
                 'w': ['series1', 'series2'],
@@ -73,7 +73,7 @@ class TestModelSchema:
                 'block1': {'num_factors': 1, 'series': ['series1', 'series3']}
             }
         }
-        config = DFMConfig.from_dict(config_dict)
+        config = _DFMEngineConfig.from_dict(config_dict)
         assert config is not None
         assert config.frequency['series1'] == 'w'
         assert config.frequency['series2'] == 'w'
