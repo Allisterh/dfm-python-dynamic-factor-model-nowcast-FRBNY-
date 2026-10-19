@@ -40,7 +40,14 @@ Check                       What it asserts
                             nothing at INFO
 ``update``                  ``update`` returns ``self``, keeps the parameters
                             and moves the forecast origin
-``save_load``               reserved; not run yet
+``save_load``               ``save`` writes the section 7 file set for the
+                            backend (no ``scaler.pkl`` for the known
+                            scalers) atomically and refuses an existing
+                            directory; ``Model.load`` restores the params,
+                            data attributes, ``scaler_``, a bitwise-equal
+                            ``result_`` and bitwise-equal ``predict`` /
+                            ``allocate`` outputs; ``dfm_python.load``
+                            dispatches registered estimators
 ==========================  ================================================
 
 Each check builds its own estimator from the parameter set, so they do not
@@ -77,6 +84,10 @@ from sklearn.utils.validation import check_is_fitted
 from .base import DEFAULT_TAGS, BaseFactorModel
 from .config.estimator import EstimatorConfig, load_yaml
 from .dataset.panel import PanelData
+from .io.layout import CONFIG_FILE, FORMAT_VERSION, REQUIRED_FILES, WEIGHTS_FILE
+from .io.loading import load as _load_any
+from .io.scaler import SCALER_JSON, SCALER_PKL, is_known_scaler
+from .registry import all_estimators
 from .utils.errors import ConfigurationError, NotFittedError, UnsupportedInputError
 
 __all__ = ["check_estimator", "make_panel"]
@@ -877,8 +888,134 @@ def _check_update(ctx: _Context) -> None:
         _assert_weights_frame(est.allocate(), est, data, ctx.hist_len)
 
 
+def _assert_same_frame(a: pd.DataFrame, b: Any, what: str) -> None:
+    assert isinstance(b, pd.DataFrame), f"{what} returned {type(b).__name__}, expected a DataFrame."
+    assert type(a.index) is type(b.index) and a.index.equals(b.index) and a.index.name == b.index.name, (
+        f"{what}: the index differs from the original model's."
+    )
+    assert list(a.columns) == list(b.columns), f"{what}: columns {list(b.columns)} != {list(a.columns)}."
+    assert list(a.dtypes) == list(b.dtypes), f"{what}: dtypes differ."
+    assert a.to_numpy().tobytes() == b.to_numpy().tobytes(), f"{what}: values are not bitwise identical."
+    assert _deep_equal(dict(a.attrs), dict(b.attrs)), f"{what}: attrs {b.attrs!r} != {a.attrs!r}."
+
+
+def _object_hash(obj: Any) -> str:
+    h = hashlib.sha256()
+    _feed(h, obj, set())
+    return h.hexdigest()
+
+
+def _assert_reloaded(est: BaseFactorModel, loaded: Any, ctx: _Context, what: str) -> None:
+    tags = ctx.tags
+    assert type(loaded) is type(est), f"{what} returned {type(loaded).__name__}, expected {type(est).__name__}."
+    diff = _diff_keys(loaded.get_params(deep=False), est.get_params(deep=False))
+    assert not diff, f"{what} changed parameters {diff}."
+    for name in ("n_features_in_", "feature_names_in_", "exog_names_in_", "series_exog_names_in_"):
+        if name in vars(est):
+            assert name in vars(loaded), f"{what} did not restore {name}."
+            assert _deep_equal(vars(est)[name], vars(loaded)[name]), f"{what} restored a different {name}."
+    index, other = est.index_, loaded.index_
+    assert type(other) is type(index) and other.equals(index) and other.name == index.name, (
+        f"{what} restored a different index_."
+    )
+    assert getattr(other, "freq", None) == getattr(index, "freq", None), f"{what} lost the frequency of index_."
+    _assert_bitwise(_result_arrays(est), _result_arrays(loaded), f"{what}: result_")
+    if "scaler_" in vars(est):
+        assert "scaler_" in vars(loaded), f"{what} did not restore scaler_."
+        assert _object_hash(est.scaler_) == _object_hash(loaded.scaler_), f"{what} restored a different scaler_."
+    if tags["backend"] == "torch":
+        assert isinstance(loaded.network_, torch.nn.Module), f"{what}: network_ is not a torch.nn.Module."
+        assert _network_hash(loaded) == _network_hash(est), f"{what}: network_ weights are not bitwise identical."
+        if tags["capability:device"]:
+            assert str(loaded.device_) == "cpu", f"{what}(device='cpu') gave device_={loaded.device_!r}."
+            off_cpu = [n for n, t in [*loaded.network_.named_parameters(), *loaded.network_.named_buffers()]
+                       if t.device.type != "cpu"]
+            assert not off_cpu, f"{what}(device='cpu') left {off_cpu} off the CPU."
+    if tags["task"] == "forecast":
+        _assert_same_frame(est.predict(_H), loaded.predict(_H), f"predict after {what}")
+        cond = ctx.conditioning_data()
+        if cond is not None:
+            _assert_same_frame(est.predict(_H, data=cond), loaded.predict(_H, data=cond), f"predict(data=) after {what}")
+        if tags["capability:factor_forecast"]:
+            _assert_same_frame(est.predict_factors(_H), loaded.predict_factors(_H), f"predict_factors after {what}")
+    else:
+        _assert_same_frame(est.allocate(data=ctx.data), loaded.allocate(data=ctx.data), f"allocate(data=) after {what}")
+
+
+def _save_quietly(est: BaseFactorModel, path: Path, **kwargs: Any) -> Any:
+    """``est.save`` without the random_state=None warning (the checks run with any parameters)."""
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*random_state=None.*", category=UserWarning)
+        return est.save(path, **kwargs)
+
+
 def _check_save_load(ctx: _Context) -> None:
-    """Save/load round-trip. Reserved: filled in when save and load exist on the base class."""
+    est = ctx.fitted_copy()
+    tags = ctx.tags
+    device = "cpu" if tags["capability:device"] else None
+    before = _state_hash(est)
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        path = root / "run"
+        returned = _save_quietly(est, path)
+        assert returned is None, f"save returned {type(returned).__name__}, expected None."
+        assert _state_hash(est) == before, "save changed the fitted state."
+        debris = sorted(p.name for p in root.iterdir() if p.name != "run")
+        assert not debris, f"save left {debris} next to the run."
+
+        files = {p.name for p in path.iterdir()}
+        missing = sorted(set(REQUIRED_FILES) - files)
+        assert not missing, f"save did not write {missing}."
+        if tags["backend"] == "torch":
+            assert WEIGHTS_FILE in files, f"a torch model must write {WEIGHTS_FILE}."
+        else:
+            assert WEIGHTS_FILE not in files, f"a {tags['backend']} model must not write {WEIGHTS_FILE}."
+        extra = sorted(files - set(REQUIRED_FILES) - {WEIGHTS_FILE, SCALER_JSON, SCALER_PKL})
+        assert not extra, f"save wrote files outside the layout: {extra}."
+        if "scaler_" in vars(est):
+            assert (SCALER_JSON in files) != (SCALER_PKL in files), "save must write exactly one scaler file."
+            if is_known_scaler(est.scaler_):
+                assert SCALER_PKL not in files, f"save pickled a {type(est.scaler_).__name__}, a known scaler."
+        else:
+            assert SCALER_JSON not in files and SCALER_PKL not in files, "save wrote a scaler file without scaler_."
+        pickled = SCALER_PKL in files
+
+        config = json.loads((path / CONFIG_FILE).read_text(encoding="utf-8"))
+        assert config.get("format_version") == FORMAT_VERSION, f"config.json format_version {config.get('format_version')!r}."
+        assert config.get("model_type") == ctx.cls.__name__, f"config.json model_type {config.get('model_type')!r}."
+        params = est.get_params(deep=False)
+        assert set(config.get("params", {})) == set(params), "config.json params do not match get_params()."
+        assert config.get("tags") == json.loads(json.dumps(est.get_tags())), "config.json tags do not match get_tags()."
+        for key in ("library_version", "runtime"):
+            assert key in config, f"config.json has no {key!r}."
+
+        _expect_raises(FileExistsError, lambda: est.save(path), "save to an existing directory")
+
+        if pickled:
+            err = _expect_raises(
+                ConfigurationError, lambda: ctx.cls.load(path, device=device), "load of a pickled scaler without allow_pickle"
+            )
+            assert "allow_pickle" in str(err), f"the pickle error does not name allow_pickle: {err}"
+        loaded = ctx.cls.load(path, device=device, allow_pickle=pickled)
+        _assert_reloaded(est, loaded, ctx, f"{ctx.cls.__name__}.load")
+        assert _state_hash(est) == before, "predict/allocate on the original changed it during the save/load check."
+
+        _expect_raises(ConfigurationError, lambda: BaseFactorModel.load(path), "BaseFactorModel.load on another model's run")
+        registered = dict(all_estimators())
+        if registered.get(ctx.cls.__name__) is ctx.cls:
+            _assert_reloaded(est, _load_any(path, device=device, allow_pickle=pickled), ctx, "dfm_python.load")
+        else:
+            err = _expect_raises(
+                ConfigurationError,
+                lambda: _load_any(path, device=device, allow_pickle=pickled),
+                "dfm_python.load of an unregistered estimator",
+            )
+            assert ctx.cls.__name__ in str(err), f"the dfm_python.load error does not name the model type: {err}"
+
+        _save_quietly(est, path, overwrite=True)
+        assert {p.name for p in path.iterdir()} == files, "save(overwrite=True) wrote a different file set."
+        debris = sorted(p.name for p in root.iterdir() if p.name != "run")
+        assert not debris, f"save(overwrite=True) left {debris} next to the run."
 
 
 def _always(tags: dict) -> bool:
@@ -901,7 +1038,7 @@ _CHECKS: tuple[tuple[str, Callable[[_Context], None], Callable[[dict], bool]], .
     ("device", _check_device, lambda tags: tags["capability:device"]),
     ("silence", _check_silence, _always),
     ("update", _check_update, lambda tags: tags["capability:update"]),
-    ("save_load", _check_save_load, lambda tags: False),
+    ("save_load", _check_save_load, _always),
 )
 
 

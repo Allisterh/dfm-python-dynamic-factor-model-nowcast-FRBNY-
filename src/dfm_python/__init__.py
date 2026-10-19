@@ -65,6 +65,9 @@ from .logger.logger import _apply_env_verbosity
 # Data container
 from .dataset.panel import PanelData
 
+# Saved runs
+from .io.loading import load
+
 # Datasets
 from .dataset.dfm_dataset import DFMDataset
 from .dataset.ddfm_dataset import DDFMDataset
@@ -88,6 +91,8 @@ __all__ = [
     'ConfigSource', 'YamlSource', 'make_config_source',
     # Data container
     'PanelData',
+    # Saved runs
+    'load',
     # Datasets
     'DFMDataset', 'DDFMDataset', 'iVDFMDataset', 'AFMDataset',
     # Results and metrics

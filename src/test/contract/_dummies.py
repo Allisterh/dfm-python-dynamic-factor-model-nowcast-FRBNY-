@@ -2,7 +2,8 @@
 
 ``_DummyForecaster`` (numpy mean forecaster), ``_DummyTorchForecaster`` (a
 one-layer torch network) and ``_DummyAllocator`` (sign-of-trailing-mean
-weights) follow the whole contract. The broken variants in
+weights) follow the whole contract, including save and load through the
+``_save_state`` / ``_load_state`` hooks. The broken variants in
 ``test_harness.py`` subclass them and break one rule each.
 """
 
@@ -17,6 +18,7 @@ import torch
 
 from dfm_python.base import BaseFactorModel
 from dfm_python.config import EstimatorConfig
+from dfm_python.utils.errors import DataValidationError
 from dfm_python.utils.seed import apply_seed
 
 
@@ -110,6 +112,17 @@ class _DummyForecaster(BaseFactorModel):
         self.conditioning_index_ = panel.index
         return self
 
+    def _save_state(self, path):
+        self._write_state(path, {"mean": self.mean_})
+        self._write_result(path)
+
+    @classmethod
+    def _load_state(cls, est, path, device, allow_pickle):
+        arrays, _ = cls._read_state(path)
+        est.mean_ = arrays["mean"]
+        est.conditioning_index_ = est.index_
+        est.result_ = cls._read_result(path, _DummyResult)
+
 
 # ---------------------------------------------------------------------------
 # One-layer torch forecaster
@@ -185,6 +198,24 @@ class _DummyTorchForecaster(BaseFactorModel):
                 steps.append(x.cpu().numpy().astype(np.float64))
         return _frame(np.stack(steps), self, origin, self.feature_names_in_, "forecast")
 
+    def _save_state(self, path):
+        self._write_state(path, {"last": self.last_})
+        self._write_result(path)
+        self._write_weights(path)
+
+    @classmethod
+    def _load_state(cls, est, path, device, allow_pickle):
+        device = est._load_device(device)
+        arrays, _ = cls._read_state(path)
+        n = est.n_features_in_
+        network = torch.nn.utils.skip_init(torch.nn.Linear, n, n, device=device)  # no RNG draws
+        network.load_state_dict(cls._read_weights(path, device))
+        network.eval()
+        est.network_ = network
+        est.device_ = device
+        est.last_ = arrays["last"]
+        est.result_ = cls._read_result(path, _DummyTorchResult)
+
 
 # ---------------------------------------------------------------------------
 # Allocator
@@ -239,6 +270,8 @@ class _DummyAllocator(BaseFactorModel):
 
     def allocate(self, data=None):
         self._check_is_fitted("allocate")
+        if data is None and "data_" not in vars(self):
+            raise DataValidationError("This model was loaded without its training data; call allocate(data=...).")
         panel = self.data_ if data is None else self._validate_data(data)
         return self._weights(panel)
 
@@ -249,3 +282,11 @@ class _DummyAllocator(BaseFactorModel):
             self._fit(panel)
         self.data_ = panel
         return self
+
+    def _save_state(self, path):
+        self._write_state(path)
+        self._write_result(path)
+
+    @classmethod
+    def _load_state(cls, est, path, device, allow_pickle):
+        est.result_ = cls._read_result(path, _DummyAllocResult)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import pickle
 from dataclasses import dataclass
 from typing import Optional
 
@@ -10,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 import torch
+from sklearn.preprocessing import StandardScaler
 
 from dfm_python.base import BaseFactorModel
 from dfm_python.config import EstimatorConfig
@@ -35,16 +37,16 @@ _ALL_CHECKS = [
 
 
 def test_dummy_forecaster_passes():
-    assert check_estimator(_DummyForecaster) == [*_ALL_CHECKS, "update"]
+    assert check_estimator(_DummyForecaster) == [*_ALL_CHECKS, "update", "save_load"]
 
 
 def test_dummy_torch_forecaster_passes_with_device_check():
     ran = check_estimator(_DummyTorchForecaster)
-    assert "device" in ran and "update" not in ran
+    assert "device" in ran and "update" not in ran and ran[-1] == "save_load"
 
 
 def test_dummy_allocator_passes():
-    assert check_estimator(_DummyAllocator) == [*_ALL_CHECKS, "update"]
+    assert check_estimator(_DummyAllocator) == [*_ALL_CHECKS, "update", "save_load"]
 
 
 def test_instance_is_checked_with_its_own_params():
@@ -62,8 +64,8 @@ def test_rejects_non_estimators():
         check_estimator(object)
 
 
-def test_save_load_check_is_reserved():
-    assert "save_load" not in check_estimator(_DummyForecaster)
+def test_save_load_check_runs_last():
+    assert check_estimator(_DummyForecaster)[-1] == "save_load"
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +350,64 @@ class _UpdateChangesNetwork(_DummyTorchForecaster):
         return self
 
 
+class _NoSaveHooks(_DummyForecaster):
+    _save_state = BaseFactorModel._save_state
+
+
+class _LossyLoad(_DummyForecaster):
+    @classmethod
+    def _load_state(cls, est, path, device, allow_pickle):
+        super()._load_state(est, path, device, allow_pickle)
+        est.result_.scale = float(np.float32(est.result_.scale))
+
+
+class _PredictDiffersAfterLoad(_DummyForecaster):
+    @classmethod
+    def _load_state(cls, est, path, device, allow_pickle):
+        super()._load_state(est, path, device, allow_pickle)
+        est.mean_ = est.mean_ + 1e-12
+
+
+class _ExtraFile(_DummyForecaster):
+    def _save_state(self, path):
+        super()._save_state(path)
+        (path / "notes.txt").write_text("not in the layout")
+
+
+class _PicklesKnownScaler(_DummyForecaster):
+    def _fit(self, data, **fit_kwargs):
+        super()._fit(data)
+        self.scaler_ = StandardScaler().fit(data.y.to_numpy())
+
+    def _save_state(self, path):
+        scaler = self.scaler_
+        del self.scaler_
+        try:
+            super()._save_state(path)
+        finally:
+            self.scaler_ = scaler
+        with open(path / "scaler.pkl", "wb") as fh:
+            pickle.dump(scaler, fh)
+
+
+class _TorchSkipsWeights(_DummyTorchForecaster):
+    def _write_weights(self, path, module=None):
+        pass
+
+
+class _LoadIgnoresDevice(_DummyTorchForecaster):
+    @classmethod
+    def _load_state(cls, est, path, device, allow_pickle):
+        super()._load_state(est, path, device, allow_pickle)
+        est.device_ = torch.device("meta")
+
+
+class _SaveMutatesState(_DummyForecaster):
+    def _save_state(self, path):
+        super()._save_state(path)
+        self.result_.n_obs += 1
+
+
 class _AllocatorWrongIndex(_DummyAllocator):
     def allocate(self, data=None):
         return super().allocate(data).iloc[1:]
@@ -399,6 +459,14 @@ class _AllocatorIgnoresSeriesExogTag(_DummyAllocator):
         (_UpdateChangesNetwork, "update"),
         (_AllocatorWrongIndex, "output_shape"),
         (_AllocatorIgnoresSeriesExogTag, "capabilities"),
+        (_NoSaveHooks, "save_load"),
+        (_LossyLoad, "save_load"),
+        (_PredictDiffersAfterLoad, "save_load"),
+        (_ExtraFile, "save_load"),
+        (_PicklesKnownScaler, "save_load"),
+        (_TorchSkipsWeights, "save_load"),
+        (_LoadIgnoresDevice, "save_load"),
+        (_SaveMutatesState, "save_load"),
     ],
     ids=lambda v: v.__name__ if isinstance(v, type) else v,
 )
@@ -431,3 +499,24 @@ def test_check_restores_package_logger():
     handlers, level = list(package_logger.handlers), package_logger.level
     check_estimator(_DummyForecaster)
     assert package_logger.handlers == handlers and package_logger.level == level
+
+
+@pytest.mark.parametrize(
+    "estimator, message",
+    [
+        (_NoSaveHooks, "does not implement _save_state"),
+        (_LossyLoad, "result_.scale is not bitwise identical"),
+        (_PredictDiffersAfterLoad, "predict after _PredictDiffersAfterLoad.load: values are not bitwise identical"),
+        (_ExtraFile, "files outside the layout: ['notes.txt']"),
+        (_PicklesKnownScaler, "pickled a StandardScaler"),
+        (_TorchSkipsWeights, "no weights.pt"),
+        (_LoadIgnoresDevice, "device_=device(type='meta')"),
+        (_SaveMutatesState, "save changed the fitted state"),
+    ],
+    ids=lambda v: v.__name__ if isinstance(v, type) else None,
+)
+def test_save_load_failure_messages(estimator, message):
+    with pytest.raises(AssertionError) as info:
+        check_estimator(estimator)
+    assert "check 'save_load' failed" in str(info.value)
+    assert message in str(info.value), str(info.value)

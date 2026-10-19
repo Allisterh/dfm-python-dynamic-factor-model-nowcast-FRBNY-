@@ -16,6 +16,13 @@ Every migrated model subclasses :class:`BaseFactorModel`, which builds on
   ``TypeError`` or ``UnsupportedInputError`` when the tags exclude them.
 - ``get_config()`` / ``from_config()`` convert to and from the model's
   :class:`~dfm_python.config.EstimatorConfig` mirror.
+- ``save(path)`` writes the pickle-free directory of spec section 7 through
+  :func:`~dfm_python.io.atomic_save_dir` (temporary sibling, reload to verify,
+  rename); ``Model.load(path)`` reads it back without a dataset. The base class
+  writes ``config.json`` and ``data_spec.json`` and restores the data
+  attributes and ``scaler_``; each model writes and reads the rest in its
+  ``_save_state`` / ``_load_state`` hooks with the ``_write_*`` / ``_read_*``
+  helpers below.
 
 This is not the engine base class ``dfm_python.models.base.BaseFactorModel``,
 which the unmigrated models still inherit.
@@ -23,7 +30,9 @@ which the unmigrated models still inherit.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import warnings
+from collections.abc import Iterable, Mapping
+from pathlib import Path
 from typing import Any, ClassVar, Optional
 
 import numpy as np
@@ -32,6 +41,25 @@ from sklearn.base import BaseEstimator
 
 from .config.estimator import EstimatorConfig, _unknown_keys_message
 from .dataset.panel import PanelData
+from .io.codecs import is_encoded_estimator, read_json, read_npz, read_weights, to_jsonable, write_json, write_npz
+from .io.codecs import write_weights
+from .io.directory import atomic_save_dir
+from .io.layout import (
+    CONFIG_FILE,
+    DATA_SPEC_FILE,
+    FORMAT_VERSION,
+    REQUIRED_FILES,
+    RESULT_JSON,
+    RESULT_NPZ,
+    STATE_JSON,
+    STATE_NPZ,
+    WEIGHTS_FILE,
+    index_from_spec,
+    index_to_spec,
+    read_config,
+)
+from .io.results import result_from_files, result_to_files
+from .io.scaler import SCALER_PREFIX, has_scaler, read_scaler, write_scaler
 from .logger.progress import fit_verbosity
 from .utils.errors import ConfigurationError, NotFittedError, UnsupportedInputError
 
@@ -284,3 +312,274 @@ class BaseFactorModel(BaseEstimator):
                 "allocate(); use predict(h)."
             )
         raise NotImplementedError(f"{type(self).__name__} does not implement allocate().")
+
+    # -- save / load -------------------------------------------------------
+
+    def save(self, path: Any, *, overwrite: bool = False) -> None:
+        """Save the fitted model as a pickle-free directory (spec section 7).
+
+        The run is written to a temporary sibling directory, reloaded with
+        ``type(self).load(tmp, device="cpu")`` to verify it, and then renamed
+        to ``path``. The base class writes ``config.json`` (format version,
+        model type, library version, ``get_params()``, tags and runtime) and
+        ``data_spec.json`` (feature, exog and series-exog names and the training
+        index); the model's ``_save_state`` hook writes ``state.npz``,
+        ``state.json``, ``result.npz``, ``result.json`` and, for torch models,
+        ``weights.pt``.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            The directory to create.
+        overwrite : bool, default False
+            Replace an existing ``path`` (the old run is removed only after the
+            new one is in place).
+
+        Raises
+        ------
+        NotFittedError
+            Before ``fit``.
+        FileExistsError
+            If ``path`` exists and ``overwrite`` is False.
+
+        Warns
+        -----
+        UserWarning
+            When the model has a ``random_state`` parameter set to None: the
+            saved config cannot reproduce the run.
+        """
+        self._check_is_fitted("save")
+        params = self.get_params(deep=False)
+        if "random_state" in params and params["random_state"] is None:
+            warnings.warn(
+                f"Saving {type(self).__name__} with random_state=None: config.json cannot reproduce this run. "
+                "Set random_state to an integer before fit for reproducible runs.",
+                UserWarning,
+                stacklevel=2,
+            )
+        # Converted up front, so a value JSON cannot hold fails before anything is written.
+        config = to_jsonable(self._saved_config(params), where=CONFIG_FILE)
+        data_spec = to_jsonable(self._saved_data_spec(), where=DATA_SPEC_FILE)
+        cls = type(self)
+
+        def write(tmp: Path) -> None:
+            write_json(tmp / CONFIG_FILE, config)
+            write_json(tmp / DATA_SPEC_FILE, data_spec)
+            self._save_state(tmp)
+
+        def verify(tmp: Path) -> None:
+            # allow_pickle: the directory was written just now by this process.
+            loaded = cls.load(tmp, device="cpu", allow_pickle=True)
+            if not loaded._is_fitted() or "result_" not in vars(loaded):
+                raise RuntimeError(f"{cls.__name__}.load did not restore result_; the save was not completed.")
+
+        atomic_save_dir(path, write, verify, overwrite=overwrite)
+
+    @classmethod
+    def load(cls, path: Any, *, device: Any = None, allow_pickle: bool = False) -> BaseFactorModel:
+        """Load a run written by :meth:`save`; no dataset is needed.
+
+        Builds ``cls(**params)`` from ``config.json`` (through ``from_config``
+        when the model has a config mirror), restores the data attributes and
+        ``scaler_``, and calls the model's ``_load_state`` hook.
+
+        Parameters
+        ----------
+        path : str or os.PathLike
+            The saved-run directory.
+        device : str or torch.device, optional
+            Device for torch models; None uses the ``device`` parameter
+            (``"auto"``: CUDA if available, else CPU). Weights are read with
+            ``map_location``, so a GPU-saved run loads on a CPU-only machine.
+        allow_pickle : bool, default False
+            Allow reading ``scaler.pkl`` and importing estimator classes outside
+            ``sklearn.preprocessing`` named in ``config.json``. Both can run
+            arbitrary code; enable only for directories you trust.
+
+        Raises
+        ------
+        ConfigurationError
+            If ``path`` is a single-file checkpoint from an earlier release or
+            not a saved run, holds another model type, lacks a file the
+            ``backend`` tag requires, or needs ``allow_pickle=True``.
+        """
+        path = Path(path)
+        config = read_config(path, allow_import=allow_pickle)
+        model_type = config["model_type"]
+        if model_type != cls.__name__:
+            raise ConfigurationError(
+                f"{str(path)!r} holds a {model_type!r} run, not {cls.__name__}. Load it with "
+                f"{model_type}.load(path) or dfm_python.load(path)."
+            )
+        cls._check_saved_files(path)
+        params = dict(config["params"])
+        encoded = sorted(name for name, value in params.items() if _contains_encoded_estimator(value))
+        if encoded:
+            raise ConfigurationError(
+                f"config.json in {str(path)!r} stores estimator classes outside sklearn.preprocessing for "
+                f"{', '.join(map(repr, encoded))}. Importing them can run arbitrary code, so it is off by default: "
+                "pass allow_pickle=True only if you trust the directory."
+            )
+        if cls._config_class is not None:
+            est = cls.from_config(params)
+        else:
+            try:
+                est = cls(**params)
+            except TypeError as err:
+                raise ConfigurationError(f"config.json in {str(path)!r} does not match {cls.__name__}: {err}") from err
+        est._restore_data_attributes(read_json(path / DATA_SPEC_FILE))
+        if has_scaler(path):
+            est.scaler_ = read_scaler(path, read_npz(path / STATE_NPZ), allow_pickle=allow_pickle)
+        cls._load_state(est, path, device, allow_pickle)
+        return est
+
+    @classmethod
+    def _check_saved_files(cls, path: Path) -> None:
+        missing = [name for name in REQUIRED_FILES if not (path / name).is_file()]
+        if missing:
+            raise ConfigurationError(f"{str(path)!r} is not a complete saved run: {', '.join(missing)} missing.")
+        has_weights = (path / WEIGHTS_FILE).is_file()
+        backend = cls.get_tags()["backend"]
+        if backend == "torch" and not has_weights:
+            raise ConfigurationError(f"{str(path)!r} has no {WEIGHTS_FILE}, which a torch model ({cls.__name__}) needs.")
+        if backend != "torch" and has_weights:
+            raise ConfigurationError(
+                f"{str(path)!r} has a {WEIGHTS_FILE}, but {cls.__name__} has backend {backend!r} and keeps no torch weights."
+            )
+
+    def _saved_config(self, params: dict) -> dict:
+        """Content of ``config.json``."""
+        import torch
+
+        from . import __version__
+
+        device = vars(self).get("device_")
+        return {
+            "format_version": FORMAT_VERSION,
+            "model_type": type(self).__name__,
+            "library_version": str(__version__),
+            "params": params,
+            "tags": self.get_tags(),
+            "runtime": {
+                "device": None if device is None else str(device),
+                "torch_version": str(torch.__version__),
+                "numpy_version": str(np.__version__),
+                "deterministic_algorithms": bool(torch.are_deterministic_algorithms_enabled()),
+                "num_threads": int(torch.get_num_threads()),
+            },
+        }
+
+    def _saved_data_spec(self) -> dict:
+        """Content of ``data_spec.json``: names in the user's order and the training index."""
+        spec = {
+            "feature_names_in_": list(self.feature_names_in_),
+            "exog_names_in_": list(self.exog_names_in_),
+            "index_": index_to_spec(self.index_),
+        }
+        if "series_exog_names_in_" in vars(self):
+            spec["series_exog_names_in_"] = list(self.series_exog_names_in_)
+        return spec
+
+    def _restore_data_attributes(self, spec: Mapping) -> None:
+        """Inverse of :meth:`_saved_data_spec` (the attributes :meth:`_set_data_attributes` sets)."""
+        names = list(spec["feature_names_in_"])
+        self.n_features_in_ = len(names)
+        self.feature_names_in_ = np.asarray(names, dtype=object)
+        self.exog_names_in_ = np.asarray(list(spec["exog_names_in_"]), dtype=object)
+        if "series_exog_names_in_" in spec:
+            self.series_exog_names_in_ = np.asarray(list(spec["series_exog_names_in_"]), dtype=object)
+        self.index_ = index_from_spec(spec["index_"])
+
+    # -- state hooks (implemented by each model) ---------------------------
+
+    def _save_state(self, path: Path) -> None:
+        """Write ``state.npz``, ``state.json``, ``result.npz``, ``result.json`` (and ``weights.pt``) into ``path``.
+
+        Use :meth:`_write_state`, :meth:`_write_result` and :meth:`_write_weights`.
+        """
+        raise NotImplementedError(f"{type(self).__name__} does not implement _save_state(), so it cannot be saved.")
+
+    @classmethod
+    def _load_state(cls, est: BaseFactorModel, path: Path, device: Any, allow_pickle: bool) -> None:
+        """Restore the fitted state of ``est`` (already built, with data attributes and ``scaler_``) from ``path``.
+
+        Use :meth:`_read_state`, :meth:`_read_result`, :meth:`_read_weights`
+        and :meth:`_load_device`.
+        """
+        raise NotImplementedError(f"{cls.__name__} does not implement _load_state(), so it cannot be loaded.")
+
+    # -- helpers for the hooks ---------------------------------------------
+
+    def _write_state(self, path: Path, arrays: Optional[Mapping] = None, meta: Optional[Mapping] = None) -> None:
+        """Write ``state.npz`` (``arrays`` plus ``scaler/<attr>``) and ``state.json`` (``meta``).
+
+        When the model has a ``scaler_`` attribute it is also written:
+        ``scaler.json`` for None and the five known scalers, ``scaler.pkl``
+        for any other.
+        """
+        arrays = dict(arrays or {})
+        reserved = [key for key in arrays if key.startswith(SCALER_PREFIX)]
+        if reserved:
+            raise ValueError(f"state.npz keys {reserved} use the reserved prefix {SCALER_PREFIX!r}.")
+        if "scaler_" in vars(self):
+            arrays.update(write_scaler(path, self.scaler_))
+        write_npz(Path(path) / STATE_NPZ, arrays)
+        write_json(Path(path) / STATE_JSON, dict(meta or {}))
+
+    @staticmethod
+    def _read_state(path: Path) -> tuple[dict, dict]:
+        """Return ``(arrays, meta)`` from ``state.npz`` (without the ``scaler/`` keys) and ``state.json``."""
+        arrays = {k: v for k, v in read_npz(Path(path) / STATE_NPZ).items() if not k.startswith(SCALER_PREFIX)}
+        return arrays, read_json(Path(path) / STATE_JSON)
+
+    @staticmethod
+    def _result_to_files(result: Any, *, exclude: Iterable[str] = ()) -> tuple[dict, dict]:
+        """Split a dataclass result into ``(arrays, meta)`` (see :func:`dfm_python.io.result_to_files`)."""
+        return result_to_files(result, exclude=exclude)
+
+    @staticmethod
+    def _result_from_files(result_cls: type, arrays: Mapping, meta: Mapping, **extra: Any) -> Any:
+        """Rebuild a dataclass result (see :func:`dfm_python.io.result_from_files`)."""
+        return result_from_files(result_cls, arrays, meta, **extra)
+
+    def _write_result(self, path: Path, result: Any = None, *, exclude: Iterable[str] = ()) -> None:
+        """Write ``result_`` (or ``result``) to ``result.npz`` and ``result.json``; ``exclude`` skips fields."""
+        arrays, meta = self._result_to_files(self.result_ if result is None else result, exclude=exclude)
+        write_npz(Path(path) / RESULT_NPZ, arrays)
+        write_json(Path(path) / RESULT_JSON, meta)
+
+    @classmethod
+    def _read_result(cls, path: Path, result_cls: type, **extra: Any) -> Any:
+        """Read ``result.npz`` and ``result.json`` back into ``result_cls``; ``extra`` gives excluded fields."""
+        path = Path(path)
+        return cls._result_from_files(result_cls, read_npz(path / RESULT_NPZ), read_json(path / RESULT_JSON), **extra)
+
+    def _write_weights(self, path: Path, module: Any = None) -> None:
+        """Write ``weights.pt``: the ``state_dict()`` of ``module`` (default ``network_``)."""
+        module = self.network_ if module is None else module
+        write_weights(Path(path) / WEIGHTS_FILE, module.state_dict())
+
+    @staticmethod
+    def _read_weights(path: Path, device: Any = None) -> dict:
+        """Read ``weights.pt`` with ``map_location=device`` and ``weights_only=True``."""
+        return read_weights(Path(path) / WEIGHTS_FILE, map_location=device)
+
+    def _load_device(self, device: Any = None) -> Any:
+        """Resolve the load device: ``device``, else the ``device`` parameter; ``"auto"`` means CUDA if available."""
+        import torch
+
+        if device is None:
+            device = self.get_params(deep=False).get("device", "auto")
+        if device is None or (isinstance(device, str) and device == "auto"):
+            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return torch.device(device)
+
+
+def _contains_encoded_estimator(value: Any) -> bool:
+    if is_encoded_estimator(value):
+        return True
+    if isinstance(value, dict):
+        return any(_contains_encoded_estimator(v) for v in value.values())
+    if isinstance(value, list):
+        return any(_contains_encoded_estimator(v) for v in value)
+    return False

@@ -1,0 +1,99 @@
+"""config.json checks, the single-file error and the data_spec index round-trip."""
+
+import json
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from dfm_python.io.codecs import write_json
+from dfm_python.io.layout import FORMAT_VERSION, index_from_spec, index_to_spec, read_config
+from dfm_python.utils.errors import ConfigurationError
+
+
+def _month_end(n, **kwargs):
+    return pd.date_range("2000-01-31", periods=n, freq="ME", **kwargs)
+
+
+@pytest.mark.parametrize(
+    "index",
+    [
+        pd.RangeIndex(0, 10, name="t"),
+        pd.RangeIndex(5, 50, 5),
+        _month_end(12, name="date"),
+        pd.date_range("2020-01-01", periods=5, freq="D", tz="US/Eastern", name="ts"),
+        pd.date_range("2020-01-01", periods=5, freq="h", unit="s"),
+        pd.DatetimeIndex(["2020-01-01", "2020-01-03", "2020-02-11"], name="irregular"),
+        pd.period_range("2000Q1", periods=8, freq="Q", name="quarter"),
+        pd.period_range("2000-01", periods=6, freq="M"),
+        pd.RangeIndex(0, 4, name=7),
+    ],
+    ids=lambda i: f"{type(i).__name__}-{getattr(i, 'freqstr', None)}-{i.name}",
+)
+def test_index_round_trip(index):
+    spec = index_to_spec(index)
+    spec = json.loads(json.dumps(spec))
+    back = index_from_spec(spec)
+    assert type(back) is type(index) and back.equals(index) and back.name == index.name
+    assert back.dtype == index.dtype
+    assert getattr(back, "freq", None) == getattr(index, "freq", None)
+    assert spec["length"] == len(index)
+    assert spec["first"] == (int(index[0]) if isinstance(index, pd.RangeIndex) else str(index[0]))
+    assert spec["last"] == (int(index[-1]) if isinstance(index, pd.RangeIndex) else str(index[-1]))
+
+
+def test_index_spec_fields():
+    spec = index_to_spec(_month_end(3, name="date"))
+    assert spec["kind"] == "datetime" and spec["freq"] == "ME" and spec["name"] == "date"
+    assert spec["first"] == "2000-01-31 00:00:00" and spec["last"] == "2000-03-31 00:00:00"
+    assert spec["unit"] == "ns" and spec["tz"] is None and len(spec["values"]) == 3
+    assert index_to_spec(pd.RangeIndex(2, 8, 2))["kind"] == "range"
+
+
+def test_index_spec_refuses_other_indexes():
+    with pytest.raises(TypeError, match="Range, Datetime or Period"):
+        index_to_spec(pd.Index([0.5, 1.5]))
+    with pytest.raises(ConfigurationError, match="unknown index kind"):
+        index_from_spec({"kind": "interval"})
+
+
+def _config(**overrides):
+    return {"format_version": FORMAT_VERSION, "model_type": "X", "params": {}, **overrides}
+
+
+def test_read_config(tmp_path):
+    write_json(tmp_path / "config.json", _config(params={"a": 1}))
+    assert read_config(tmp_path)["params"] == {"a": 1}
+
+
+@pytest.mark.parametrize("name", ["model.pkl", "model.pt", "run"])
+def test_single_file_checkpoints_are_refused(tmp_path, name):
+    (tmp_path / name).write_bytes(b"\x80\x04old checkpoint")
+    with pytest.raises(ConfigurationError, match="(?s)single-file checkpoints.*release of dfm-python that wrote them"):
+        read_config(tmp_path / name)
+
+
+def test_directory_without_config_is_refused(tmp_path):
+    (tmp_path / "run").mkdir()
+    with pytest.raises(ConfigurationError, match="has no config.json.*single-file checkpoints"):
+        read_config(tmp_path / "run")
+
+
+def test_missing_path(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        read_config(tmp_path / "nothing")
+
+
+@pytest.mark.parametrize(
+    "content, message",
+    [
+        (_config(format_version=2), "format_version 2"),
+        ({"model_type": "X", "params": {}}, "lacks 'format_version'"),
+        (_config(params=[1]), "'params' is not a JSON object"),
+        ([1, 2], "does not hold a JSON object"),
+    ],
+)
+def test_bad_configs(tmp_path, content, message):
+    write_json(tmp_path / "config.json", content)
+    with pytest.raises(ConfigurationError, match=message):
+        read_config(tmp_path)
