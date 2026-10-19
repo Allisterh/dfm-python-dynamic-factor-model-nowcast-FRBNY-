@@ -52,7 +52,9 @@ Check                       What it asserts
 
 Each check builds its own estimator from the parameter set, so they do not
 depend on each other except through the shared fitted estimator that the
-``fit`` check produces. Torch estimators run with ``device="cpu"``.
+``fit`` check produces. Torch estimators run with ``device="cpu"``. The
+checks for a parameter set are gated by the tags of an estimator built from
+it (``est.get_tags()``), since some tags depend on hyperparameters.
 """
 
 from __future__ import annotations
@@ -458,7 +460,8 @@ def _split(data: PanelData) -> tuple[PanelData, PanelData]:
 
 
 def _check_tags(ctx: _Context) -> None:
-    tags = ctx.cls.get_tags()
+    ctx.cls.get_tags()  # the class tags must resolve too
+    tags = ctx.tags  # the instance's tags (some depend on hyperparameters)
     assert set(tags) == set(DEFAULT_TAGS), f"tags {sorted(set(tags) ^ set(DEFAULT_TAGS))} are missing or unknown."
     for key, allowed in _VALID_TAG_VALUES.items():
         assert tags[key] in allowed, f"tag {key}={tags[key]!r} is not one of {allowed}."
@@ -1042,6 +1045,14 @@ _CHECKS: tuple[tuple[str, Callable[[_Context], None], Callable[[dict], bool]], .
 )
 
 
+def _instance_tags(cls: type, params: Mapping, class_tags: dict) -> dict:
+    """Tags of an estimator built from ``params`` (some tags depend on hyperparameters)."""
+    try:
+        return cls(**copy.deepcopy(dict(params))).get_tags()
+    except Exception:  # a failing constructor or tag is reported by the checks themselves
+        return class_tags
+
+
 def check_estimator(estimator_or_class: Any, *, data: Any = None) -> list[str]:
     """Run the contract checks that apply to an estimator's tags.
 
@@ -1075,13 +1086,14 @@ def check_estimator(estimator_or_class: Any, *, data: Any = None) -> list[str]:
         raise TypeError(f"check_estimator expects a dfm_python.base.BaseFactorModel, got {cls.__name__}.")
     if params_list is None:
         params_list = cls.get_test_params()
-    tags = cls.get_tags()
-    panel = make_panel(tags) if data is None else PanelData._coerce(data)
+    class_tags = cls.get_tags()
+    panel = make_panel(class_tags) if data is None else PanelData._coerce(data)
     train, new = _split(panel)
 
     ran: list[str] = []
     for params in params_list:
         label = f"{cls.__name__}({', '.join(f'{k}={v!r}' for k, v in params.items())})"
+        tags = _instance_tags(cls, params, class_tags)
         ctx = _Context(cls=cls, params=dict(params), data=panel, train=train, new=new, tags=tags, label=label)
         for name, check, applies in _CHECKS:
             if not applies(tags):

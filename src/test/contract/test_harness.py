@@ -232,6 +232,17 @@ class _DeclaredNonDeterministic(_NotRepeatable):
     _tags = {"non_deterministic": True}
 
 
+class _NonDeterministicUnlessShrunk(_NotRepeatable):
+    """Declares non_deterministic per instance (like AFM with random_state=None)."""
+
+    @classmethod
+    def get_test_params(cls):
+        return [{}]
+
+    def _instance_tags(self):
+        return {"non_deterministic": self.shrink == 0.0}
+
+
 class _PublicAttrInFit(_DummyForecaster):
     def _fit(self, data, **fit_kwargs):
         super()._fit(data)
@@ -481,6 +492,13 @@ def test_capability_failure_names_the_slot():
 
 def test_declared_non_deterministic_skips_repeatability():
     assert "fit" in check_estimator(_DeclaredNonDeterministic)
+
+
+def test_checks_use_the_instance_tags():
+    assert _NonDeterministicUnlessShrunk.get_tags()["non_deterministic"] is False
+    assert "fit" in check_estimator(_NonDeterministicUnlessShrunk)  # shrink=0.0: non-deterministic
+    with pytest.raises(AssertionError, match="check 'fit' failed"):
+        check_estimator(_NonDeterministicUnlessShrunk(shrink=0.5))  # declared deterministic, but is not
 
 
 def test_debug_logging_is_not_noise():

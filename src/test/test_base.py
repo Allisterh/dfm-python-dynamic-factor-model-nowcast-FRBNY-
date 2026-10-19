@@ -69,6 +69,32 @@ def test_get_tags_works_on_instances_and_returns_a_copy():
     assert _Child.get_tags()["task"] == "forecast"
 
 
+class _SeedTagged(_Bare):
+    def __init__(self, *, alpha=1.0, random_state=None):
+        self.alpha = alpha
+        self.random_state = random_state
+
+    def _instance_tags(self):
+        return {"non_deterministic": self.random_state is None}
+
+
+def test_instance_tags_apply_only_on_instances():
+    assert _SeedTagged.get_tags()["non_deterministic"] is False  # class tags
+    assert _SeedTagged().get_tags()["non_deterministic"] is True
+    assert _SeedTagged(random_state=0).get_tags()["non_deterministic"] is False
+    assert _SeedTagged().get_tags()["task"] == "forecast"  # the class tags are still merged in
+
+
+def test_unknown_instance_tag_raises():
+    class _BadInstanceTag(_Bare):
+        def _instance_tags(self):
+            return {"non_determinstic": True}
+
+    assert _BadInstanceTag.get_tags() == DEFAULT_TAGS
+    with pytest.raises(ConfigurationError, match="'non_deterministic'"):
+        _BadInstanceTag().get_tags()
+
+
 def test_unknown_tag_raises_with_closest_name():
     class _Typo(_Bare):
         _tags = {"capability:exogg": True}

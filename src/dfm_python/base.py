@@ -30,6 +30,7 @@ which the unmigrated models still inherit.
 
 from __future__ import annotations
 
+import functools
 import warnings
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -82,6 +83,27 @@ DEFAULT_TAGS: dict = {
 }
 
 
+class _class_or_instance_method:
+    """Like ``classmethod``, but also passes the instance (None when called on the class).
+
+    The function is called as ``func(cls, instance, *args, **kwargs)``.
+    """
+
+    def __init__(self, func: Any) -> None:
+        self.__func__ = func
+        functools.update_wrapper(self, func)
+
+    def __get__(self, instance: Any, owner: Optional[type] = None) -> Any:
+        cls = owner if owner is not None else type(instance)
+        func = self.__func__
+
+        @functools.wraps(func)
+        def bound(*args: Any, **kwargs: Any) -> Any:
+            return func(cls, instance, *args, **kwargs)
+
+        return bound
+
+
 def _is_fitted_name(name: str) -> bool:
     """Public fitted-attribute names: a trailing underscore and no leading one."""
     return name.endswith("_") and not name.startswith("_")
@@ -101,14 +123,21 @@ class BaseFactorModel(BaseEstimator):
 
     # -- tags -------------------------------------------------------------
 
-    @classmethod
-    def get_tags(cls) -> dict:
+    @_class_or_instance_method
+    def get_tags(cls, self: Optional[BaseFactorModel] = None) -> dict:
         """Return the tags, merging ``_tags`` along the MRO (base classes first).
+
+        Called on the class (``Model.get_tags()``) it returns the class tags.
+        Called on an instance (``model.get_tags()``) it also applies the
+        instance's :meth:`_instance_tags`, for tags that depend on
+        hyperparameters (for example ``non_deterministic`` when
+        ``random_state is None``).
 
         Raises
         ------
         ConfigurationError
-            If a class in the MRO sets a tag name that is not in :data:`DEFAULT_TAGS`.
+            If a class in the MRO, or ``_instance_tags``, sets a tag name that
+            is not in :data:`DEFAULT_TAGS`.
         """
         tags: dict = {}
         for klass in reversed(cls.__mro__):
@@ -119,7 +148,19 @@ class BaseFactorModel(BaseEstimator):
             if unknown:
                 raise ConfigurationError(f"{klass.__name__}._tags: " + _unknown_keys_message(unknown, list(DEFAULT_TAGS), "tag"))
             tags.update(own)
+        if self is not None:
+            own = self._instance_tags()
+            unknown = [k for k in own if k not in DEFAULT_TAGS]
+            if unknown:
+                raise ConfigurationError(
+                    f"{cls.__name__}._instance_tags: " + _unknown_keys_message(unknown, list(DEFAULT_TAGS), "tag")
+                )
+            tags.update(own)
         return tags
+
+    def _instance_tags(self) -> dict:
+        """Tag overrides that depend on this instance's hyperparameters (default: none)."""
+        return {}
 
     # -- parameters and config ---------------------------------------------
 
