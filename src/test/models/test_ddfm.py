@@ -7,7 +7,7 @@ import torch
 import torch.nn
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, RobustScaler
-from dfm_python.models import DDFM
+from dfm_python.models.ddfm._engine import DDFMEngine as DDFM
 from dfm_python.dataset.ddfm_dataset import DDFMDataset
 from dfm_python.utils.errors import DataError, DataValidationError, ModelNotTrainedError, ModelNotInitializedError
 from dfm_python.config.constants import MIN_VARIABLES, MIN_DDFM_TIME_STEPS, DEFAULT_ENCODER_LAYERS

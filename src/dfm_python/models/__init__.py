@@ -17,7 +17,7 @@ __all__ = [
 
 # DDFM implementation
 try:
-    from .ddfm.ddfm import DDFM
+    from .ddfm._engine import DDFMEngine as DDFM
     __all__.extend([
         'DDFM',  # High-level API
     ])

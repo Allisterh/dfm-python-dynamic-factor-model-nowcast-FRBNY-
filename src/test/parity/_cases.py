@@ -427,7 +427,7 @@ def _ddfm_update_outputs(model: Any, upd: Any) -> dict[str, np.ndarray]:
 def _ddfm_macro() -> CaseRun:
     from sklearn.preprocessing import StandardScaler
 
-    from dfm_python import DDFM
+    from dfm_python.models.ddfm._engine import DDFMEngine as DDFM
     from dfm_python.config.schema.model import DDFMConfig
     from dfm_python.dataset.ddfm_dataset import DDFMDataset
 
@@ -483,7 +483,7 @@ def _ddfm_fit_and_update(panel: pd.DataFrame, time_idx: str, covariates: list[st
     """Fit DDFM on ``panel`` minus the last rows, then update with the whole panel."""
     from sklearn.preprocessing import StandardScaler
 
-    from dfm_python import DDFM
+    from dfm_python.models.ddfm._engine import DDFMEngine as DDFM
     from dfm_python.dataset.ddfm_dataset import DDFMDataset
 
     fit_df = panel.iloc[:-_DDFM_HOLDOUT]

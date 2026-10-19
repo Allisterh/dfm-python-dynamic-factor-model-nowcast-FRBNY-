@@ -79,7 +79,7 @@ from .dataset.ddfm_dataset import DDFMDataset
 # DDFM) and the AFM engine still inherit the old one from dfm_python.models.base)
 from .base import BaseFactorModel
 from .models.dfm import DFM
-from .models.ddfm.ddfm import DDFM
+from .models.ddfm._engine import DDFMEngine as DDFM
 from .models.ivdfm.estimator import iVDFM
 from .models.afm.estimator import AFM
 

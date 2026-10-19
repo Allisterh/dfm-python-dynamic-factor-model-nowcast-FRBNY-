@@ -2,6 +2,21 @@
 
 Implements the original DDFM algorithm with MCMC-based denoising training
 and sequential MC sample processing.
+
+``DDFMEngine`` is the private engine behind the public DDFM estimator. Its
+code is the pre-redesign ``DDFM`` class unchanged, apart from three edits that
+change no math and no RNG order:
+
+(a) a ``device`` keyword: ``None`` keeps the automatic choice (CUDA when
+    available, else CPU) and anything else becomes ``torch.device(device)``;
+    the dataset tensors built in ``run_mcmc_iteration`` follow it;
+(b) a pure extraction from ``predict``: :meth:`DDFMEngine._forecast` runs the
+    AR(1) factor forecast and maps it to the targets, inverse-transforming with
+    ``self.scaler`` when it is set (identity otherwise); ``predict`` keeps its
+    checks, its update branch and its return flags and calls ``_forecast``;
+(c) ``target_series`` and ``covariates`` are copied from the dataset in
+    ``__init__``, and ``_update`` and ``_refit_scalers_with_new_data`` read
+    them instead of ``self._dataset``, so an engine needs no dataset to update.
 """
 
 import time
@@ -74,7 +89,7 @@ from ...dataset.ddfm_dataset import DDFMDataset
 _logger = get_logger(__name__)
 
 
-class DDFM(BaseFactorModel, nn.Module):
+class DDFMEngine(BaseFactorModel, nn.Module):
     """Deep Dynamic Factor Model using PyTorch."""
     
     def __init__(
@@ -97,6 +112,7 @@ class DDFM(BaseFactorModel, nn.Module):
         interpolation_method: str = 'linear',
         interpolation_limit: Optional[int] = 10,
         interpolation_limit_direction: str = 'both',
+        device: Optional[Union[str, torch.device]] = None,
     ):
         """Initialize DDFM model."""
         BaseFactorModel.__init__(self)
@@ -109,6 +125,8 @@ class DDFM(BaseFactorModel, nn.Module):
         
         self._config = config
         self._dataset = dataset
+        self.target_series = list(dataset.target_series)
+        self.covariates = list(dataset.covariates)
         
         if encoder_size is None:
             encoder_size = tuple(DEFAULT_ENCODER_LAYERS)
@@ -152,7 +170,10 @@ class DDFM(BaseFactorModel, nn.Module):
         self.optimizer: Optional[torch.optim.Optimizer] = None  # Built in _build_optimizer()
         self.scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None  # Built in _build_optimizer()
         
-        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        if device is None:
+            self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        else:
+            self.device = torch.device(device)
         self.training_state = DDFMModelState()
         
         self.lags_input = 0
@@ -630,7 +651,7 @@ class DDFM(BaseFactorModel, nn.Module):
         _logger.info(f"DDFM model saved to {path}")
     
     @classmethod
-    def load(cls, path: Union[str, Path], dataset: Optional[DDFMDataset] = None) -> 'DDFM':
+    def load(cls, path: Union[str, Path], dataset: Optional[DDFMDataset] = None) -> 'DDFMEngine':
         """Load DDFM model from checkpoint file.
         
         Parameters
@@ -798,6 +819,30 @@ class DDFM(BaseFactorModel, nn.Module):
             horizon = DEFAULT_FORECAST_HORIZON
         horizon = validate_horizon(horizon)
         
+        # Inverse transform target series to original scale
+        if self.scaler is None:
+            raise ConfigurationError(
+                f"{self.__class__.__name__} forecast failed: scaler is None",
+                details="Dataset must provide scaler for proper forecast scaling"
+            )
+        
+        y_forecast, Z_forecast = self._forecast(horizon)
+        
+        # Return based on flags
+        if return_series and return_factors:
+            return y_forecast, Z_forecast
+        if return_series:
+            return y_forecast
+        return Z_forecast
+    
+    def _forecast(self, horizon: int) -> Tuple[np.ndarray, np.ndarray]:
+        """Forecast the targets and factors ``horizon`` steps ahead.
+
+        Pure: reads the state-space parameters and the last factor state and
+        changes nothing. Returns ``(y_forecast, Z_forecast)`` of shapes
+        ``(horizon, num_target_series)`` and ``(horizon, num_factors)``;
+        ``y_forecast`` is on the original scale when ``self.scaler`` is set.
+        """
         # Get state-space parameters from training_state (single source of truth)
         F = self.training_state.F  # Transition matrix (m x m)
         H = self.training_state.H  # Observation matrix (N x m) where N is num_target_series
@@ -830,28 +875,20 @@ class DDFM(BaseFactorModel, nn.Module):
         # y_forecast shape: (horizon, num_target_series)
         y_forecast_std = Z_forecast @ H.T
         
-        # Inverse transform target series to original scale
-        if self.scaler is None:
-            raise ConfigurationError(
-                f"{self.__class__.__name__} forecast failed: scaler is None",
-                details="Dataset must provide scaler for proper forecast scaling"
-            )
-        
-        # Scaler was fitted on target series only, so inverse_transform directly
-        y_forecast = self.scaler.inverse_transform(y_forecast_std)
+        # Inverse transform target series to original scale (identity without
+        # a scaler). Scaler was fitted on target series only, so
+        # inverse_transform directly
+        if self.scaler is not None:
+            y_forecast = self.scaler.inverse_transform(y_forecast_std)
+        else:
+            y_forecast = y_forecast_std
         y_forecast = np.nan_to_num(y_forecast, nan=0.0, posinf=0.0, neginf=0.0)
         
         # Ensure numpy array and validate
         y_forecast = np.asarray(y_forecast, dtype=DEFAULT_DTYPE)
         validate_no_nan_inf(y_forecast, name="forecast y_forecast")
         validate_no_nan_inf(Z_forecast, name="factor forecast Z_forecast")
-        
-        # Return based on flags
-        if return_series and return_factors:
-            return y_forecast, Z_forecast
-        if return_series:
-            return y_forecast
-        return Z_forecast
+        return y_forecast, Z_forecast
     
     def get_result(self):
         """Extract DDFMResult from trained model."""
@@ -991,7 +1028,7 @@ class DDFM(BaseFactorModel, nn.Module):
         pd.DataFrame
             Updated new_data_df with re-scaled target values
         """
-        target_cols = list(self._dataset.target_series)
+        target_cols = list(self.target_series)
         
         # Get unstandardized new data from dataset for scaler re-fitting
         # Dataset stores original (unstandardized) data in data_original before scaling
@@ -1130,8 +1167,8 @@ class DDFM(BaseFactorModel, nn.Module):
         # Check if target_series match, or if covariates match (which would result in same target_series)
         new_targets = getattr(dataset, 'target_series', None)
         new_covariates = getattr(dataset, 'covariates', None) or []
-        train_targets = getattr(self._dataset, 'target_series', None)
-        train_covariates = getattr(self._dataset, 'covariates', None) or []
+        train_targets = self.target_series
+        train_covariates = self.covariates or []
         
         # If target_series don't match, check if it's due to covariates difference
         if new_targets != train_targets:
