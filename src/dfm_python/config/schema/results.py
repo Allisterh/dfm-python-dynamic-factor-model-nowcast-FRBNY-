@@ -252,20 +252,19 @@ class DFMResult(BaseResult):
     training_regularization_scale : float, optional
         Regularization scale used (from config.regularization if provided)
     
+    The :class:`~dfm_python.DFM` estimator exposes it as ``result_``. Its
+    series-indexed matrices (``C``, ``R``, ``x_sm``) are in the estimator's
+    internal order ``internal_feature_names_`` (``[clock | slower]``), not
+    the user's column order. The ``training_*`` fields are never set.
+
     Examples
     --------
     >>> from dfm_python import DFM
-    >>> model = DFM()
-    >>> Res = model.fit(X, config, threshold=1e-4)
-    >>> # Access smoothed factors
-    >>> common_factor = Res.Z[:, 0]
-    >>> # Access factor loadings for first series
-    >>> loadings = Res.C[0, :]
-    >>> # Reconstruct smoothed series from factors
-    >>> reconstructed = Res.Z @ Res.C.T
-    >>> # Access training hyperparameters
-    >>> print(f"Used {Res.training_max_iter} max iterations")
-    >>> print(f"Convergence threshold: {Res.training_threshold}")
+    >>> model = DFM(n_factors=1, tol=1e-4).fit(data)  # doctest: +SKIP
+    >>> res = model.result_  # doctest: +SKIP
+    >>> common_factor = res.Z[:, 0]  # smoothed state, T x m  # doctest: +SKIP
+    >>> loadings = res.C[0, :]  # loadings of model.internal_feature_names_[0]  # doctest: +SKIP
+    >>> reconstructed = res.Z @ res.C.T  # equals res.x_sm  # doctest: +SKIP
     """
     # All fields inherited from BaseResult
     # converged and num_iter have specific meaning for EM algorithm

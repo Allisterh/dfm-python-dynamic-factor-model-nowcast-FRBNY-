@@ -62,6 +62,21 @@ def test_ddfm_is_the_estimator():
         assert not hasattr(namespace, "DDFMEngine"), namespace.__name__
 
 
+def test_dfm_is_the_estimator():
+    import dfm_python.models
+    import dfm_python.models.dfm as dfm_pkg
+    from dfm_python.models.dfm._engine import DFMEngine
+    from dfm_python.models.dfm.estimator import DFM
+
+    assert dfm_python.DFM is DFM and "DFM" in dfm_python.__all__
+    assert dfm_python.models.DFM is DFM and "DFM" in dfm_python.models.__all__
+    assert dfm_pkg.DFM is DFM and "DFM" in dfm_pkg.__all__
+    assert issubclass(DFM, BaseFactorModel) and DFM is not DFMEngine
+    for namespace in (dfm_python, dfm_python.models, dfm_pkg):
+        assert "DFMEngine" not in getattr(namespace, "__all__", ()), namespace.__name__
+        assert not hasattr(namespace, "DFMEngine"), namespace.__name__
+
+
 def test_ivdfm_dataset_is_not_public():
     # The iVDFM dataset is the estimator's private adapter base (dfm_python.dataset.ivdfm_dataset).
     import dfm_python.dataset

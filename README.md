@@ -40,35 +40,41 @@ pip install "dfm-python[yaml,tune]"
 
 ## DFM
 
-Pass preprocessed data; the model standardizes it internally.
+DFM is an estimator on `PanelData`: the series in `y`, in any column order,
+and the sampling frequency of the slower ones in `freq` (unlisted series use
+the clock). One frequency slower than the clock is supported; its tent kernel
+is required.
 
 ```python
 import numpy as np
 import pandas as pd
-from dfm_python import DFM, DFMDataset
-from dfm_python.config import DFMConfig
+from dfm_python import DFM, PanelData
 
-rng = np.random.default_rng(0)
-cols = ["s0", "s1", "s2", "s3"]
-df = pd.DataFrame(rng.standard_normal((120, 4)), columns=cols)
-df["date"] = pd.date_range("2010-01-31", periods=120, freq="ME")
+idx = pd.date_range("2010-01-31", periods=120, freq="ME", name="date")
+df = pd.DataFrame(np.random.default_rng(0).standard_normal((120, 4)),
+                  index=idx, columns=["gdp", "s0", "s1", "s2"])
+df.loc[df.index.month % 3 != 0, "gdp"] = np.nan        # quarterly series, any column position
 
-config = DFMConfig(
-    blocks={"global": {"num_factors": 1, "series": cols}},
-    frequency={c: "m" for c in cols},
-    clock="m",
-    max_iter=50,
-)
-dataset = DFMDataset(config=config, data=df, time_index="date")
-model = DFM(dataset=dataset, config=config)
-model.fit()                                     # EM + Kalman smoother
-X_forecast, Z_forecast = model.predict(horizon=6)
-print(X_forecast.shape, Z_forecast.shape)       # (6, 4) series, (6, state dim)
+data = PanelData(y=df, freq={"gdp": "q"})
+model = DFM(n_factors=1, clock="m", tent_weights={"q:m": [1, 2, 3, 2, 1]},
+            max_iter=50, scaler="standard")             # blocks=None: one global block
+model.fit(data)                                         # EM + Kalman smoother
+fc = model.predict(6)                                   # DataFrame 6 x 4, columns in your order
+zf = model.predict_factors(6)                           # DataFrame 6 x state dim
+model.result_.loglik, model.n_iter_, model.converged_
 ```
 
-DFM still uses this dataset-then-model pattern; AFM, iVDFM and DDFM below are
-estimators that take a `PanelData` container. Every model and config class is
-importable from `dfm_python`. YAML configurations for each model are in
+`scaler=None` (the default) fits on the data as given; pass
+`scaler="standard"` to standardize the series. Forecasts are in data units and
+report every series at every clock date, slower series included. The engine
+orders the series `[clock | slower]` internally (`internal_feature_names_`),
+and the series-indexed matrices of `result_` (`C`, `R`, `x_sm`) are in that
+order. `blocks={"name": {"n_factors": 2, "series": [...]}, ...}` replaces the
+single global block.
+
+AFM, iVDFM and DDFM below are estimators on the same `PanelData` container.
+Every model and config class is importable from `dfm_python`. YAML
+configurations for each model are in
 [`config/`](https://github.com/minkeymouse/dfm-python/tree/main/config) and
 end-to-end scripts in
 [`tutorial/`](https://github.com/minkeymouse/dfm-python/tree/main/tutorial)

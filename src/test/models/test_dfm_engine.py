@@ -5,8 +5,8 @@ fixed: ``update()`` imported ``..numeric.validator`` (the non-existent
 ``dfm_python.models.numeric``) and always raised ``ModuleNotFoundError``.
 These tests cover ``update()`` without any import shim (several rows, through
 the filter-and-smooth branch, and one row, through pykalman's
-``filter_update``), the purity of ``predict(horizon, data=)``, and the public
-names that still point at the engine until the estimator exists.
+``filter_update``), the purity of ``predict(horizon, data=)``, and that the public
+``DFM`` names the estimator, not the engine.
 """
 
 import copy
@@ -154,10 +154,12 @@ def test_predict_with_data_leaves_the_model_unchanged(fitted):
     np.testing.assert_array_equal(Z1, Z0, strict=True)
 
 
-def test_public_dfm_names_the_engine_until_the_estimator_exists():
+def test_public_dfm_is_the_estimator_not_the_engine():
     import dfm_python.models
     import dfm_python.models.dfm
+    from dfm_python.models.dfm.estimator import DFM
 
-    assert dfm_python.DFM is DFMEngine
-    assert dfm_python.models.DFM is DFMEngine
-    assert dfm_python.models.dfm.DFM is DFMEngine
+    assert dfm_python.DFM is DFM
+    assert dfm_python.models.DFM is DFM
+    assert dfm_python.models.dfm.DFM is DFM
+    assert DFM is not DFMEngine

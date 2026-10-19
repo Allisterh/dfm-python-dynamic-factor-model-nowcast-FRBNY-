@@ -329,7 +329,8 @@ def _dfm_fit(config_dict: dict[str, Any], df: pd.DataFrame,
 _DFM_SYNTHETIC_NEW_ROWS = 6
 
 
-def _dfm_synthetic() -> CaseRun:
+def dfm_synthetic_inputs() -> tuple[pd.DataFrame, pd.DataFrame, dict[str, Any], dict[str, Any]]:
+    """The ``dfm_synthetic`` panel, its update rows (both with a ``date`` column), config dict and data recipe."""
     T, N, r, seed = 80, 5, 2, 0
     rng = np.random.default_rng(seed)
     f = np.zeros((T, r))
@@ -375,6 +376,11 @@ def _dfm_synthetic() -> CaseRun:
             "input_sha256": _digest(new_df),
         },
     }
+    return df, new_df, config, data
+
+
+def _dfm_synthetic() -> CaseRun:
+    df, new_df, config, data = dfm_synthetic_inputs()
     outputs, hyper = _dfm_fit(config, df, new_rows=new_df)
     return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
 

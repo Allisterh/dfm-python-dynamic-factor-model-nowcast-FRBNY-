@@ -1,0 +1,706 @@
+"""``DFM``: the linear dynamic factor model estimator (sklearn conventions, PanelData input).
+
+The estimator is a thin layer over the private engine
+:class:`~dfm_python.models.dfm._engine.DFMEngine`, which runs today's
+initialization, EM (``functional/em.py``) and Kalman filter and smoother
+(pykalman) unchanged. ``fit`` builds the engine's inputs from
+:class:`~dfm_python.PanelData`:
+
+- the per-series frequencies ``freq_`` (``PanelData.freq``; unlisted series
+  use the clock);
+- the internal column order: a stable partition ``[clock | slower]`` of the
+  user's series (the relative order is kept within each group), the order the
+  engine requires and :class:`~dfm_python.dataset.dfm_dataset.DFMDataset`
+  builds. Input already in that order gives the identity permutation;
+- the engine's :class:`~dfm_python.config.DFMConfig`, with every
+  hyperparameter passed explicitly, and its dataset on that order.
+
+Same data and same hyperparameters give the same numbers as the engine called
+directly. ``predict(h)`` returns the series forecast in data units, in the
+user's column order, and ``predict_factors(h)`` the forecast of the whole
+state vector. The engine's matrices in ``result_`` (``C``, ``R``, ``x_sm``) are
+in the internal order, ``internal_feature_names_``.
+"""
+
+from __future__ import annotations
+
+import copy
+import logging
+import math
+import warnings
+from collections.abc import Mapping
+from typing import Any, Optional
+
+import numpy as np
+import pandas as pd
+from sklearn.base import clone
+from sklearn.exceptions import NotFittedError as SklearnNotFittedError
+from sklearn.preprocessing import MaxAbsScaler, MinMaxScaler, QuantileTransformer, RobustScaler, StandardScaler
+from sklearn.utils.validation import check_is_fitted
+
+from ...base import BaseFactorModel
+from ...config.constants import FREQUENCY_HIERARCHY, MAX_TENT_SIZE, PERIODS_PER_YEAR, VALID_FREQUENCIES
+from ...config.estimator import _unknown_keys_message
+from ...config.schema.model import DFMConfig
+from ...dataset.dfm_dataset import DFMDataset
+from ...dataset.panel import PanelData
+from ...logger import get_logger
+from ...logger.progress import quiet_engine_loggers
+from ...utils.errors import ConfigurationError, DataValidationError, UnsupportedInputError
+from ._engine import DFMEngine
+from .tent import generate_tent_weights
+
+__all__ = ["DFM"]
+
+_logger = get_logger(__name__)
+
+#: Scaler names accepted by ``scaler``, and the class each one builds.
+_SCALERS = {
+    "standard": StandardScaler,
+    "robust": RobustScaler,
+    "minmax": MinMaxScaler,
+    "maxabs": MaxAbsScaler,
+    "quantile": QuantileTransformer,
+}
+_BLOCK_KEYS = ("n_factors", "series")
+_AR_CLIP_KEYS = ("min", "max")
+_REGULARIZATION_KEYS = ("scale", "min_eigenvalue", "max_eigenvalue")
+# Loggers the engine (and the code it calls) writes to. With verbose=0 they are
+# raised to ERROR during fit and predict: the engine logs its progress at INFO
+# and numerical diagnostics (stabilization, Kalman fallbacks) as warnings.
+_ENGINE_LOGGERS = (
+    "dfm_python.models.dfm",
+    "dfm_python.functional",
+    "dfm_python.ssm",
+    "dfm_python.numeric",
+    "dfm_python.dataset.dfm_dataset",
+    "dfm_python.logger",
+    "dfm_python.utils",
+    "dfm_python.config",
+)
+# Name of the adapter's time column; it is never a series name (a suffix is
+# added if a series has this name). DFMDataset needs a time column, and the
+# engine never reads its values.
+_TIME_COLUMN = "__dfm_python_time__"
+# The name of the default block (blocks=None), which spans every series.
+_GLOBAL_BLOCK = "Block_Global"
+
+
+def _is_int(value: Any) -> bool:
+    return isinstance(value, (int, np.integer)) and not isinstance(value, (bool, np.bool_))
+
+
+def _is_real(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float, np.integer, np.floating))
+        and not isinstance(value, (bool, np.bool_))
+        and math.isfinite(value)
+    )
+
+
+def _hierarchy(code: str) -> int:
+    return FREQUENCY_HIERARCHY[code]
+
+
+def _symmetric_tent_kernel(slower: str, clock: str) -> list:
+    """The symmetric tent kernel for a ``slower`` series on a ``clock`` clock.
+
+    ``generate_tent_weights(2k - 1)`` with ``k = PERIODS_PER_YEAR[clock] //
+    PERIODS_PER_YEAR[slower]``, the clock periods per slower period: ``q`` on
+    an ``m`` clock gives ``[1, 2, 3, 2, 1]``. Used only in error messages.
+    """
+    k = PERIODS_PER_YEAR[clock] // PERIODS_PER_YEAR[slower]
+    return generate_tent_weights(2 * k - 1).tolist()
+
+
+class DFM(BaseFactorModel):
+    """Linear dynamic factor model estimated by EM with Kalman filtering and smoothing.
+
+    Latent factors follow a VAR(1) at the clock frequency; each series loads
+    on the factors of the blocks it belongs to and has an idiosyncratic
+    component. Series sampled at one frequency slower than the clock (for
+    example quarterly series on a monthly clock) load on the factors through
+    a tent kernel over the clock periods of their sampling period, and are
+    NaN at the clock dates between observations. Missing values are allowed.
+
+    The constructor only stores its arguments; they are validated in ``fit``.
+
+    Parameters
+    ----------
+    n_factors : int, optional
+        Number of factors of the single global block used when ``blocks`` is
+        None; None means 1. Must stay None when ``blocks`` is given.
+    blocks : dict, optional
+        Block structure ``{name: {"n_factors": int, "series": [names]}}``.
+        ``series`` is required and non-empty; ``n_factors`` defaults to 1.
+        None means one global block over every series.
+    clock : {"d", "w", "m", "q", "sa", "a"}, default "m"
+        Frequency of the latent factors. Every series is sampled at the clock
+        or at one slower frequency, given by ``PanelData.freq``.
+    tent_weights : dict, optional
+        Tent kernel of the slower frequency ``f``, under the key ``"f:clock"``
+        (or ``"f"``), for example ``{"q:m": [1, 2, 3, 2, 1]}``: positive
+        weights, at most 12. Required when the data has a slower frequency;
+        there is no default kernel, and the error names the symmetric kernel
+        of ``generate_tent_weights`` to pass.
+    max_iter : int, default 5000
+        Maximum EM iterations.
+    tol : float, default 1e-5
+        EM convergence threshold on the relative change of the
+        log-likelihood.
+    ar_clip : dict, optional
+        ``{"min": float, "max": float}``: clip the AR coefficients of the
+        transition matrix to this range after each M step (a missing key uses
+        the engine's default bound). None does not clip.
+    data_clip : float, optional
+        Clip the data at this many standard deviations around the mean before
+        EM. None does not clip.
+    regularization : dict, optional
+        Keys among ``"scale"`` (ridge penalty of the regressions),
+        ``"min_eigenvalue"`` and ``"max_eigenvalue"`` (the eigenvalue cap of
+        the transition matrix); missing keys use the engine's values. None
+        uses the engine's defaults.
+    damping_factor : float, optional
+        In (0, 1]: each EM update is ``damping_factor * new + (1 -
+        damping_factor) * old``. None does not damp.
+    scaler : str or sklearn transformer, optional
+        Scaler of the series: "standard", "robust", "minmax", "maxabs",
+        "quantile", or an unfitted transformer, which is cloned. None (the
+        default) fits on the data as given, which must then already be on a
+        comparable scale (the engine rejects series with a standard deviation
+        above 100 or below 1e-4). Forecasts are always in data units.
+    verbose : int, default 0
+        0 is silent; 1 logs the engine's progress; 2 also logs debug records.
+
+    Attributes
+    ----------
+    result_ : DFMResult
+        A copy of the engine's result: ``A``, ``C``, ``Q``, ``R``, ``Z_0``,
+        ``V_0``, the smoothed state ``Z`` (T x m) and ``x_sm = Z @ C.T``,
+        ``loglik``, ``num_iter``, ``converged``, ``r`` and ``p``. The
+        series-indexed matrices (``C``, ``R``, ``x_sm``) are in the internal
+        order ``internal_feature_names_``, not the user's.
+    factors_ : pandas.DataFrame
+        ``result_.Z`` as float64 on ``index_``, columns ``state_0`` ..
+        ``state_{m-1}`` (the factors, their lags and the idiosyncratic states).
+    engine_ : DFMEngine
+        The fitted engine.
+    scaler_ : sklearn transformer or None
+        The scaler fitted on the training data, in the internal order.
+    n_features_in_, feature_names_in_, exog_names_in_, index_
+        Number and names (user order) of the series, the exog names (always
+        empty) and the training index.
+    internal_feature_names_ : numpy.ndarray
+        The series in the engine's order ``[clock | slower]``.
+    freq_ : dict
+        Frequency of every series, in the user's order.
+    n_iter_ : int
+        EM iterations run.
+    converged_ : bool
+        True when EM stopped on ``tol`` before ``max_iter``.
+    loglik_ : float
+        The engine's log-likelihood of the last EM iteration.
+    n_factors_ : int
+        Total number of factors (the sum over the blocks).
+    conditioning_index_ : pandas.Index
+        Time index of the data the forecasts start from; ``predict(h)``
+        returns the ``h`` stamps after its last entry.
+
+    Notes
+    -----
+    Forecasts report every series at every clock date, slower series
+    included: a quarterly series on a monthly clock gets a value for each
+    forecast month (the tent-weighted combination of the factor forecasts),
+    as the engine computes it.
+
+    Examples
+    --------
+    >>> from dfm_python import DFM, PanelData
+    >>> data = PanelData(y=df, freq={"gdp": "q"})  # doctest: +SKIP
+    >>> model = DFM(n_factors=1, clock="m", tent_weights={"q:m": [1, 2, 3, 2, 1]},
+    ...             max_iter=50, scaler="standard").fit(data)  # doctest: +SKIP
+    >>> model.predict(6)  # doctest: +SKIP
+    >>> model.predict_factors(6)  # doctest: +SKIP
+    """
+
+    _tags = {
+        "task": "forecast",
+        "backend": "numpy",
+        "capability:mixed_frequency": True,
+        "capability:missing_values": True,
+        "capability:update": True,
+        "capability:factor_forecast": True,
+        "update_kind": "filter",
+        "predict_data": "new_rows",
+        "non_deterministic": False,
+    }
+
+    def __init__(
+        self,
+        *,
+        n_factors: Optional[int] = None,
+        blocks: Optional[Mapping] = None,
+        clock: str = "m",
+        tent_weights: Optional[Mapping] = None,
+        max_iter: int = 5000,
+        tol: float = 1e-5,
+        ar_clip: Optional[Mapping] = None,
+        data_clip: Optional[float] = None,
+        regularization: Optional[Mapping] = None,
+        damping_factor: Optional[float] = None,
+        scaler: Any = None,
+        verbose: int = 0,
+    ) -> None:
+        self.n_factors = n_factors
+        self.blocks = blocks
+        self.clock = clock
+        self.tent_weights = tent_weights
+        self.max_iter = max_iter
+        self.tol = tol
+        self.ar_clip = ar_clip
+        self.data_clip = data_clip
+        self.regularization = regularization
+        self.damping_factor = damping_factor
+        self.scaler = scaler
+        self.verbose = verbose
+
+    @classmethod
+    def get_test_params(cls) -> list[dict]:
+        """Small parameter sets for the contract fixture (a quarterly series on a monthly clock).
+
+        One global factor, and a standardized fit with two factors.
+        """
+        tent = {"q:m": [1, 2, 3, 2, 1]}
+        return [
+            {"tent_weights": tent, "max_iter": 5},
+            {"n_factors": 2, "tent_weights": tent, "max_iter": 5, "scaler": "standard"},
+        ]
+
+    # -- validation ----------------------------------------------------------
+
+    def _fail(self, message: str) -> None:
+        raise ConfigurationError(f"{type(self).__name__}: {message}")
+
+    def _validate_params(self) -> None:
+        """Raise ``ConfigurationError`` naming the first invalid hyperparameter."""
+        fail = self._fail
+        if self.n_factors is not None and (not _is_int(self.n_factors) or self.n_factors < 1):
+            fail(f"n_factors must be None or a positive integer, got {self.n_factors!r}.")
+        if self.blocks is not None:
+            if self.n_factors is not None:
+                fail(
+                    "set n_factors or blocks, not both: n_factors is the size of the single global block used "
+                    "when blocks is None; with blocks, give each block its own n_factors."
+                )
+            self._check_blocks()
+        if not isinstance(self.clock, str) or self.clock not in VALID_FREQUENCIES:
+            fail(f"clock must be one of {sorted(VALID_FREQUENCIES)}, got {self.clock!r}.")
+        self._check_tent_weights()
+        if not _is_int(self.max_iter) or self.max_iter < 1:
+            fail(f"max_iter must be a positive integer, got {self.max_iter!r}.")
+        if not _is_real(self.tol) or self.tol < 0:
+            fail(f"tol must be a finite number >= 0, got {self.tol!r}.")
+        self._check_ar_clip()
+        if self.data_clip is not None and (not _is_real(self.data_clip) or self.data_clip <= 0):
+            fail(f"data_clip must be None or a finite number > 0 (standard deviations), got {self.data_clip!r}.")
+        self._check_regularization()
+        damping = self.damping_factor
+        if damping is not None and (not _is_real(damping) or not 0 < damping <= 1):
+            fail(f"damping_factor must be None or a number in (0, 1], got {damping!r}.")
+        self._check_scaler()
+        if not _is_int(self.verbose) or self.verbose < 0:
+            fail(f"verbose must be a non-negative integer (0 silent, 1 progress, 2 debug), got {self.verbose!r}.")
+
+    def _check_blocks(self) -> None:
+        fail = self._fail
+        blocks = self.blocks
+        if not isinstance(blocks, Mapping) or len(blocks) == 0:
+            fail(f"blocks must be None or a non-empty dict {{name: {{'n_factors': int, 'series': [...]}}}}, got {blocks!r}.")
+        for name, spec in blocks.items():
+            if not isinstance(name, str) or not name:
+                fail(f"blocks: block names must be non-empty strings, got {name!r}.")
+            if not isinstance(spec, Mapping):
+                fail(f"blocks[{name!r}] must be a dict with keys 'n_factors' and 'series', got {spec!r}.")
+            unknown = [key for key in spec if key not in _BLOCK_KEYS]
+            if unknown:
+                fail(f"blocks[{name!r}]: " + _unknown_keys_message(unknown, _BLOCK_KEYS, "block key"))
+            n = spec.get("n_factors", 1)
+            if not _is_int(n) or n < 1:
+                fail(f"blocks[{name!r}]['n_factors'] must be a positive integer, got {n!r}.")
+            if "series" not in spec:
+                fail(f"blocks[{name!r}] has no 'series': list the series that load on this block.")
+            series = spec["series"]
+            if not isinstance(series, (list, tuple)) or len(series) == 0:
+                fail(f"blocks[{name!r}]['series'] must be a non-empty list of series names, got {series!r}.")
+            if len(set(series)) != len(series):
+                fail(f"blocks[{name!r}]['series'] lists a series more than once: {list(series)!r}.")
+
+    def _check_tent_weights(self) -> None:
+        fail = self._fail
+        weights = self.tent_weights
+        if weights is None:
+            return
+        if not isinstance(weights, Mapping):
+            fail(f"tent_weights must be None or a dict such as {{'q:m': [1, 2, 3, 2, 1]}}, got {weights!r}.")
+        seen: dict = {}
+        for key, values in weights.items():
+            slower, sep, clock = key.partition(":") if isinstance(key, str) else (None, "", None)
+            if slower not in VALID_FREQUENCIES or (sep and clock not in VALID_FREQUENCIES):
+                fail(
+                    f"tent_weights key {key!r} must be 'f:clock' or 'f' with frequency codes from "
+                    f"{sorted(VALID_FREQUENCIES)}, for example 'q:{self.clock}'."
+                )
+            if sep and clock != self.clock:
+                fail(f"tent_weights key {key!r} names clock {clock!r}, but clock is {self.clock!r}.")
+            if _hierarchy(slower) <= _hierarchy(self.clock):
+                fail(
+                    f"tent_weights key {key!r}: {slower!r} is not slower than the clock {self.clock!r}; tent weights "
+                    "apply only to a slower frequency."
+                )
+            if slower in seen:
+                fail(f"tent_weights gives frequency {slower!r} twice (keys {seen[slower]!r} and {key!r}); keep one.")
+            seen[slower] = key
+            if isinstance(values, (str, bytes)) or not isinstance(values, (list, tuple, np.ndarray)):
+                fail(f"tent_weights[{key!r}] must be a list of positive numbers, got {values!r}.")
+            values = list(np.asarray(values).ravel()) if isinstance(values, np.ndarray) else list(values)
+            if not values or not all(_is_real(v) and v > 0 for v in values):
+                fail(f"tent_weights[{key!r}] must be a non-empty list of finite numbers > 0, got {values!r}.")
+            if len(values) > MAX_TENT_SIZE:
+                fail(f"tent_weights[{key!r}] has {len(values)} weights; at most {MAX_TENT_SIZE} are supported.")
+
+    def _check_ar_clip(self) -> None:
+        clip = self.ar_clip
+        if clip is None:
+            return
+        if not isinstance(clip, Mapping) or len(clip) == 0:
+            self._fail(f"ar_clip must be None or a dict {{'min': float, 'max': float}}, got {clip!r}.")
+        unknown = [key for key in clip if key not in _AR_CLIP_KEYS]
+        if unknown:
+            self._fail("ar_clip: " + _unknown_keys_message(unknown, _AR_CLIP_KEYS, "key"))
+        for key, value in clip.items():
+            if not _is_real(value):
+                self._fail(f"ar_clip[{key!r}] must be a finite number, got {value!r}.")
+        if "min" in clip and "max" in clip and not clip["min"] < clip["max"]:
+            self._fail(f"ar_clip['min'] must be below ar_clip['max'], got {dict(clip)!r}.")
+
+    def _check_regularization(self) -> None:
+        reg = self.regularization
+        if reg is None:
+            return
+        if not isinstance(reg, Mapping):
+            self._fail(
+                f"regularization must be None or a dict with keys among {list(_REGULARIZATION_KEYS)}, got {reg!r}."
+            )
+        unknown = [key for key in reg if key not in _REGULARIZATION_KEYS]
+        if unknown:
+            self._fail("regularization: " + _unknown_keys_message(unknown, _REGULARIZATION_KEYS, "key"))
+        for key, value in reg.items():
+            if not _is_real(value) or value < 0 or (key != "scale" and value == 0):
+                bound = ">= 0" if key == "scale" else "> 0"
+                self._fail(f"regularization[{key!r}] must be a finite number {bound}, got {value!r}.")
+
+    def _check_scaler(self) -> None:
+        scaler = self.scaler
+        if scaler is None:
+            return
+        if isinstance(scaler, str):
+            if scaler.lower() not in _SCALERS:
+                self._fail(f"scaler must be None, one of {sorted(_SCALERS)} or a transformer instance, got {scaler!r}.")
+            return
+        if not (hasattr(scaler, "fit_transform") and hasattr(scaler, "inverse_transform")):
+            self._fail(f"scaler must have fit_transform and inverse_transform, got {type(scaler).__name__}.")
+
+    # -- layout --------------------------------------------------------------
+
+    def _series_frequencies(self, panel: PanelData) -> dict:
+        """``freq_``: each series' frequency (``PanelData.freq``, else the clock), in the user's order.
+
+        Raises
+        ------
+        UnsupportedInputError
+            For a series faster than the clock, or more than one slower frequency.
+        ConfigurationError
+            For a slower frequency without tent weights; the message gives the
+            symmetric kernel and the exact argument.
+        """
+        clock = self.clock
+        given = panel.freq or {}
+        freq = {name: given.get(name, clock) for name in panel.series_names}
+        faster = [name for name, code in freq.items() if _hierarchy(code) < _hierarchy(clock)]
+        if faster:
+            raise UnsupportedInputError(
+                f"DFM: series {faster} are sampled faster than the clock {clock!r} "
+                f"({ {name: freq[name] for name in faster} }). Every series must be sampled at the clock or at "
+                "one slower frequency; use a faster clock or aggregate those series."
+            )
+        slower = sorted({code for code in freq.values() if code != clock}, key=_hierarchy)
+        if len(slower) > 1:
+            raise UnsupportedInputError(
+                f"DFM supports one frequency slower than the clock, but the data has {slower} on clock {clock!r}. "
+                "Use a slower clock or aggregate the series to one frequency."
+            )
+        weights = self.tent_weights or {}
+        for code in slower:
+            if f"{code}:{clock}" not in weights and code not in weights:
+                kernel = _symmetric_tent_kernel(code, clock)
+                if len(kernel) <= MAX_TENT_SIZE:
+                    hint = (
+                        f"The symmetric kernel generate_tent_weights({len(kernel)}) over the "
+                        f"{PERIODS_PER_YEAR[clock] // PERIODS_PER_YEAR[code]} clock periods of a {code!r} period is "
+                        f"{kernel}: pass tent_weights={{'{code}:{clock}': {kernel}}}."
+                    )
+                else:
+                    hint = (
+                        f"The symmetric kernel over the {PERIODS_PER_YEAR[clock] // PERIODS_PER_YEAR[code]} clock "
+                        f"periods of a {code!r} period would have {len(kernel)} weights, more than the "
+                        f"{MAX_TENT_SIZE} supported: pass a kernel of at most {MAX_TENT_SIZE} weights as "
+                        f"tent_weights={{'{code}:{clock}': [...]}}, or use a slower clock."
+                    )
+                raise ConfigurationError(
+                    f"DFM: series {[n for n, c in freq.items() if c == code]} are sampled at {code!r}, slower than "
+                    f"the clock {clock!r}, and tent_weights has no key '{code}:{clock}' (or '{code}'). Tent weights "
+                    f"are required for a slower frequency; there is no default kernel. {hint}"
+                )
+        return freq
+
+    def _internal_order(self, freq: dict) -> list:
+        """The stable partition ``[clock | slower]`` of the series (DFMDataset's column rule)."""
+        clock_level = _hierarchy(self.clock)
+        at_clock = [name for name, code in freq.items() if _hierarchy(code) <= clock_level]
+        slower = [name for name, code in freq.items() if _hierarchy(code) > clock_level]
+        return at_clock + slower
+
+    def _check_series(self, panel: PanelData) -> None:
+        names = list(panel.series_names)
+        bad = [name for name in names if not isinstance(name, str)]
+        if bad:
+            raise DataValidationError(
+                f"DFM: series names must be strings, got {bad!r}. Rename the columns, for example "
+                "df.columns = df.columns.map(str)."
+            )
+        if self.blocks is not None:
+            known = set(names)
+            for block, spec in self.blocks.items():
+                unknown = [name for name in spec["series"] if name not in known]
+                if unknown:
+                    raise DataValidationError(
+                        f"DFM: blocks[{block!r}] names series {unknown} that are not in the data; the series are "
+                        f"{names}."
+                    )
+
+    # -- adapter and engine --------------------------------------------------
+
+    def _engine_config_dict(self, freq: dict, internal: list) -> dict:
+        """The engine's config as the dict ``DFMConfig.from_dict`` reads, every value explicit."""
+        if self.blocks is None:
+            n = 1 if self.n_factors is None else int(self.n_factors)
+            # An empty series list is DFMConfig's global block: every series of the dataset.
+            blocks = {_GLOBAL_BLOCK: {"num_factors": n, "series": []}}
+        else:
+            blocks = {
+                name: {"num_factors": int(spec.get("n_factors", 1)), "series": list(spec["series"])}
+                for name, spec in self.blocks.items()
+            }
+        tent = None
+        if self.tent_weights is not None:
+            tent = {
+                key: (list(np.asarray(values).ravel()) if isinstance(values, np.ndarray) else list(values))
+                for key, values in self.tent_weights.items()
+            }
+        return {
+            "blocks": blocks,
+            "frequency": {name: freq[name] for name in internal},
+            "clock": self.clock,
+            "max_iter": self.max_iter,
+            "threshold": self.tol,
+            "ar_clip": None if self.ar_clip is None else dict(self.ar_clip),
+            "data_clip": self.data_clip,
+            "regularization": None if self.regularization is None else dict(self.regularization),
+            "damping_factor": self.damping_factor,
+            "tent_weights": tent,
+        }
+
+    def _adapter(self, panel: PanelData, freq: dict, internal: list) -> tuple[DFMConfig, DFMDataset]:
+        """The engine's config and dataset, built from ``panel`` in the internal order.
+
+        The frame is ``panel.y`` in the internal order on a RangeIndex, with an
+        integer time column inserted first; ``DFMDataset`` sets it as the index
+        and keeps the column order (its own ``[clock | slower]`` reorder is the
+        identity on this order).
+        """
+        config = DFMConfig.from_dict(self._engine_config_dict(freq, internal))
+        frame = panel.y[internal].reset_index(drop=True)
+        time_col = _TIME_COLUMN
+        while time_col in set(frame.columns):
+            time_col += "_"
+        frame.insert(0, time_col, np.arange(len(frame)))
+        dataset = DFMDataset(config=config, data=frame, time_index=time_col)
+        columns = list(dataset.variables.columns)
+        if columns != internal:  # pragma: no cover - guards the column rule shared with DFMDataset
+            raise AssertionError(f"DFMDataset reordered the series to {columns}; expected {internal}.")
+        return config, dataset
+
+    def _fresh_scaler(self) -> Any:
+        """The engine's scaler: a new instance for a name, or a clone of the instance (warns if fitted)."""
+        scaler = self.scaler
+        if scaler is None:
+            return None
+        if isinstance(scaler, str):
+            return _SCALERS[scaler.lower()]()
+        try:
+            check_is_fitted(scaler)
+        except (SklearnNotFittedError, TypeError):
+            pass
+        else:
+            warnings.warn(
+                f"{type(self).__name__}: the scaler {type(scaler).__name__} passed in is already fitted; fit uses an "
+                "unfitted clone and refits it on the training data, so its statistics are discarded. The fitted "
+                "copy is scaler_.",
+                UserWarning,
+                stacklevel=5,  # _fresh_scaler < _fit < BaseFactorModel.fit < DFM.fit < caller
+            )
+        return clone(scaler)
+
+    # -- fit -----------------------------------------------------------------
+
+    def fit(self, data: Any, *, checkpoint_callback: Any = None) -> DFM:
+        """Estimate the model on ``data`` by EM and return ``self``.
+
+        Parameters
+        ----------
+        data : PanelData, DataFrame or 2-D array
+            The series in ``y`` (any column order) and their sampling
+            frequencies in ``freq``; missing values are allowed, and a slower
+            series is NaN between its observations. ``exog`` and
+            ``series_exog`` are rejected.
+        checkpoint_callback : callable, optional
+            Passed to the engine's EM loop unchanged; it receives the engine's
+            state, whose series-indexed matrices are in the internal order
+            ``[clock | slower]``.
+
+        Raises
+        ------
+        ConfigurationError
+            For an invalid hyperparameter, or a slower frequency without tent
+            weights.
+        UnsupportedInputError
+            For ``exog``, ``series_exog``, a series faster than the clock or
+            two slower frequencies.
+        DataValidationError
+            For a block naming a series that is not in the data, or a
+            non-string series name.
+
+        Warns
+        -----
+        UserWarning
+            When ``scaler`` is an already fitted transformer (it is cloned and
+            refitted).
+
+        A failed fit leaves the model unfitted (earlier fitted attributes are
+        removed).
+        """
+        return super().fit(data, checkpoint_callback=checkpoint_callback)
+
+    def _fit(self, data: PanelData, *, checkpoint_callback: Any = None) -> None:
+        self._validate_params()
+        self._check_series(data)
+        freq = self._series_frequencies(data)
+        internal = self._internal_order(freq)
+        with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
+            config, dataset = self._adapter(data, freq, internal)
+            scaler = self._fresh_scaler()
+            if self.verbose >= 2:
+                _logger.debug("DFM: engine config %s, internal order %s", config, internal)
+            engine = DFMEngine(dataset=dataset, config=config, scaler=scaler)
+            engine.fit(checkpoint_callback=checkpoint_callback)
+            result = engine.get_result()
+        # The engine keeps no reference to the training data; it keeps its
+        # scaled training matrix (data_processed), which the filter reads.
+        engine._dataset = None
+
+        self.engine_ = engine
+        # A copy: the engine keeps its own result, which an update extends.
+        self.result_ = copy.deepcopy(result)
+        self.scaler_ = engine.scaler
+        self.n_iter_ = int(result.num_iter)
+        self.converged_ = bool(result.converged)
+        self.loglik_ = float(result.loglik)
+        self.n_factors_ = int(engine.num_factors)
+        self.internal_feature_names_ = np.asarray(internal, dtype=object)
+        self.freq_ = freq
+        self.conditioning_index_ = data.index
+        self.factors_ = self._state_frame(self.result_.Z, data.index)
+
+    @staticmethod
+    def _state_columns(m: int) -> list:
+        return [f"state_{i}" for i in range(m)]
+
+    @classmethod
+    def _state_frame(cls, Z: np.ndarray, index: pd.Index) -> pd.DataFrame:
+        """``Z`` as a float64 frame on ``index``, columns ``state_0`` .. ``state_{m-1}``."""
+        values = np.asarray(Z, dtype=np.float64)
+        return pd.DataFrame(values, index=index, columns=cls._state_columns(values.shape[1]))
+
+    # -- forecasting ---------------------------------------------------------
+
+    def _run_forecast(self, method: str, h: Any, data: Any) -> tuple[np.ndarray, np.ndarray, int, pd.Index]:
+        self._check_is_fitted(method)
+        h = self._validate_horizon(h)
+        if data is not None:
+            raise NotImplementedError(
+                f"DFM.{method}(h, data=...) is not available yet; call {method}(h) to forecast from the training data."
+            )
+        with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
+            X, Z = self.engine_.predict(horizon=h)
+        return X, Z, h, self.conditioning_index_
+
+    def _frame(self, values: np.ndarray, h: int, columns: list, kind: str, origin_index: pd.Index) -> pd.DataFrame:
+        frame = pd.DataFrame(
+            np.asarray(values, dtype=np.float64),
+            index=self._forecast_index(origin_index, h),
+            columns=columns,
+        )
+        frame.attrs = {"model": type(self).__name__, "kind": kind, "origin": origin_index[-1]}
+        return frame
+
+    def predict(self, h: int, data: Any = None) -> pd.DataFrame:
+        """Forecast the series ``h`` clock periods ahead, in data units.
+
+        The state follows the fitted transition from the last smoothed state;
+        the series are its image under the loadings, inverse-transformed with
+        ``scaler_`` (the identity with ``scaler=None``). Every series has a
+        value at every forecast date, slower series included.
+
+        Parameters
+        ----------
+        h : int
+            Forecast horizon (a positive integer; anything else raises
+            ``TypeError``).
+        data : optional
+            Not available yet (raises ``NotImplementedError``).
+
+        Returns
+        -------
+        pandas.DataFrame
+            float64, ``h`` rows after the last training time stamp, one column
+            per series in the user's order; ``attrs`` holds ``model``,
+            ``kind="forecast"`` and ``origin``.
+        """
+        X, _, h, origin = self._run_forecast("predict", h, data)
+        internal = list(self.internal_feature_names_)
+        frame = self._frame(X, h, internal, "forecast", origin)
+        out = frame[list(self.feature_names_in_)]
+        out.attrs = dict(frame.attrs)
+        return out
+
+    def predict_factors(self, h: int, data: Any = None) -> pd.DataFrame:
+        """Forecast the state vector ``h`` clock periods ahead (same arguments as :meth:`predict`).
+
+        Returns
+        -------
+        pandas.DataFrame
+            float64, ``h`` rows, columns ``state_0`` .. ``state_{m-1}`` (the
+            columns of ``factors_``); ``attrs["kind"]`` is ``"factors"``.
+        """
+        _, Z, h, origin = self._run_forecast("predict_factors", h, data)
+        return self._frame(Z, h, self._state_columns(np.asarray(Z).shape[1]), "factors", origin)

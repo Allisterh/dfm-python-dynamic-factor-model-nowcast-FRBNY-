@@ -25,9 +25,11 @@ pickle-free save directory::
 scaler="standard").fit(data)``, then ``predict(h, futr_exog=...)`` (data
 units) and ``predict_factors(h)``. So is ``DDFM``: ``DDFM(n_factors=4,
 encoder_layers=(16,), scaler="standard").fit(data)`` with encoder covariates
-in ``exog``, then ``predict(h)`` and ``predict_factors(h)``. ``DFM`` is still
-built from a dataset and a config until it is migrated; see README.md for
-complete examples of every model.
+in ``exog``, then ``predict(h)`` and ``predict_factors(h)``. And ``DFM``:
+``DFM(n_factors=1, clock="m", tent_weights={"q:m": [1, 2, 3, 2, 1]},
+scaler="standard").fit(PanelData(y=df, freq={"gdp": "q"}))``, then
+``predict(h)`` (series in the user's column order) and ``predict_factors(h)``;
+see README.md for complete examples of every model.
 """
 
 import logging as _logging
@@ -76,8 +78,8 @@ from .io.loading import load
 # Datasets
 from .dataset.dfm_dataset import DFMDataset
 
-# Models (BaseFactorModel is the estimator base; the unmigrated DFM and the
-# AFM engine still inherit the old one from dfm_python.models.base)
+# Models (BaseFactorModel is the estimator base; the DFM and AFM engines
+# still inherit the old one from dfm_python.models.base)
 from .base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.estimator import DDFM

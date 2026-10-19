@@ -191,7 +191,7 @@ Today's names are in parentheses for reference only; they are not accepted. A de
 
 | Model | Parameters |
 |---|---|
-| DFM | `n_factors` (used when `blocks=None`), `blocks` (block key `n_factors`), `clock`, `tent_weights`, `max_iter`, `tol` (`threshold`), `ar_clip`, `data_clip`, `regularization`, `damping_factor`, `idio_rho0`, `idio_min_var`, `scaler`, `verbose` |
+| DFM | `n_factors` (used when `blocks=None`; None means 1), `blocks` (block keys `n_factors`, default 1, and `series`, required), `clock`, `tent_weights`, `max_iter`, `tol` (`threshold`), `ar_clip` (keys `min`, `max`), `data_clip`, `regularization` (keys `scale`, `min_eigenvalue`, `max_eigenvalue`), `damping_factor`, `scaler`, `verbose` |
 | DDFM | `n_factors`, `encoder_layers` (hidden widths; today's `encoder_size` is `(*encoder_layers, n_factors)`), `decoder_type`, `activation`, `learning_rate`, `optimizer`, `n_mc_samples`, `window_size`, `max_iter`, `tol` (`tolerance`), `interpolation_method`/`_limit`/`_limit_direction`, `scaler`, `random_state` (`seed`), `device`, `verbose` (`disp`; the engine always gets `disp=10`) |
 | iVDFM | `n_factors` (`num_factors`), `window`, `stride`, `time_context`, encoder/decoder/prior `*_hidden_dim` and `*_n_hidden_layers`, `decoder_type`, `activation`, `slope`, `factor_order`, `innovation_distribution`, `decoder_var`, `n_regimes` (`num_regimes`), `regime_temperature`, `beta_kl`, `use_layer_norm`, `mixing`, `learning_rate`, `optimizer`, `optimizer_weight_decay`, `optimizer_momentum`, `batch_size`, `max_epochs`, `tol` (`tolerance`), `patience`, six `scheduler_*`, `scaler`, `random_state` (`seed`), `device`, `verbose` |
 | AFM | `n_factors` (`num_factors`), `factor_model`, `trading`, `embed_dim`, `hist_len`, `n_kernels`, `ridge`, `squash_lambda`, `pca_window`, `reestim`, `lambda_var`, `turnover_cost`, `short_cost`, `risk_free`, `learning_rate`, `max_epochs`, `patience`, `random_state` (`seed`), `device`, `verbose` |
@@ -206,12 +206,12 @@ Naming rules:
 Removed parameters:
 
 - Inferred in `fit`: `data_dim`, `context_dim`, `n_char`.
-- Never read: `DDFMConfig.use_batch_norm`, `use_idiosyncratic`, `min_obs_idio` and `lags_input`; `DDFMConfig.num_factors`, which can contradict `encoder_size[-1]`; `iVDFMConfig.covariates`; DDFM's `max_epoch_pre_train` and `min_target_interporate_ratio`, which the engine stores but never reads (pre-training runs `n_mc_samples` epochs).
+- Never read: `DFMConfig.idio_rho0` and `idio_min_var` (neither `to_em_config` nor the initialization reads them); `DDFMConfig.use_batch_norm`, `use_idiosyncratic`, `min_obs_idio` and `lags_input`; `DDFMConfig.num_factors`, which can contradict `encoder_size[-1]`; `iVDFMConfig.covariates`; DDFM's `max_epoch_pre_train` and `min_target_interporate_ratio`, which the engine stores but never reads (pre-training runs `n_mc_samples` epochs).
 - Replaced: DDFM's `encoder_size` by `n_factors` plus `encoder_layers`; DDFM's `dataset` and `config` by `fit(data)` and the constructor.
 - Moved: `target_scaler` and `frequency` become `scaler` and `PanelData.freq`; `iVDFMConfig.context` becomes `PanelData.exog`.
 - Deleted outright: `DFM.load_config`, which calls a missing `_load_config_common` and cannot run.
 
-`blocks=None` gives one global block with `n_factors` factors. That is what `DFMConfig.from_dict` already does for a config without blocks. `tent_weights=None` follows today's resolution path unchanged, and a test pins it. If that path ends in an error, the message gives the symmetric kernel that `generate_tent_weights` produces and the exact argument to pass.
+`blocks=None` gives one global block with `n_factors` factors (1 when `n_factors` is None). That is what `DFMConfig.from_dict` already does for a config without blocks. Setting both `n_factors` and `blocks` raises `ConfigurationError`. `tent_weights=None` is fine for single-frequency data; for mixed-frequency data today's resolution path raises `DataValidationError`, so `tent_weights` is required for the slower frequency and there is no default kernel (section 15, question 3). `fit` raises `ConfigurationError` before the engine runs; the message gives the symmetric kernel that `generate_tent_weights(2k - 1)` produces, with `k` the clock periods per slower period (`[1, 2, 3, 2, 1]` for `q` on an `m` clock), and the exact argument to pass. A key is `"f:clock"` or `"f"`, `f` slower than `clock`, with at most 12 positive weights. A series faster than the clock, or a second slower frequency, raises `UnsupportedInputError`.
 
 ## 6. fit / predict / result_ contract
 
@@ -271,7 +271,7 @@ iVDFM's extra keywords keep today's defaults: `futr_exog` (was `context_data`), 
 - **Values.** float64.
 - **Units.** Data units for every forecaster. The forecast is inverse-transformed with `scaler_` when a scaler is set; with `scaler=None` the data is never scaled.
 - **attrs.** `{"model", "kind": "forecast" | "factors" | "weights", "origin": last conditioning timestamp}`.
-- **Mixed frequency.** DFM reports slower series at clock dates, as today.
+- **Mixed frequency.** DFM reports slower series at every clock date, as today (section 15, question 5).
 
 ### result_ and fitted attributes
 
@@ -284,6 +284,7 @@ Tag-dependent fitted attributes:
 - `factors_`: a DataFrame on `index_`. iVDFM uses a `(window, time)` MultiIndex, and DFM state columns are named `state_0..m`.
 - `device_` and `network_`: torch models only. `network_` is the engine module.
 - `series_exog_names_in_`, `residuals_` and `book_returns_`: AFM only.
+- `engine_` (the private `DFMEngine`), `internal_feature_names_` (the series in the engine's `[clock | slower]` order, which is the order of the series-indexed matrices `C`, `R` and `x_sm` in `result_`), `freq_` (each series' frequency, user order) and `loglik_`: DFM only.
 
 ### update
 
@@ -482,8 +483,8 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
 
 1. **Naming.** Accept the sklearn names (`n_factors`, `n_regimes`, `random_state`, `tol`), or keep `num_factors`, `seed` and `tolerance`? Is `allocate` the right verb for AFM?
 2. **Seed defaults.** Keep 3, 3 and None permanently, or unify to None and accept that default runs give different numbers?
-3. **DFM tent-weight default.** If today's path fails without `tent_weights`, should the symmetric `generate_tent_weights` kernel become the documented default? It would affect only inputs that fail today.
-4. **DFM default scaler.** Keep `None` as the code does, and correct the README's claim of internal standardization (proposed), or change the default?
-5. **Mixed-frequency output.** Keep reporting slower series at every clock date, or mask them to observation dates?
+3. **DFM tent-weight default.** Decided: no default kernel. Today's path raises `DataValidationError` for mixed-frequency data without `tent_weights` (with the symmetric kernel the same data fits), so `tent_weights` is required for the slower frequency. `fit` raises `ConfigurationError` whose message gives the symmetric `generate_tent_weights` kernel and the exact `tent_weights={...}` argument (section 5).
+4. **DFM default scaler.** Decided: keep `None`, the value that ran when the argument was omitted; `scaler="standard"` standardizes. The README's claim of internal standardization is corrected.
+5. **Mixed-frequency output.** Decided: keep reporting slower series at every clock date, as the engine computes them (the tent-weighted combination of the state forecast); documented in `DFM.predict` and the README.
 6. **`DDFMResult.C` orientation.** Decided: `result_.C` is the loading matrix H, N x r, the DFM orientation (it was H transposed, factors x N). The change is one line in the engine's `get_result`, and no code read the old orientation.
 7. **sklearn coupling.** Rely on sklearn's `BaseEstimator` (and its private `_get_param_names`), or vendor about 60 lines?

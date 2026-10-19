@@ -1,14 +1,14 @@
 """DFM model package.
 
 This package contains the DFM model and its submodules:
-- _engine: DFMEngine, the EM engine (exported as DFM until the estimator exists)
-- build: Model building functions
+- estimator: DFM, the public estimator (PanelData input, sklearn conventions)
+- _engine: DFMEngine, the private EM engine the estimator runs
 - initialization: Parameter initialization functions
 - mixed_freq: Mixed-frequency parameter setup
-- data: Data standardization and validation utilities
+- tent: Tent kernels of slower-frequency series
 """
 
-from ._engine import DFMEngine as DFM
+from .estimator import DFM
 from ...logger.dfm_logger import log_blocks_diagnostics
 from ...numeric.builder import build_dfm_structure
 from .initialization import (

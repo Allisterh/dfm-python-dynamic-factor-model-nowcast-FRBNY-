@@ -12,10 +12,11 @@ apart from these edits, none of which changes math or numbers:
     ``dfm_python.models.numeric``, so ``update()`` always raised
     ``ModuleNotFoundError``.
 
-The ``dataset=``/``config=`` constructor, the pickle ``save``/``load``,
+The public :class:`~dfm_python.models.dfm.estimator.DFM` estimator builds
+this engine from ``PanelData`` (``dfm_python.DFM`` names the estimator). The
+``dataset=``/``config=`` constructor, the pickle ``save``/``load``,
 ``load_config``, ``result`` and the old ``models.base.BaseFactorModel`` base
-class stay until the estimator replaces them. ``dfm_python.DFM`` and
-``dfm_python.models.DFM`` name this class until the estimator exists.
+class stay until the estimator covers update and save/load.
 """
 
 # Standard library imports
