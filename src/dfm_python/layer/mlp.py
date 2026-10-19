@@ -16,6 +16,7 @@ from ..config.constants import (
 )
 from ..logger import get_logger
 from ..utils.errors import ConfigurationError
+from ..utils.seed import apply_seed
 
 _logger = get_logger(__name__)
 
@@ -111,7 +112,7 @@ class MLP(nn.Module):
         
         # Set random seed if provided
         if seed is not None:
-            torch.manual_seed(seed)
+            apply_seed(seed)
         
         # Build activation functions
         self._act_f = []

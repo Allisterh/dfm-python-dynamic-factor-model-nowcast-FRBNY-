@@ -28,6 +28,7 @@ from ...config.constants import (
     DEFAULT_REGULARIZATION,
 )
 from ...utils.errors import ModelNotTrainedError, ModelNotInitializedError, ConfigurationError, DataValidationError
+from ...utils.seed import apply_seed
 from ...utils.loss import compute_elbo_loss
 from ...layer.pca import extract_pca_factors
 from .encoder import iVDFMInnovationEncoder
@@ -298,8 +299,7 @@ class iVDFM(BaseFactorModel, nn.Module):
         # Random seed
         self.seed = seed
         if seed is not None:
-            torch.manual_seed(seed)
-            np.random.seed(seed)
+            apply_seed(seed, torch_global=True, numpy_global=True)
         
         # Initialize components (only if dimensions are available)
         # If data_dim or context_dim is None, components will be built during fit

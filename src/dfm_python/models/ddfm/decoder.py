@@ -11,6 +11,7 @@ from typing import List, Optional, Tuple
 
 from ..base import BaseDecoder
 from ...utils.errors import ConfigurationError
+from ...utils.seed import apply_seed
 from ...config.constants import (
     DEFAULT_XAVIER_GAIN,
     DEFAULT_OUTPUT_LAYER_GAIN,
@@ -52,7 +53,7 @@ class DDFMLinearDecoder(BaseDecoder):
         self.decoder = nn.Linear(input_dim, output_dim, bias=use_bias)
         
         if seed is not None:
-            torch.manual_seed(seed)
+            apply_seed(seed)
         
         # Use explicit gain for consistency with encoder initialization (matches GlorotNormal)
         nn.init.xavier_normal_(self.decoder.weight, gain=DEFAULT_XAVIER_GAIN)
@@ -164,7 +165,7 @@ class DDFMMLPDecoder(BaseDecoder):
             raise ConfigurationError(f"Unknown activation: {activation}")
         
         if seed is not None:
-            torch.manual_seed(seed)
+            apply_seed(seed)
         
         # Build hidden layers
         prev_dim = input_dim

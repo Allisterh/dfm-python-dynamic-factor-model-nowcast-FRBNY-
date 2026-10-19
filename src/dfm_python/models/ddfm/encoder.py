@@ -15,6 +15,7 @@ if TYPE_CHECKING:
 from ..base import BaseEncoder, BaseDecoder
 from .decoder import DDFMLinearDecoder, DDFMMLPDecoder
 from ...utils.errors import ConfigurationError, DataValidationError
+from ...utils.seed import apply_seed
 from ...config.constants import (
     DEFAULT_XAVIER_GAIN,
     DEFAULT_ZERO_VALUE,
@@ -214,7 +215,7 @@ class SimpleAutoencoder(nn.Module):
             output_dim = input_dim
         
         if seed is not None:
-            torch.manual_seed(seed)
+            apply_seed(seed)
         
         if len(encoder_size) == 0:
             raise ValueError("encoder_size must have at least one element")

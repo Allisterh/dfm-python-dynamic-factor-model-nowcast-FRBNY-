@@ -32,6 +32,7 @@ from ...config.schema.results import AFMResult
 from ...config.schema.params import AFMModelState
 from ...utils.errors import (ConfigurationError, ModelNotTrainedError,
                              DataValidationError)
+from ...utils.seed import apply_seed
 from .factors import AttentionFactors, PCAFactors, residuals, rolling_pca_weights
 from .longconv import LongConv1d
 from .baselines import avellaneda_lee_weights
@@ -114,7 +115,7 @@ class AFM(BaseFactorModel, nn.Module):
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         if self.seed is not None:
-            torch.manual_seed(int(self.seed))
+            apply_seed(int(self.seed))
 
         self._dataset = dataset
         if dataset is not None:
