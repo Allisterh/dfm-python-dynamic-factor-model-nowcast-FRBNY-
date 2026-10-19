@@ -7,14 +7,19 @@ has no regime-indexed AR coefficients, K>1 has ``A_diag`` (K, p, r) and
 ``B_diag`` (K, r), the effective coefficients are the convex combination of
 the regime coefficients under pi, and the dynamics use pi at the window
 origin. Fitting, forecasting, updating and saving go through the public
-estimator and are tested in test_ivdfm.py and test_ivdfm_regime.py.
+estimator and are tested in test_ivdfm.py and test_ivdfm_regime.py. The
+removed pre-redesign entry points (``set_dataset``, ``save``, ``load``,
+``hyperparameter_optimization``, raw data in ``update``) stay removed.
 """
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
+from dfm_python.models.base import BaseFactorModel as EngineBaseFactorModel
 from dfm_python.models.ivdfm._engine import iVDFMEngine
+from dfm_python.utils.errors import ModelNotTrainedError
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +61,36 @@ class TestEngineConstruction:
         assert engine.context_dim is None
         assert engine.latent_dim == 3
         assert len(list(engine.parameters())) == 0
+
+
+class TestEngineSurface:
+    """The pre-redesign entry points were removed, not deprecated; they must not come back."""
+
+    @pytest.mark.parametrize("name", ["set_dataset", "save", "load", "hyperparameter_optimization"])
+    def test_old_entry_point_is_removed(self, name):
+        assert not hasattr(iVDFMEngine, name)
+        assert not hasattr(_engine(), name)
+
+    def test_engine_does_not_inherit_the_old_base(self):
+        assert not issubclass(iVDFMEngine, EngineBaseFactorModel)
+        assert issubclass(iVDFMEngine, torch.nn.Module)
+
+    def test_init_sets_the_old_base_attributes(self):
+        engine = _engine()
+        assert engine._result is None and engine.data_processed is None and engine._dataset is None
+        assert engine.training_state is None and engine._config is not None
+
+    def test_update_requires_training(self):
+        with pytest.raises(ModelNotTrainedError):
+            _engine().update(np.zeros((30, 5), dtype=np.float32))
+
+    @pytest.mark.parametrize("data", [np.zeros((30, 5), dtype=np.float32), pd.DataFrame(np.zeros((30, 5)))])
+    def test_update_takes_a_dataset_only(self, data):
+        engine = _engine()
+        engine.training_state = {}  # past the training check; raw data is refused before it is read
+        with pytest.raises(TypeError, match="iVDFMDataset"):
+            engine.update(data)
+        assert engine.factors is None and engine.innovations is None
 
 
 class TestEngineForward:

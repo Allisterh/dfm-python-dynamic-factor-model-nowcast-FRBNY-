@@ -8,22 +8,27 @@ conditions to the innovation process driving dynamics.
 :class:`dfm_python.models.ivdfm.estimator.iVDFM`, which builds the engine's
 dataset from ``PanelData`` and passes every hyperparameter explicitly. The
 engine's code is the pre-redesign ``iVDFM`` class unchanged, apart from two
-pure extractions from ``predict``: :meth:`iVDFMEngine._future_time_features`
-and :meth:`iVDFMEngine._forecast`, which ``predict`` calls, and the private
-config class ``_iVDFMEngineConfig`` (the old ``iVDFMConfig``). Saved runs are
-rebuilt without ``__init__`` (no dataset, no seeding) by
-:meth:`iVDFMEngine._from_saved`.
+pure extractions from ``predict`` (:meth:`iVDFMEngine._future_time_features`
+and :meth:`iVDFMEngine._forecast`, which ``predict`` calls), the private
+config class ``_iVDFMEngineConfig`` (the old ``iVDFMConfig``),
+:meth:`iVDFMEngine._from_saved`, which rebuilds a saved run without
+``__init__`` (no dataset, no seeding), and these removals: ``set_dataset``
+(pass ``dataset=`` to ``__init__``), the ``torch.save`` checkpoint methods
+``save``/``load`` (the estimator saves the weights to ``weights.pt``), the
+raw-data branch of ``update`` (it takes an ``iVDFMDataset`` only) and
+``hyperparameter_optimization`` (see :func:`dfm_python.tuning.tune_hyperparameters`).
+Without ``save``/``load`` the engine no longer inherits the old abstract base
+``dfm_python.models.base.BaseFactorModel``; :func:`_init_engine_state` sets the
+attributes that base's ``__init__`` set.
 """
 
 import time
-from pathlib import Path
 from typing import Optional, Any, Union, Tuple, Dict, List
 import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
 
-from ..base import BaseFactorModel
 from ...logger import get_logger
 from ...logger.ivdfm_logger import iVDFMTrainLogger
 from ...config.constants import DEFAULT_LOSS_LOG_PRECISION
@@ -56,7 +61,16 @@ from ...numeric.builder import build_ivdfm_optimizer
 _logger = get_logger(__name__)
 
 
-class iVDFMEngine(BaseFactorModel, nn.Module):
+def _init_engine_state(engine: Any) -> None:
+    """Set the attributes the old ``models.base.BaseFactorModel.__init__`` set."""
+    engine._config = None
+    engine._result = None
+    engine.training_state = None
+    engine._dataset = None
+    engine.data_processed = None
+
+
+class iVDFMEngine(nn.Module):
     """Identifiable Variational Dynamic Factor Model.
     
     Combines identifiable latent-variable modeling (iVAE) with explicit
@@ -105,7 +119,7 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
         ----------
         dataset : Optional[iVDFMDataset]
             If provided, data_dim, context_dim, and window are inferred from it
-            and fit() will use this dataset (no need to call set_dataset).
+            and fit() will use this dataset.
         data_dim : int
             Dimension of observed data (N in paper)
         num_factors : int
@@ -153,7 +167,7 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
         seed : int
             Random seed
         """
-        BaseFactorModel.__init__(self)
+        _init_engine_state(self)
         nn.Module.__init__(self)
         
         # Build config: start with provided config or defaults, then override with parameters and kwargs
@@ -331,7 +345,7 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
         self.training_state: Optional[Dict] = None
         self.factors: Optional[np.ndarray] = None
         self.innovations: Optional[np.ndarray] = None
-        # _dataset set above when dataset= is passed; otherwise None (call set_dataset before fit)
+        # _dataset set above when dataset= is passed; otherwise None (fit needs dataset=)
 
         # Move to device
         self.to(self.device)
@@ -365,7 +379,7 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
             config = dataclasses.replace(config, **dropped)
 
         self = cls.__new__(cls)
-        BaseFactorModel.__init__(self)
+        _init_engine_state(self)
         nn.Module.__init__(self)
         self._config = config
         self._dataset = None
@@ -981,17 +995,12 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
 
         return elbo, loss_dict
 
-    def set_dataset(self, dataset: "iVDFMDataset") -> "iVDFMEngine":
-        """Set the dataset used by fit(). Call before fit()."""
-        self._dataset = dataset
-        return self
-
     def fit(self, *args, **kwargs) -> 'iVDFMEngine':
-        """Fit on the dataset set via set_dataset(dataset). Call set_dataset(dataset) before fit()."""
+        """Fit on the dataset passed to ``__init__`` as ``dataset=``."""
         dataset = self._dataset
         if dataset is None or not isinstance(dataset, iVDFMDataset):
             raise ModelNotTrainedError(
-                "fit() requires a dataset. Call model.set_dataset(dataset) first with an iVDFMDataset."
+                "fit() requires a dataset. Pass an iVDFMDataset to the engine as dataset=."
             )
 
         actual_data_dim = dataset.target_length
@@ -1542,7 +1551,7 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
     
     def update(
         self,
-        data_or_dataset: Union[np.ndarray, pd.DataFrame, iVDFMDataset],
+        dataset: iVDFMDataset,
         *,
         append: bool = True,
         store_full_history: bool = True,
@@ -1550,27 +1559,12 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
         **kwargs: Any,
     ) -> None:
         """Update model state with new observations (online learning).
-        Accepts raw data (ndarray/DataFrame) or an iVDFMDataset; raw data is converted using the model's window/stride/time_context.
+        Accepts an iVDFMDataset only (the estimator builds it with the fitted window, stride and scaler).
         """
         if self.training_state is None:
             raise ModelNotTrainedError("Model must be trained before update")
-        if isinstance(data_or_dataset, iVDFMDataset):
-            dataset = data_or_dataset
-        else:
-            if self._dataset is None:
-                raise ModelNotTrainedError("update() with raw data requires set_dataset() to have been called (to infer window/stride/time_context)")
-            T = data_or_dataset.shape[0] if hasattr(data_or_dataset, "shape") else len(data_or_dataset)
-            window = min(self.window, T) if self.window is not None else T
-            window = max(2, window)
-            stride = getattr(self._dataset, "stride", 1)
-            time_context = getattr(self, "time_context", 1)
-            dataset = iVDFMDataset(
-                data=data_or_dataset,
-                window=window,
-                stride=stride,
-                time_context=time_context,
-                device=self.device,
-            )
+        if not isinstance(dataset, iVDFMDataset):
+            raise TypeError(f"update() takes an iVDFMDataset, got {type(dataset).__name__}")
 
         # Validate dimensions match
         if dataset.target_length != self.data_dim:
@@ -1752,116 +1746,3 @@ class iVDFMEngine(BaseFactorModel, nn.Module):
             mixing=mixing,
             mixing_matrix=mixing_matrix,
         )
-    
-    def save(self, path: Union[str, Path], *, weights_only: bool = False) -> None:
-        """Save model to file.
-        
-        Parameters
-        ----------
-        path : Union[str, Path]
-            Path to save model
-        weights_only : bool
-            If True, save *only* the model weights (state_dict) to a .pt file.
-            This is the recommended, refactor-safe format.
-        """
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-
-        if weights_only:
-            # Pure weights-only file (PyTorch-recommended).
-            torch.save(self.state_dict(), path)
-            _logger.info(f"Model weights saved to {path}")
-            return
-
-        # Checkpoint-style save (contains non-tensors for model reconstruction)
-        torch.save(
-            {
-                "model_state_dict": self.state_dict(),
-                "config": {
-                    # Core dimensions
-                    "data_dim": self.data_dim,
-                    "latent_dim": self.latent_dim,
-                    "context_dim": self.context_dim,
-                    "time_context": self.time_context,  # Time feature dimension
-                    "window": self.window,
-                    # Dynamics parameters
-                    "factor_order": self.factor_order,
-                    "innovation_distribution": self.innovation_distribution,
-                    # Architecture parameters (needed for model reconstruction)
-                    "encoder_hidden_dim": self.encoder_hidden_dim,
-                    "encoder_n_hidden_layers": self.encoder_n_hidden_layers,
-                    "decoder_type": self.decoder_type,
-                    "decoder_hidden_dim": self.decoder_hidden_dim,
-                    "decoder_n_hidden_layers": self.decoder_n_hidden_layers,
-                    "prior_hidden_dim": self.prior_hidden_dim,
-                    "prior_n_hidden_layers": self.prior_n_hidden_layers,
-                    "activation": self.activation,
-                    "slope": self.slope,
-                    "num_regimes": self.num_regimes,
-                    "mixing": getattr(self, "mixing", False),
-                },
-                "training_state": self.training_state,
-            },
-            path,
-        )
-        _logger.info(f"Model saved to {path}")
-    
-    @classmethod
-    def load(cls, path: Union[str, Path], *args, **kwargs) -> 'iVDFMEngine':
-        """Load model from file.
-        
-        Parameters
-        ----------
-        path : Union[str, Path]
-            Path to load model from
-        *args
-            Additional arguments
-        **kwargs
-            Additional keyword arguments
-        
-        Returns
-        -------
-        iVDFM
-            Loaded model instance
-        """
-        path = Path(path)
-
-        # Try weights-only load first (safe for untrusted sources)
-        try:
-            state_dict = torch.load(path, map_location="cpu", weights_only=True)
-            if isinstance(state_dict, dict) and all(hasattr(v, "dtype") for v in state_dict.values()):
-                # weights-only file: caller must provide architecture args/kwargs
-                model = cls(*args, **kwargs)
-                model.load_state_dict(state_dict)
-                _logger.info(f"Model weights loaded from {path}")
-                return model
-        except Exception:
-            # Fall back to checkpoint load below
-            pass
-
-        # Checkpoint load (contains non-tensors for model reconstruction)
-        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
-        if not isinstance(checkpoint, dict) or "model_state_dict" not in checkpoint:
-            raise ValueError(f"Unrecognized checkpoint format at: {path}")
-
-        config = dict(checkpoint.get("config", {}))
-        # Save uses "latent_dim"; constructor expects "num_factors"
-        if "latent_dim" in config and "num_factors" not in config:
-            config["num_factors"] = config["latent_dim"]
-        # Older checkpoints may omit "mixing"; infer from state_dict so factor_mixing loads
-        state_dict = checkpoint.get("model_state_dict", {})
-        if "mixing" not in config and any(k.startswith("factor_mixing.") for k in state_dict):
-            config["mixing"] = True
-        model = cls(**config, **kwargs)
-        model.load_state_dict(checkpoint["model_state_dict"])
-        model.training_state = checkpoint.get("training_state")
-        
-        # Restore factors and innovations from training_state if available
-        if model.training_state is not None:
-            if hasattr(model.training_state, 'factors') and model.training_state.factors is not None:
-                model.factors = model.training_state.factors
-            if hasattr(model.training_state, 'innovations') and model.training_state.innovations is not None:
-                model.innovations = model.training_state.innovations
-        
-        _logger.info(f"Model loaded from {path}")
-        return model

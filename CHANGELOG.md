@@ -24,8 +24,10 @@
 - The `dev` dependency group lists its packages directly (it works with
   `pip install --group dev` as well as uv) and includes the optional packages
   the test suite imports.
-- `iVDFM`, `iVDFMDataset` and the four config classes (`DFMConfig`,
-  `DDFMConfig`, `iVDFMConfig`, `AFMConfig`) are exported from `dfm_python`.
+- `iVDFM` and the four config classes (`DFMConfig`, `DDFMConfig`,
+  `iVDFMConfig`, `AFMConfig`) are exported from `dfm_python`. `iVDFMDataset`
+  is no longer exported (from `dfm_python` or `dfm_python.dataset`); it is the
+  iVDFM estimator's private window adapter in `dfm_python.dataset.ivdfm_dataset`.
 - `__version__` is read from the installed package metadata.
 - The package ships a `py.typed` marker.
 - Fixed: `compute_cov_safe` with listwise deletion raised on every

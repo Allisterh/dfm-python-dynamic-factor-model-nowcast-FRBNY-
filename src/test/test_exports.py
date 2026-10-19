@@ -1,5 +1,7 @@
 """The top-level ``dfm_python`` namespace."""
 
+import pytest
+
 import dfm_python
 import dfm_python.config
 from dfm_python.base import BaseFactorModel
@@ -38,6 +40,23 @@ def test_afm_model_state_is_not_public():
     assert not hasattr(dfm_python.config, "AFMModelState")
 
 
+def test_ivdfm_is_the_estimator():
+    from dfm_python.models.ivdfm._engine import iVDFMEngine
+
+    assert dfm_python.iVDFM is iVDFM and "iVDFM" in dfm_python.__all__
+    assert issubclass(dfm_python.iVDFM, BaseFactorModel) and dfm_python.iVDFM is not iVDFMEngine
+
+
+def test_ivdfm_dataset_is_not_public():
+    # The iVDFM dataset is the estimator's private adapter base (dfm_python.dataset.ivdfm_dataset).
+    import dfm_python.dataset
+
+    assert "iVDFMDataset" not in dfm_python.__all__
+    assert not hasattr(dfm_python, "iVDFMDataset")
+    assert "iVDFMDataset" not in dfm_python.dataset.__all__
+    assert not hasattr(dfm_python.dataset, "iVDFMDataset")
+
+
 def test_ivdfm_model_state_is_not_public():
     # iVDFMModelState is used only by the engine and iVDFM's save/load.
     import dfm_python.config.schema as schema
@@ -45,6 +64,27 @@ def test_ivdfm_model_state_is_not_public():
     assert "iVDFMModelState" not in schema.__all__ and not hasattr(schema, "iVDFMModelState")
     assert "iVDFMModelState" not in dfm_python.config.__all__
     assert not hasattr(dfm_python.config, "iVDFMModelState")
+    assert "iVDFMModelState" not in dfm_python.__all__ and not hasattr(dfm_python, "iVDFMModelState")
+
+
+def test_ivdfm_engine_and_engine_config_are_not_public():
+    import dfm_python.config.schema as schema
+    import dfm_python.models
+    import dfm_python.models.ivdfm as ivdfm_pkg
+
+    for namespace in (dfm_python, dfm_python.config, schema, dfm_python.models, ivdfm_pkg):
+        for name in ("iVDFMEngine", "_iVDFMEngineConfig"):
+            assert name not in getattr(namespace, "__all__", ()), (namespace.__name__, name)
+        assert not hasattr(namespace, "iVDFMEngine"), namespace.__name__
+    assert not hasattr(dfm_python, "_iVDFMEngineConfig") and not hasattr(dfm_python.config, "_iVDFMEngineConfig")
+    assert ivdfm_pkg.iVDFM is iVDFM and "iVDFM" in ivdfm_pkg.__all__
+
+
+def test_ivdfm_optuna_module_is_gone():
+    import importlib
+
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("dfm_python.models.ivdfm.optuna")
 
 
 def test_ivdfm_config_is_the_estimator_mirror():

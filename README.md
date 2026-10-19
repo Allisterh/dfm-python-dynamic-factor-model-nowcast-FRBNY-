@@ -199,7 +199,7 @@ end to end (`--rows` and `--max-epochs` shorten a run).
 ```
 src/dfm_python/
   models/      dfm/, ddfm/, ivdfm/, afm/ model classes
-  dataset/     DFMDataset, DDFMDataset, iVDFMDataset, AFMDataset
+  dataset/     DFMDataset, DDFMDataset, AFMDataset
   config/      model configs (DFMConfig, ..., AFMConfig), YAML adapter, results
   ssm/         state-space form and Kalman filtering
   functional/  EM algorithm
