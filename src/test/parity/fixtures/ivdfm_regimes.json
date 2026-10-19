@@ -29,7 +29,7 @@
     "processor": "x86_64",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "4918624643016390d0322e8103a87c47cee4b2a1",
+  "git_commit": "6c6e985da85d2d0f8061abab33a4d818f301124b",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "activation": "lrelu",
@@ -80,6 +80,14 @@
   "model": "ivdfm",
   "name": "ivdfm_regimes",
   "outputs": {
+    "converged": {
+      "dtype": "bool",
+      "shape": []
+    },
+    "elbo": {
+      "dtype": "float64",
+      "shape": []
+    },
     "factors": {
       "dtype": "float32",
       "shape": [
@@ -95,6 +103,10 @@
         24,
         3
       ]
+    },
+    "loss_now": {
+      "dtype": "float64",
+      "shape": []
     },
     "num_iter": {
       "dtype": "int64",
@@ -112,6 +124,289 @@
       "shape": [
         37,
         2
+      ]
+    },
+    "sd/A_diag": {
+      "dtype": "float32",
+      "shape": [
+        2,
+        2,
+        3
+      ]
+    },
+    "sd/B_diag": {
+      "dtype": "float32",
+      "shape": [
+        2,
+        3
+      ]
+    },
+    "sd/decoders.0.decoder_variance": {
+      "dtype": "float32",
+      "shape": []
+    },
+    "sd/decoders.0.mlp.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        200
+      ]
+    },
+    "sd/decoders.0.mlp.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        200,
+        3
+      ]
+    },
+    "sd/decoders.0.mlp.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        200
+      ]
+    },
+    "sd/decoders.0.mlp.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        200,
+        200
+      ]
+    },
+    "sd/decoders.0.mlp.layers.2.bias": {
+      "dtype": "float32",
+      "shape": [
+        4
+      ]
+    },
+    "sd/decoders.0.mlp.layers.2.weight": {
+      "dtype": "float32",
+      "shape": [
+        4,
+        200
+      ]
+    },
+    "sd/decoders.1.decoder_variance": {
+      "dtype": "float32",
+      "shape": []
+    },
+    "sd/decoders.1.mlp.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        200
+      ]
+    },
+    "sd/decoders.1.mlp.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        200,
+        3
+      ]
+    },
+    "sd/decoders.1.mlp.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        200
+      ]
+    },
+    "sd/decoders.1.mlp.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        200,
+        200
+      ]
+    },
+    "sd/decoders.1.mlp.layers.2.bias": {
+      "dtype": "float32",
+      "shape": [
+        4
+      ]
+    },
+    "sd/decoders.1.mlp.layers.2.weight": {
+      "dtype": "float32",
+      "shape": [
+        4,
+        200
+      ]
+    },
+    "sd/innovation_encoder.logvar_network.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        200
+      ]
+    },
+    "sd/innovation_encoder.logvar_network.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        200,
+        5
+      ]
+    },
+    "sd/innovation_encoder.logvar_network.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        200
+      ]
+    },
+    "sd/innovation_encoder.logvar_network.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        200,
+        200
+      ]
+    },
+    "sd/innovation_encoder.logvar_network.layers.2.bias": {
+      "dtype": "float32",
+      "shape": [
+        3
+      ]
+    },
+    "sd/innovation_encoder.logvar_network.layers.2.weight": {
+      "dtype": "float32",
+      "shape": [
+        3,
+        200
+      ]
+    },
+    "sd/innovation_encoder.mu_network.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        200
+      ]
+    },
+    "sd/innovation_encoder.mu_network.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        200,
+        5
+      ]
+    },
+    "sd/innovation_encoder.mu_network.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        200
+      ]
+    },
+    "sd/innovation_encoder.mu_network.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        200,
+        200
+      ]
+    },
+    "sd/innovation_encoder.mu_network.layers.2.bias": {
+      "dtype": "float32",
+      "shape": [
+        3
+      ]
+    },
+    "sd/innovation_encoder.mu_network.layers.2.weight": {
+      "dtype": "float32",
+      "shape": [
+        3,
+        200
+      ]
+    },
+    "sd/prior_networks.0.prior_network.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        100
+      ]
+    },
+    "sd/prior_networks.0.prior_network.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        100,
+        1
+      ]
+    },
+    "sd/prior_networks.0.prior_network.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        6
+      ]
+    },
+    "sd/prior_networks.0.prior_network.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        6,
+        100
+      ]
+    },
+    "sd/prior_networks.1.prior_network.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        100
+      ]
+    },
+    "sd/prior_networks.1.prior_network.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        100,
+        1
+      ]
+    },
+    "sd/prior_networks.1.prior_network.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        6
+      ]
+    },
+    "sd/prior_networks.1.prior_network.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        6,
+        100
+      ]
+    },
+    "sd/regime_net.net.layers.0.bias": {
+      "dtype": "float32",
+      "shape": [
+        32
+      ]
+    },
+    "sd/regime_net.net.layers.0.weight": {
+      "dtype": "float32",
+      "shape": [
+        32,
+        1
+      ]
+    },
+    "sd/regime_net.net.layers.1.bias": {
+      "dtype": "float32",
+      "shape": [
+        2
+      ]
+    },
+    "sd/regime_net.net.layers.1.weight": {
+      "dtype": "float32",
+      "shape": [
+        2,
+        32
+      ]
+    },
+    "sd/ssm.B": {
+      "dtype": "float32",
+      "shape": [
+        3
+      ]
+    },
+    "sd/ssm.C": {
+      "dtype": "float32",
+      "shape": [
+        3,
+        6
+      ]
+    },
+    "sd/ssm.ar_coeffs": {
+      "dtype": "float32",
+      "shape": [
+        3,
+        2
+      ]
+    },
+    "sd/ssm.f0": {
+      "dtype": "float32",
+      "shape": [
+        3
       ]
     }
   },
