@@ -1,39 +1,50 @@
-# iVDFM Configuration for Exchange Rate Dataset
-# Data: 8 exchange rate series (AUD_USD, GBP_USD, CAD_USD, CHF_USD, CNY_USD, JPY_USD, SGD_USD, NZD_USD)
-# Clock: Daily (d) - all series are daily frequency
-# Date range: 1990-01-01 to 2010-10-10
+# iVDFM on the daily exchange rates (data/exchange_rate.csv, 1990-01-01 to 2010-10-10).
+#
+#   from dfm_python import iVDFM, PanelData
+#   from dfm_python.config import iVDFMConfig, load_yaml
+#   sections = load_yaml("config/ivdfm_exchange.yaml")
+#   data = PanelData.from_wide(df, **sections["data"])
+#   model = iVDFM.from_config(iVDFMConfig.from_dict(sections["model"]))
+#
+# The model: section holds iVDFM's constructor parameters and is exactly what
+# runs. Earlier releases let constructor defaults override some values of this
+# file; these values now take effect and differ from what ran before:
+#   encoder_n_hidden_layers: 3   (ran as 2)
+#   decoder_n_hidden_layers: 3   (ran as 2)
+#   prior_n_hidden_layers: 2     (ran as 1)
+#   tol: 1.0e-5                  (ran as 5.0e-4)
+#
+# All eight series are targets and there are no exog columns: the context u_t
+# is the generated time feature (time_context=1, the default).
+model:
+  # Latent structure
+  n_factors: 2
+  window: 200                    # sliding-window length; stride=None means window // 2
+  factor_order: 1                # AR order p of the factor dynamics
+  innovation_distribution: laplace
+  decoder_var: 0.01
 
-# ===== Model Structure =====
-# Latent dimension
-num_factors: 2
-sequence_length: 200  # Sequence length for sliding windows
-context: null  # Column names (DataFrame) or indices (array) for context variables. If None, time-based context is generated.
-context_dim: 1  # Dimension of context. Used when context is None (generates time-based context) or when context is multivariate.
+  # Networks
+  encoder_hidden_dim: 200
+  encoder_n_hidden_layers: 3
+  decoder_hidden_dim: 200
+  decoder_n_hidden_layers: 3
+  prior_hidden_dim: 100
+  prior_n_hidden_layers: 2
+  activation: lrelu
+  slope: 0.1
 
-# ===== Neural Network Architecture =====
-encoder_hidden_dim: 200  # Encoder hidden dimension
-encoder_n_layers: 3  # Number of encoder layers
-decoder_hidden_dim: 200  # Decoder hidden dimension
-decoder_n_layers: 3  # Number of decoder layers
-prior_hidden_dim: 100  # Prior network hidden dimension
-prior_n_layers: 2  # Number of prior network layers
-activation: lrelu  # Activation function: 'relu', 'lrelu', 'tanh', 'sigmoid'
-slope: 0.1  # Leaky ReLU slope
+  # Training
+  learning_rate: 0.001
+  optimizer: Adam
+  batch_size: 256
+  max_epochs: 10
+  tol: 1.0e-5
+  scaler: null                   # the rates are used as given
+  random_state: 3
 
-# ===== Dynamics and Distribution Parameters =====
-factor_order: 1  # AR order for factors (p in AR(p))
-innovation_distribution: laplace  # Innovation distribution: 'laplace', 'gaussian', 'student_t'
-decoder_var: 0.01  # Decoder variance (observation noise)
-
-# ===== Training Parameters =====
-learning_rate: 0.001  # Learning rate for optimizer
-optimizer: Adam  # Optimizer type: 'Adam', 'AdamW', 'SGD'
-batch_size: 256  # Batch size for training (larger to reduce #batches/epoch)
-max_epochs: 10  # Maximum training epochs
-tolerance: 1.0e-5  # Convergence tolerance
-seed: null  # Random seed (None uses default)
-
-# ===== Base Model Config (inherited) =====
-frequency: null  # iVDFM doesn't use mixed-frequency structure
-clock: d  # Daily clock frequency (all series are daily)
-scaler: null  # Scaler for targets: 'standard', 'robust', 'minmax', 'maxabs', 'quantile', or null. Applied to targets only (not context/auxiliary variables)
+# PanelData.from_wide arguments.
+data:
+  time_col: date
+  target_cols: [AUD_USD, GBP_USD, CAD_USD, CHF_USD, CNY_USD, JPY_USD, SGD_USD, NZD_USD]
+  exog_cols: []

@@ -217,3 +217,5 @@ agent/
 *.db
 *.pkl
 *.pt
+# Runs saved by the tutorials (tutorial/*.py --run-dir defaults to models/<name>)
+/models/

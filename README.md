@@ -66,8 +66,7 @@ X_forecast, Z_forecast = model.predict(horizon=6)
 print(X_forecast.shape, Z_forecast.shape)       # (6, 4) series, (6, state dim)
 ```
 
-`DDFM` (`from dfm_python import DDFM, DDFMDataset`) and `iVDFM`
-(`from dfm_python import iVDFM, iVDFMDataset`) follow the same
+`DDFM` (`from dfm_python import DDFM, DDFMDataset`) follows the same
 dataset-then-model pattern; every model and config class is importable from
 `dfm_python`. Hydra YAML configurations for each model are in
 [`config/`](https://github.com/minkeymouse/dfm-python/tree/main/config) and
@@ -122,6 +121,78 @@ build the same panel with
 `PanelData.from_long(df, series_exog_cols=["c0", ..., "c7"])`. The
 hyperparameters can also come from YAML: `config/afm_finance.yaml` holds a
 `model:` section that `AFM.from_config(AFMConfig.from_yaml(path))` reads.
+
+## iVDFM
+
+iVDFM, the identifiable variational dynamic factor model, learns nonlinear
+factors with AR(`factor_order`) dynamics from sliding windows of the panel and
+is trained on the ELBO. The prior of the innovations is conditioned on a context
+u_t, which makes the factors identifiable. u_t is the `exog` columns of
+`PanelData` plus `time_context` generated time features. Missing target and exog
+values are interpolated. Forecasts are returned in data units: the model's
+output is inverse-transformed with the fitted `scaler_`.
+
+```python
+import numpy as np
+import pandas as pd
+from dfm_python import iVDFM, PanelData
+
+rng = np.random.default_rng(0)
+dates = pd.date_range("2010-01-31", periods=156, freq="ME", name="date")
+raw = pd.DataFrame(rng.standard_normal((156, 4)), columns=["s0", "s1", "s2", "policy_rate"])
+raw.insert(0, "date", dates)
+
+data = PanelData.from_wide(raw.iloc[:144], time_col="date", exog_cols=["policy_rate"])  # exog = context u_t
+model = iVDFM(n_factors=2, factor_order=2, window=48, stride=None,  # stride=None means window // 2
+              time_context=1, scaler="standard", max_epochs=20,
+              random_state=3, device="auto")                      # random_state=3 is the default
+model.fit(data)                                                   # returns model
+model.result_.training_elbo, model.n_iter_, model.converged_
+model.factors_                              # window factors, (window, time) MultiIndex
+
+future = raw.set_index("date")[["policy_rate"]]                # future values of the exog
+fc = model.predict(6, futr_exog=future.iloc[144:150])          # DataFrame 6 x 3, data units
+zf = model.predict_factors(6, futr_exog=future.iloc[144:150])  # DataFrame 6 x 2 (factor_0, factor_1)
+
+new = PanelData.from_wide(raw.iloc[96:150], time_col="date", exog_cols=["policy_rate"])
+fc_new = model.predict(6, new, futr_exog=future.iloc[150:156])  # conditions on new; model unchanged
+model.update(new)               # encoder forward pass with the fixed weights; appends the factors
+model.predict(6, futr_exog=future.iloc[150:156])                # equals fc_new
+
+model.save("runs/ivdfm", overwrite=True)    # pickle-free directory
+model = iVDFM.load("runs/ivdfm")            # or dfm_python.load("runs/ivdfm"); device= overrides
+```
+
+`update(data)` never trains: `update(data, refit=True)` raises
+`UnsupportedInputError`, so call `fit` to retrain. Without `futr_exog`, a model
+fitted with exog warns and fills the future context with time features.
+
+Hyperparameter search uses optuna (the `tune` extra). It fits clones of the
+estimator on a holdout split and returns the best values under the estimator's
+names:
+
+```python
+from dfm_python.tuning import tune_hyperparameters   # pip install "dfm-python[tune]"
+
+best = tune_hyperparameters(model, data, n_trials=30, horizon=12, min_window=24, max_window=48,
+                            metric="sMSE")
+model.set_params(**best).fit(data)
+```
+
+The shipped YAMLs (`config/ivdfm_macro.yaml`, `ivdfm_finance.yaml`,
+`ivdfm_exchange.yaml`) hold a `model:` section with the constructor parameters
+and a `data:` section with the `PanelData.from_wide` arguments:
+
+```python
+from dfm_python.config import iVDFMConfig, load_yaml
+
+model = iVDFM.from_config(iVDFMConfig.from_yaml("config/ivdfm_exchange.yaml"))
+sections = load_yaml("config/ivdfm_exchange.yaml")
+data = PanelData.from_wide(pd.read_csv("data/exchange_rate.csv"), **sections["data"])
+```
+
+`tutorial/tutorial_{macro,finance,exchange}_ivdfm.py` run these configurations
+end to end (`--rows` and `--max-epochs` shorten a run).
 
 ## Layout
 

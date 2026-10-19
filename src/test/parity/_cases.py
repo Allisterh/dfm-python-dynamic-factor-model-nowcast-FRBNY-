@@ -485,17 +485,31 @@ def ivdfm_time_features(horizon: int, time_context: int, T_train: int) -> np.nda
 _IVDFM_ROWS = 400
 _IVDFM_MAX_EPOCHS = 3
 
+# The flat config/ivdfm_macro.yaml the ivdfm_macro fixture was captured from
+# (commit 6c6e985), as OmegaConf loaded it. The shipped file has since been
+# rewritten in the model:/data: layout with the canonical names, so the case
+# keeps the values it was captured with here. The data recipe still names the
+# file the values came from.
+_IVDFM_MACRO_FLAT_CONFIG: dict[str, Any] = {
+    "num_factors": 5, "sequence_length": 200, "context": None, "context_dim": 1,
+    "encoder_hidden_dim": 200, "encoder_n_layers": 3, "decoder_hidden_dim": 200, "decoder_n_layers": 3,
+    "prior_hidden_dim": 100, "prior_n_layers": 2, "activation": "lrelu", "slope": 0.1, "factor_order": 3,
+    "innovation_distribution": "laplace", "decoder_var": 0.01, "learning_rate": 0.001, "optimizer": "Adam",
+    "batch_size": 256, "max_epochs": 10, "tolerance": 1e-05, "seed": None, "frequency": None, "clock": "w",
+    "scaler": "standard",
+}
+
 
 def _ivdfm_macro() -> CaseRun:
     from dfm_python.models.ivdfm._engine import iVDFMEngine as iVDFM
     from dfm_python.config.schema.model import _iVDFMEngineConfig as iVDFMConfig
     from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
 
-    # tutorial_macro_ivdfm.py on the last rows of data/macro.csv. The tutorial
-    # itself does not run today (it passes context_dim to iVDFMDataset), so the
-    # dataset gets the tutorial's data, covariates, window (sequence_length) and
-    # scaler, and the model is built in the constructor-dataset order.
-    yaml_cfg = _load_yaml("ivdfm_macro.yaml")
+    # The pre-redesign tutorial_macro_ivdfm.py on the last rows of data/macro.csv.
+    # That tutorial did not run (it passed context_dim to iVDFMDataset), so the
+    # dataset gets its data, covariates, window (sequence_length) and scaler,
+    # and the model is built in the constructor-dataset order.
+    yaml_cfg = dict(_IVDFM_MACRO_FLAT_CONFIG)
     df = _macro_tail(_IVDFM_ROWS)
     targets = ["KOEQUIPTE", "KOEMPTOTO", "KOHWRWEMP"]
     covariates = [c for c in df.columns if c != "date" and c not in targets][:32]
