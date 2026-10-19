@@ -25,6 +25,7 @@ Each model is built from a dataset and a config, then fitted::
 See README.md for complete examples of every model.
 """
 
+import logging as _logging
 from importlib.metadata import PackageNotFoundError, version as _version
 
 try:
@@ -33,6 +34,13 @@ except PackageNotFoundError:  # running from a source tree that is not installed
     __version__ = "0+unknown"
 
 del PackageNotFoundError, _version
+
+# Silent by default: the package logger gets only a NullHandler. Opt in with
+# set_verbosity() or the DFM_PYTHON_VERBOSITY environment variable.
+_package_logger = _logging.getLogger(__name__)
+if not any(isinstance(h, _logging.NullHandler) for h in _package_logger.handlers):
+    _package_logger.addHandler(_logging.NullHandler())
+del _package_logger
 
 # Configuration
 from .config import (
@@ -46,6 +54,13 @@ from .config import DFMResult, DDFMResult, BaseResult
 
 # Utilities
 from .utils.metric import calculate_rmse
+
+# Errors
+from .utils.errors import NotFittedError, UnsupportedInputError
+
+# Logging
+from .logger import set_verbosity, get_verbosity
+from .logger.logger import _apply_env_verbosity
 
 # Datasets
 from .dataset.dfm_dataset import DFMDataset
@@ -72,4 +87,11 @@ __all__ = [
     'DFMDataset', 'DDFMDataset', 'iVDFMDataset', 'AFMDataset',
     # Results and metrics
     'BaseResult', 'DFMResult', 'DDFMResult', 'calculate_rmse',
+    # Errors
+    'NotFittedError', 'UnsupportedInputError',
+    # Logging
+    'set_verbosity', 'get_verbosity',
 ]
+
+_apply_env_verbosity()
+del _apply_env_verbosity

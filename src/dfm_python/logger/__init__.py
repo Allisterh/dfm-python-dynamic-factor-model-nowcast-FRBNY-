@@ -3,6 +3,9 @@
 This package provides a custom logging system built on Python's standard logging module.
 The package provides:
 - Basic logging configuration (get_logger, setup_logging, configure_logging)
+- Opt-in verbosity (set_verbosity, get_verbosity) and fit-scoped progress (fit_verbosity)
+
+The package is silent by default: the 'dfm_python' logger has only a NullHandler.
 - Training process tracking (BaseTrainLogger and model-specific loggers: DFMTrainLogger, DDFMTrainLogger)
 - Inference process tracking (BaseInferenceLogger and model-specific loggers)
 - Convenience functions for common logging tasks (log_em_iteration, log_convergence, etc.)
@@ -12,7 +15,11 @@ from .logger import (
     get_logger,
     setup_logging,
     configure_logging,
+    set_verbosity,
+    get_verbosity,
 )
+
+from .progress import fit_verbosity
 
 from .train_logger import (
     BaseTrainLogger,
@@ -49,6 +56,9 @@ __all__ = [
     'get_logger',
     'setup_logging',
     'configure_logging',
+    'set_verbosity',
+    'get_verbosity',
+    'fit_verbosity',
     # Training tracking - base and model-specific
     'BaseTrainLogger',
     'DFMTrainLogger',

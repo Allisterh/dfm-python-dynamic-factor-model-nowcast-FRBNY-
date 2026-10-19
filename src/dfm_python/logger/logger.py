@@ -5,7 +5,9 @@ All logging uses Python's standard logging module with hierarchical configuratio
 """
 
 import logging
+import os
 import sys
+import warnings
 from typing import Optional, Dict
 from pathlib import Path
 from datetime import datetime
@@ -90,16 +92,37 @@ class CoreDebugFilter(logging.Filter):
         return False
 
 
+PACKAGE_LOGGER_NAME = "dfm_python"
+"""Name of the package logger that every module logger propagates to."""
+
+VERBOSITY_ENV_VAR = "DFM_PYTHON_VERBOSITY"
+"""Environment variable read at import; its value is passed to :func:`set_verbosity`."""
+
+DEFAULT_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+DEFAULT_DATEFMT = '%Y-%m-%d %H:%M:%S'
+
+_VERBOSITY_LEVELS = {
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+}
+
+# Attribute set on the one handler that set_verbosity installs, so it is never duplicated.
+_VERBOSITY_HANDLER_MARK = "_dfm_python_verbosity_handler"
+
+
 def get_logger(name: str) -> logging.Logger:
     """Get a logger instance for a module.
     
     This is the standard way to get a logger in the DFM package.
     All modules should use: _logger = get_logger(__name__)
     
-    The logger uses hierarchical configuration:
-    - Child loggers (e.g., 'dfm_python.models.dfm') inherit from parent logger ('dfm_python')
-    - Parent logger ('dfm_python') is configured once with handlers
-    - Child loggers propagate to parent (default behavior)
+    The returned logger is a plain ``logging.getLogger(name)``. No handler is
+    attached and propagation is left untouched: records from module loggers
+    (e.g., ``'dfm_python.models.dfm'``) reach the package logger
+    ``'dfm_python'``, which only has a ``NullHandler`` until the user opts in
+    with :func:`set_verbosity` (or configures the ``logging`` module).
     
     Parameters
     ----------
@@ -109,42 +132,88 @@ def get_logger(name: str) -> logging.Logger:
     Returns
     -------
     logging.Logger
-        Logger instance configured for the package
+        Logger instance for the module
     """
-    logger = logging.getLogger(name)
+    return logging.getLogger(name)
+
+
+def _resolve_level(level) -> int:
+    """Turn a verbosity name or a ``logging`` level number into a level number."""
+    if isinstance(level, bool):
+        raise _verbosity_error(level)
+    if isinstance(level, int):
+        return level
+    if isinstance(level, str):
+        key = level.strip().lower()
+        if key in _VERBOSITY_LEVELS:
+            return _VERBOSITY_LEVELS[key]
+        if key.isdigit():
+            return int(key)
+    raise _verbosity_error(level)
+
+
+def _verbosity_error(level) -> Exception:
+    # Lazy import: dfm_python.utils imports this module through dfm_python.logger.
+    from ..utils.errors import ConfigurationError
+    names = ", ".join(repr(k) for k in _VERBOSITY_LEVELS)
+    return ConfigurationError(
+        f"Invalid verbosity {level!r}: pass one of {names} or a logging level number "
+        f"such as logging.INFO."
+    )
+
+
+def _verbosity_handler(package_logger: logging.Logger) -> Optional[logging.Handler]:
+    """Return the handler installed by :func:`set_verbosity`, if any."""
+    for handler in package_logger.handlers:
+        if getattr(handler, _VERBOSITY_HANDLER_MARK, False):
+            return handler
+    return None
+
+
+def set_verbosity(level) -> None:
+    """Show dfm_python log records on standard output from ``level`` upwards.
     
-    # Ensure package-level logger is configured (only once)
-    package_logger = logging.getLogger('dfm_python')
+    The package is silent by default. This is the opt-in: it installs one
+    ``StreamHandler(sys.stdout)`` on the ``'dfm_python'`` logger (never more
+    than one, however often it is called) and sets the logger's level.
     
-    # Configure package logger if not already configured
-    # Use a flag to avoid re-configuring if already done
-    if not hasattr(package_logger, '_dfm_configured'):
-        # Check if handlers already exist to prevent duplicates
-        # This can happen if configure_logging() was called before get_logger()
-        if not package_logger.handlers:
-            # Configure handler for dfm_python package logger
-            handler = logging.StreamHandler(sys.stdout)
-            handler.setFormatter(
-                logging.Formatter(
-                    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                    datefmt='%Y-%m-%d %H:%M:%S'
-                )
-            )
-            package_logger.addHandler(handler)
-        
-        package_logger.setLevel(logging.INFO)
-        # Disable propagation to root logger to prevent duplicate messages
-        # Root logger may have handlers from other code (e.g., basicConfig)
-        # By setting propagate=False, we ensure messages only go through our handler
-        package_logger.propagate = False
-        # Mark as configured to avoid duplicate handlers
-        package_logger._dfm_configured = True
+    Parameters
+    ----------
+    level : {'debug', 'info', 'warning', 'error'} or int
+        Verbosity name (case-insensitive) or a ``logging`` level number.
     
-    # Child logger should propagate to package logger (not root)
-    # Since package logger has propagate=False, messages won't go to root
-    logger.propagate = True
+    Raises
+    ------
+    ConfigurationError
+        If ``level`` is not a known name or an integer.
+    """
+    resolved = _resolve_level(level)
+    package_logger = logging.getLogger(PACKAGE_LOGGER_NAME)
+    if _verbosity_handler(package_logger) is None:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter(DEFAULT_FORMAT, datefmt=DEFAULT_DATEFMT))
+        setattr(handler, _VERBOSITY_HANDLER_MARK, True)
+        package_logger.addHandler(handler)
+    package_logger.setLevel(resolved)
+
+
+def get_verbosity() -> int:
+    """Return the effective level of the ``'dfm_python'`` logger as a ``logging`` number."""
+    return logging.getLogger(PACKAGE_LOGGER_NAME).getEffectiveLevel()
+
+
+def _apply_env_verbosity() -> None:
+    """Call :func:`set_verbosity` with ``$DFM_PYTHON_VERBOSITY`` when it is set.
     
-    return logger
+    An invalid value emits a ``UserWarning`` instead of failing the import.
+    """
+    value = os.environ.get(VERBOSITY_ENV_VAR)
+    if value is None or not value.strip():
+        return
+    try:
+        set_verbosity(value)
+    except ValueError as exc:
+        warnings.warn(f"Ignoring {VERBOSITY_ENV_VAR}={value!r}: {exc}", UserWarning, stacklevel=2)
 
 
 def setup_logging(
