@@ -162,6 +162,11 @@ class DDFM(BaseFactorModel):
         "quantile", or an unfitted transformer, which is cloned. The
         covariates are scaled with a fresh instance of the same class. None
         trains on the data as given. Forecasts are always in data units.
+        ``update`` and ``predict(h, data=)`` are only meaningful with
+        "standard" or None: the engine's scaler refit inverse-transforms the
+        training targets only for a scaler with ``mean_`` and ``scale_``, so
+        other scalers are refitted on scaled training targets stacked with raw
+        new ones (a known engine bug, kept for identical numbers).
     random_state : int, optional, default 3
         Seed of the autoencoder's initialization (global torch RNG) and of the
         local generator of the MCMC noise. None does not seed, so runs differ.

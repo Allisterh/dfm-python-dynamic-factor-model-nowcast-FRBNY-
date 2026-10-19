@@ -68,6 +68,13 @@
     mutating path is the explicit `update(data)`.
   - `result_.C` is the loading matrix H, N x r (series x factors), the `DFM`
     orientation; it was H transposed (factors x N).
+  - Known limitation, kept for identical numbers (the old `update` and
+    `predict(data=)` did the same): refitting the target scaler
+    inverse-transforms the training targets only for a scaler with `mean_`
+    and `scale_`. With `"minmax"`, `"robust"`, `"maxabs"`, `"quantile"`
+    or another transformer it refits on scaled training targets stacked with
+    raw new ones, so `update(data)` and `predict(h, data=)` are only
+    meaningful with `scaler="standard"` or `None`.
   - With `scaler=None` the forecasts are in model space (the engine's
     forecast, untransformed); the old `predict` raised without a scaler.
   - Dropped as dead (stored but never read): `max_epoch_pre_train`

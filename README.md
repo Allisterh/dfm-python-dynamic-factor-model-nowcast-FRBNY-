@@ -249,6 +249,9 @@ refitted on the training targets and the panel's, so `scaler_` changes;
 `predict(h, data=)` does all of this on a copy. `update(data)` never trains:
 `update(data, refit=True)` raises `UnsupportedInputError`, so call `fit` to
 retrain. `result_.C` is N x r (series by factors), as in DFM.
+`update` and `predict(h, data=)` are only meaningful with `scaler="standard"`
+or `None`: for the other scalers the engine refits on scaled training targets
+stacked with raw new ones (a known engine bug, kept for identical numbers).
 
 The shipped YAMLs (`config/ddfm_macro.yaml`, `ddfm_finance.yaml`,
 `ddfm_exchange.yaml`) hold a `model:` section with the constructor parameters

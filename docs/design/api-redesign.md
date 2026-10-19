@@ -475,7 +475,8 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
   - the update panel's covariates are scaled with a fresh `type(scaler)()` fitted on that panel, not with the training statistics;
   - the target scaler is refitted on the training rows plus the full update panel, which repeats the training rows;
   - a second `update` inverse-transforms the training targets with the scaler the first one refitted;
-  - the `DDFMResult` `training_*` fields are never set.
+  - the `DDFMResult` `training_*` fields (and `training_loss`, `encoder_layers`, `use_idiosyncratic`, `fit_params`) are never set;
+  - refitting the target scaler inverse-transforms the training targets only when the scaler has `mean_` and `scale_` (`StandardScaler`); with `"minmax"`, `"robust"`, `"maxabs"`, `"quantile"` or another transformer it stacks the still-scaled training targets with the raw update targets and refits on that mixed-unit matrix, so `update(data)` and `predict(h, data=)` are only meaningful with `scaler="standard"` or `None`.
 
 ## 15. Open questions for the owner
 

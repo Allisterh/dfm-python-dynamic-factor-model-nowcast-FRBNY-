@@ -309,72 +309,43 @@ class DFMResult(BaseResult):
 
 @dataclass
 class DDFMResult(BaseResult):
-    """DDFM estimation results structure.
+    """DDFM estimation results structure (``DDFM.result_``).
     
-    This dataclass contains all outputs from the DDFM estimation procedure,
-    including estimated parameters, smoothed data, and factors.
-    
-    Inherits all fields and methods from BaseResult. This class is specifically
-    for Deep Dynamic Factor Model results estimated using gradient descent.
+    Inherits all fields and methods from BaseResult. ``DDFM.fit`` sets the
+    BaseResult fields from the engine's state space: ``Z`` (T x r, factors
+    averaged over the MC samples), ``x_sm`` (T x N, the reconstruction
+    ``Z @ C.T`` in model space), ``A`` (the AR(1) transition F), ``C`` (the
+    loadings H, N x r, series by factors, the DFM orientation), ``Q``, ``R``,
+    ``Z_0``, ``V_0``, ``r``, ``p``, ``target_scaler`` (the estimator's
+    ``scaler_``), ``converged``, ``num_iter`` and ``loglik`` (-inf; DDFM
+    does not compute a log-likelihood).
     
     Attributes
     ----------
     converged : bool
-        Whether MCMC/gradient descent algorithm converged.
+        Whether the MCMC denoising loop stopped on ``tol`` before ``max_iter``.
     num_iter : int
-        Number of MCMC iterations or epochs performed.
-    training_loss : float, optional
-        Final training loss from neural network training.
-    encoder_layers : List[int], optional
-        Architecture of the encoder network used.
-    use_idiosyncratic : bool, optional
-        Whether idiosyncratic components were modeled.
-    fit_params : DDFMModelState, optional
-        State-space model parameters created during fit (F, Q, mu_0, sigma_0, H, R).
-        These are computed during build_state_space() and represent the fitted
-        state-space model structure.
-    # Training hyperparameters
-    training_max_iter : int, optional
-        Maximum MCMC iterations used (from model.max_iter)
-    training_tolerance : float, optional
-        Convergence tolerance used (from model.tolerance)
-    training_n_mc_samples : int, optional
-        Number of Monte Carlo samples per MCMC iteration (from model.n_mc_samples)
-    training_window_size : int, optional
-        Batch/window size used during training (from model.window_size)
-    training_learning_rate : float, optional
-        Learning rate used (from model.learning_rate)
-    training_optimizer : str, optional
-        Optimizer type used ('Adam' or 'SGD', from model.optimizer_type)
-    training_decay_learning_rate : bool, optional
-        Whether learning rate decay was used (from model.decay_learning_rate)
-    training_encoder_size : tuple, optional
-        Encoder architecture tuple (from model.encoder_size)
-    training_decoder_size : tuple, optional
-        Decoder architecture tuple (from model.decoder_size, None for linear)
-    training_target_series : List[str], optional
-        Target series used for reconstruction loss (from model.target_series)
-    training_use_bias : bool, optional
-        Whether bias was used in final decoder layer (from model.use_bias).
-        The bias term is extracted and used to adjust data mean during state-space construction.
-    training_batch_norm : bool, optional
-        Whether batch normalization was used (from model.batch_norm)
-    training_activation : str, optional
-        Activation function used ('relu' or 'tanh', from model.activation)
+        Number of MCMC iterations performed.
+    training_loss, encoder_layers, use_idiosyncratic, fit_params : optional
+        Declared but never set by ``DDFM.fit``; always None. Read the
+        hyperparameters from the estimator (``model.get_params()``) and the
+        state space from ``A``, ``C``, ``Q``, ``R``, ``Z_0``, ``V_0``.
+    training_max_iter, training_tolerance, training_n_mc_samples, training_window_size : optional
+        Declared but never set by ``DDFM.fit``; always None (a known engine
+        bug). The same holds for ``training_learning_rate``,
+        ``training_optimizer``, ``training_decay_learning_rate``,
+        ``training_encoder_size``, ``training_decoder_size``,
+        ``training_target_series``, ``training_use_bias``,
+        ``training_batch_norm`` and ``training_activation``.
     
     Examples
     --------
-    >>> from dfm_python import DDFM
-    >>> model = DDFM(encoder_layers=[64, 32], num_factors=2)
-    >>> Res = model.fit(X, config, epochs=100)
-    >>> # Access smoothed factors
-    >>> common_factor = Res.Z[:, 0]
-    >>> # Access factor loadings
-    >>> loadings = Res.C[0, :]
-    >>> # Access state-space parameters
-    >>> if Res.fit_params is not None:
-    ...     transition_matrix = Res.fit_params.F
-    ...     observation_matrix = Res.fit_params.H
+    >>> from dfm_python import DDFM, PanelData
+    >>> model = DDFM(n_factors=2, encoder_layers=(64, 32), scaler="standard").fit(data)  # doctest: +SKIP
+    >>> res = model.result_  # doctest: +SKIP
+    >>> common_factor = res.Z[:, 0]  # first factor, length T  # doctest: +SKIP
+    >>> loadings = res.C[0, :]  # loadings of the first series on the r factors  # doctest: +SKIP
+    >>> transition_matrix = res.A  # doctest: +SKIP
     """
     # All fields inherited from BaseResult
     # Additional DDFM-specific fields
