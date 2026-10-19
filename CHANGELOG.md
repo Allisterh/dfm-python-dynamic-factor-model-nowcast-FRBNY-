@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
 
 - **Breaking: estimator API for all four models.** `DFM`, `DDFM`, `iVDFM`
   and `AFM` are estimators with scikit-learn conventions on one data
