@@ -62,6 +62,9 @@ from .utils.errors import NotFittedError, UnsupportedInputError
 from .logger import set_verbosity, get_verbosity
 from .logger.logger import _apply_env_verbosity
 
+# Data container
+from .dataset.panel import PanelData
+
 # Datasets
 from .dataset.dfm_dataset import DFMDataset
 from .dataset.ddfm_dataset import DDFMDataset
@@ -83,6 +86,8 @@ __all__ = [
     'DFMConfig', 'DDFMConfig', 'iVDFMConfig', 'AFMConfig',
     # Config sources
     'ConfigSource', 'YamlSource', 'make_config_source',
+    # Data container
+    'PanelData',
     # Datasets
     'DFMDataset', 'DDFMDataset', 'iVDFMDataset', 'AFMDataset',
     # Results and metrics

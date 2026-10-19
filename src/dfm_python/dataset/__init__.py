@@ -12,9 +12,12 @@ from .ddfm_dataset import DDFMDataset
 from .dfm_dataset import DFMDataset
 from .ivdfm_dataset import iVDFMDataset
 from .afm_dataset import AFMDataset
+from .panel import PanelData
 from .time import TimeIndex
 
 __all__ = [
+    # Data container
+    'PanelData',
     # Datasets
     'DDFMDataset',
     'DFMDataset',
