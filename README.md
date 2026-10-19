@@ -28,7 +28,7 @@ Optional extras:
 | Extra      | Adds        | Needed for                                              |
 |------------|-------------|---------------------------------------------------------|
 | `yaml`     | omegaconf   | loading configs from YAML (`YamlSource`)                |
-| `tune`     | optuna      | iVDFM hyperparameter search                             |
+| `tune`     | optuna      | iVDFM hyperparameter search (`dfm_python.tuning`)       |
 | `metrics`  | sktime      | `calculate_rmse`, `calculate_mae`                       |
 | `polars`   | polars, pyarrow | passing polars DataFrames to the dataset classes    |
 | `examples` | hydra-core  | running the scripts in `tutorial/`                      |

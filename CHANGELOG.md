@@ -6,7 +6,7 @@
   installs optuna, sktime, omegaconf, hydra-core, pyarrow, matplotlib or
   pytorch-lightning. Code that used them through dfm-python now raises an
   `ImportError` naming the extra to install: `calculate_rmse`/`calculate_mae`
-  need `[metrics]`, `dfm_python.models.ivdfm.optuna` needs `[tune]`,
+  need `[metrics]`, `dfm_python.tuning` needs `[tune]`,
   `YamlSource.load()` needs `[yaml]`, polars input needs `[polars]` (polars
   and pyarrow), and the `tutorial/` scripts need `[examples]`.
   **Migration:** to keep the 0.7.0 behaviour, depend on `dfm-python[all]`
