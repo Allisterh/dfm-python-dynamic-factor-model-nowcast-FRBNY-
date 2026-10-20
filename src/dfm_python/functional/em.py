@@ -3,21 +3,22 @@
 This module provides the Expectation-Maximization algorithm for DFM parameter estimation.
 The E-step is ``ssm.kalman.DFMKalmanFilter`` (Kalman filter and Durbin-Koopman
 smoother with per-element missing data and the exact log-likelihood); the M-step
-is implemented here with block structure preservation.
-
-Includes numerical stability utilities to ensure convergence safety.
+is the closed-form Banbura-Modugno (2014) update implemented here: per-block
+VAR(p) for the factors (companion shift rows kept), AR(1) idiosyncratic states
+with the lag-one smoothed covariance, per-series loadings (tent-restricted
+least squares for slower-frequency series) with the fixed idiosyncratic
+loadings' cross-moments subtracted, the missing-data R formula, and
+``Z_0, V_0`` from the smoothed initial state. All moments are float64 and
+aligned with the E-step (``EZ[t]`` goes with data row ``t``); there are no
+caps, clips or ridge terms, so with the exact E-step the log-likelihood of the
+iterates does not decrease.
 """
 
-import logging
 import time as time_module
 import numpy as np
 from typing import Tuple, Optional, Dict, Any, Callable
 from dataclasses import dataclass, replace
-try:
-    from scipy.linalg import solve
-except ImportError:
-    # Fallback to numpy if scipy not available
-    solve = np.linalg.solve
+from scipy.linalg import block_diag, cho_factor, cho_solve
 
 from ..ssm.kalman import DFMKalmanFilter
 from ..logger import get_logger
@@ -28,23 +29,18 @@ from ..config.constants import (
     MAX_MSTEP_SECONDS,
     MAX_EM_ITERATION_SECONDS,
     MAX_FIRST_ITERATION_SECONDS,
-    MAX_STD_UNSCALED,
-    MIN_STD_SCALED,
-    MAX_FALLBACKS_PER_ITERATION,
     MIN_EIGENVALUE,
     MIN_DIAGONAL_VARIANCE,
     MIN_OBSERVATION_NOISE,
     MIN_FACTOR_VARIANCE,
     DEFAULT_REGULARIZATION,
     DEFAULT_CONVERGENCE_THRESHOLD,
-    DEFAULT_MAX_ITER,
     DEFAULT_TRANSITION_COEF,
     DEFAULT_PROCESS_NOISE,
     VAR_STABILITY_THRESHOLD,
     DEFAULT_SLOWER_FREQ_AR_COEF,
     DEFAULT_SLOWER_FREQ_VARIANCE_DENOMINATOR,
     DEFAULT_EXTREME_FORECAST_THRESHOLD,
-    DEFAULT_CLEAN_NAN,
     DEFAULT_MAX_VARIANCE,
     DEFAULT_ZERO_VALUE,
     DEFAULT_IDENTITY_SCALE,
@@ -53,23 +49,14 @@ from ..config.constants import (
     DEFAULT_TENT_KERNEL_SIZE,
 )
 from ..numeric.stability import (
-    cap_max_eigenval,
-    ensure_covariance_stable,
-    ensure_process_noise_stable,
-    solve_regularized_ols,
     create_scaled_identity,
-    ensure_symmetric,
-    stabilize_em_process_noise,
-    stabilize_em_initial_covariance,
     rescale_ssm_params_for_C_normalization,
 )
 from ..numeric.estimator import (
     estimate_var,
     estimate_ar1,
-    estimate_constrained_ols,
     apply_ar_clipping,
 )
-from ..utils.helper import handle_linear_algebra_error
 from ..utils.misc import get_config_attr
 from ..utils.errors import DataValidationError, NumericalError
 from ..logger.progress import log_em_iteration, log_convergence
@@ -79,12 +66,26 @@ _logger = get_logger(__name__)
 
 @dataclass
 class EMConfig:
-    """Configuration for EM algorithm parameters."""
-    regularization: float = DEFAULT_REGULARIZATION
-    min_norm: float = MIN_EIGENVALUE
-    max_eigenval: float = VAR_STABILITY_THRESHOLD  # Stability threshold for VAR matrices
+    """Configuration for EM algorithm parameters.
+
+    The M-step is the closed-form Banbura-Modugno (2014) update with no caps,
+    clips or ridge terms. Fields kept for API compatibility that the M-step no
+    longer uses: ``regularization`` (no ridge term in the moment solves),
+    ``max_eigenval`` (no eigenvalue cap on A, Q or V_0), ``max_variance`` (no
+    upper clip on R) and ``matrix_regularization``. ``min_variance`` is the
+    floor of ``R_ii`` for series without an idiosyncratic state (series with one
+    use ``MIN_OBSERVATION_NOISE``). ``normalize_C`` rescales each factor once,
+    after the last EM iteration, so its current-period loading column has unit
+    norm (a likelihood-invariant change of state units, see
+    ``_normalize_C_with_invariance``); it is never applied inside the EM loop.
+    ``ar_clip`` and ``damping_factor`` are opt-in and break the EM ascent
+    property.
+    """
+    regularization: float = DEFAULT_REGULARIZATION  # Unused by the M-step (kept for compatibility)
+    min_norm: float = MIN_EIGENVALUE  # Loading columns with a smaller norm are not normalized
+    max_eigenval: float = VAR_STABILITY_THRESHOLD  # Unused by the M-step (kept for compatibility)
     min_variance: float = MIN_DIAGONAL_VARIANCE
-    max_variance: float = DEFAULT_MAX_VARIANCE  # Maximum variance cap
+    max_variance: float = DEFAULT_MAX_VARIANCE  # Unused by the M-step (kept for compatibility)
     min_iterations_for_convergence_check: int = 2
     convergence_log_interval: int = DEFAULT_LOG_INTERVAL
     progress_log_interval: int = DEFAULT_PROGRESS_LOG_INTERVAL
@@ -104,55 +105,91 @@ class EMConfig:
     ar_clip: Optional[Dict[str, float]] = None  # AR coefficient clipping: {"min": float, "max": float}
     damping_factor: Optional[float] = None  # Damping factor for parameter updates (0.8 = 80% new, 20% old)
     data_clip: Optional[float] = None  # Clip data values beyond this many standard deviations
-    normalize_C: bool = True  # If True, normalize C columns (breaks strict EM invariance unless properly rescaled)
-    # NOTE: When normalize_C=True, _normalize_C_with_invariance() rescales A, Q, V_0, Z_0 to preserve invariance
-    # For strict EM without normalization, set normalize_C=False (may cause numerical issues)
+    normalize_C: bool = True  # Rescale factors to unit-norm loading columns once after EM (likelihood-invariant)
 
 
 _DEFAULT_EM_CONFIG = EMConfig()
 
 
-def _stabilize_q_and_v0(
-    Q: np.ndarray,
-    V_0: np.ndarray,
-    config: EMConfig,
-    warn: bool = True
-) -> Tuple[np.ndarray, np.ndarray]:
-    """Stabilize Q and V_0 parameters with consistent configuration.
-    
-    Helper to reduce duplication in em_step between blocked and unblocked paths.
-    
-    Parameters
-    ----------
-    Q : np.ndarray
-        Process noise matrix
-    V_0 : np.ndarray
-        Initial state covariance
-    config : EMConfig
-        EM configuration
-    warn : bool, default True
-        Whether to log warnings
-        
-    Returns
-    -------
-    Tuple[np.ndarray, np.ndarray]
-        (Q_stable, V_0_stable)
+def _sym(M: np.ndarray) -> np.ndarray:
+    """Symmetric part of a square matrix (removes round-off asymmetry only)."""
+    return 0.5 * (M + M.T)
+
+
+def _initial_covariance_update(V_smooth_0: np.ndarray) -> np.ndarray:
+    """M-step for V_0: ``Cov(x_0 | Y)``, symmetrized and, if needed, projected to PSD.
+
+    The exact smoothed covariance is positive semidefinite; with an
+    ill-conditioned prior (e.g. a V_0 with eigenvalues from 1e-6 to 1e5) its
+    computed value can have small negative eigenvalues, which would make the
+    next prior an invalid Gaussian. Those eigenvalues are set to 0 (the
+    nearest PSD matrix); a PSD input is returned only symmetrized.
     """
-    Q_new = stabilize_em_process_noise(
-        Q,
-        min_eigenval=config.min_variance,
-        max_eigenval=config.max_eigenval,
-        default_process_noise=DEFAULT_PROCESS_NOISE,
-        dtype=np.float64,
-        warn=warn
-    )
-    V_0_new = stabilize_em_initial_covariance(
-        V_0,
-        min_eigenval=config.min_variance,
-        max_eigenval=config.max_eigenval,
-        warn=warn
-    )
-    return Q_new, V_0_new
+    V = _sym(np.asarray(V_smooth_0, dtype=np.float64))
+    w, U = np.linalg.eigh(V)
+    if w.size and w[0] < 0.0:
+        V = _sym((U * np.maximum(w, 0.0)) @ U.T)
+    return V
+
+
+class _MStepError(NumericalError):
+    """An M-step block could not be computed at parameters whose E-step succeeded.
+
+    ``loglik`` is the exact log-likelihood of the parameters the failed
+    iteration started from, so ``run_em_algorithm`` can return them.
+    """
+
+    def __init__(self, message: str, loglik: float, details: Optional[str] = None):
+        super().__init__(message, details=details)
+        self.loglik = loglik
+
+
+def _solve_spd(M: np.ndarray, B: np.ndarray, what: str) -> np.ndarray:
+    """Solve ``M X = B`` for a symmetric positive definite moment matrix (Cholesky).
+
+    The moment matrices of the M-step (sums of ``E[x x' | Y]``) are positive
+    definite unless the data cannot identify the parameters. A matrix that is
+    not numerically positive definite raises ``NumericalError``; nothing is
+    regularized.
+    """
+    M = _sym(np.asarray(M, dtype=np.float64))
+    try:
+        factor = cho_factor(M, lower=True, check_finite=True)
+    except (np.linalg.LinAlgError, ValueError) as e:
+        raise NumericalError(
+            f"M-step: the moment matrix of the {what} is not positive definite ({e})."
+        ) from e
+    d = np.abs(np.diag(factor[0]))
+    if d.size and d.min() ** 2 <= M.shape[0] * np.finfo(np.float64).eps * d.max() ** 2:
+        raise NumericalError(
+            f"M-step: the moment matrix of the {what} is singular to working precision "
+            f"(Cholesky diagonal ratio {d.min() / d.max():.2e})."
+        )
+    X = cho_solve(factor, np.asarray(B, dtype=np.float64))
+    if not np.all(np.isfinite(X)):
+        raise NumericalError(f"M-step: the solve for the {what} is not finite.")
+    return X
+
+
+def _factor_scales(C: np.ndarray, r: np.ndarray, p_plus_one: int, min_norm: float) -> np.ndarray:
+    """Per-factor scale ``d`` (length m) for the C normalization.
+
+    ``d`` is the Euclidean norm of the column of C that loads the current value
+    of each factor, repeated on every lag copy of that factor in the companion
+    block; it is 1 on the idiosyncratic states and on factors whose loading
+    column has norm at most ``min_norm``.
+    """
+    m = C.shape[1]
+    d = np.ones(m, dtype=np.float64)
+    offset = 0
+    for r_b in np.asarray(r).astype(int):
+        for f in range(r_b):
+            norm = float(np.linalg.norm(C[:, offset + f]))
+            if norm > min_norm:
+                lag_copies = offset + f + r_b * np.arange(p_plus_one)
+                d[lag_copies[lag_copies < m]] = norm
+        offset += r_b * p_plus_one
+    return d
 
 
 def _normalize_C_with_invariance(
@@ -161,70 +198,36 @@ def _normalize_C_with_invariance(
     config: EMConfig,
     log_prefix: str = ""
 ) -> Tuple[np.ndarray, DFMModelState]:
-    """Normalize C matrix columns while preserving state-space invariance.
-    
-    State-space model is invariant under:
-        C → C D
-        Z → D⁻¹ Z
-        A → D⁻¹ A D
-        Q → D⁻¹ Q D⁻¹
-        V₀ → D⁻¹ V₀ D⁻¹
-    
-    This function applies the complete transformation to maintain likelihood invariance.
-    
-    Parameters
-    ----------
-    C : np.ndarray
-        Observation matrix (N x m) to normalize
-    state : DFMModelState
-        Current model state containing Q, V_0, Z_0
-    config : EMConfig
-        EM configuration with min_norm threshold
-    log_prefix : str
-        Prefix for logging messages
-        
+    """Rescale each factor so its current-period loading column has unit norm.
+
+    The state-space model is unchanged (same likelihood, same fitted values)
+    under the change of state units ``x' = D x`` with ``D`` diagonal::
+
+        C' = C D^-1,  A' = D A D^-1,  Q' = D Q D,  V_0' = D V_0 D,  Z_0' = D Z_0
+
+    ``D`` holds one scale per factor (the norm of the C column of its current
+    value, from ``_factor_scales``), used for every lag copy of that factor so
+    the companion shift rows stay identity; idiosyncratic states keep scale 1.
+    EM calls this once, after the last iteration, when ``config.normalize_C`` is
+    True; it is not part of the M-step.
+
     Returns
     -------
     Tuple[np.ndarray, DFMModelState]
-        (C_normalized, state_rescaled) where state has Q, V_0, Z_0 rescaled
+        ``(C', state')`` where ``state'`` carries C', A', Q', V_0', Z_0'.
     """
-    m = C.shape[1]
-    C_new = C.copy()
-    D_inv = np.ones(m, dtype=C.dtype)  # D⁻¹ diagonal matrix
-    
-    # Compute normalization factors
-    norms = np.linalg.norm(C_new, axis=0)
-    valid_mask = norms > config.min_norm
-    
-    if np.any(valid_mask):
-        # D⁻¹ = 1/norm for columns that need normalization
-        D_inv[valid_mask] = 1.0 / norms[valid_mask]
-        # Normalize C: C → C D
-        C_new[:, valid_mask] = C_new[:, valid_mask] * D_inv[valid_mask]
-        
-        n_normalized = np.sum(valid_mask)
-        if n_normalized > 0:
-            _logger.debug(
-                f"{log_prefix}Normalized {n_normalized}/{m} C columns "
-                f"(invariance-preserving transformation applied)"
-            )
-    
-    # Rescale state-space parameters to maintain invariance
-    if np.any(valid_mask):
-        A_new, Q_new, V_0_new, Z_0_new = rescale_ssm_params_for_C_normalization(
-            state.A,
-            state.Q,
-            state.V_0,
-            state.Z_0,
-            D_inv,
-            min_variance=config.min_variance,
-            dtype=np.float64,
-        )
-        state_rescaled = replace(state, A=A_new, Q=Q_new, V_0=V_0_new, Z_0=Z_0_new, C=C_new)
-    else:
-        state_rescaled = replace(state, C=C_new)
-    
-    return C_new, state_rescaled
+    p_plus_one = state.max_lag_size if state.max_lag_size is not None else (state.p + 1)
+    d = _factor_scales(np.asarray(C, dtype=np.float64), state.r, int(p_plus_one), config.min_norm)
+    D_inv = 1.0 / d
+    C_new = np.asarray(C, dtype=np.float64) * D_inv[np.newaxis, :]
+    A_new, Q_new, V_0_new, Z_0_new = rescale_ssm_params_for_C_normalization(
+        state.A, state.Q, state.V_0, state.Z_0, D_inv
+    )
+    n_scaled = int(np.sum(d != 1.0))
+    if n_scaled:
+        _logger.debug(f"{log_prefix}Normalized the loading scale of {n_scaled}/{C.shape[1]} states "
+                      f"(likelihood-invariant change of state units).")
+    return C_new, replace(state, C=C_new, A=A_new, Q=Q_new, V_0=V_0_new, Z_0=Z_0_new)
 
 
 def _validate_blocks_shape(blocks: np.ndarray, n_series: int) -> None:
@@ -366,34 +369,10 @@ def _compute_and_cache_block_indices(block_structure: BlockStructure, N: int) ->
     block_structure._cached_N = N  # Store N value used for caching
 
 
-def _update_transition_matrix(EZ: np.ndarray, state: DFMModelState, config: EMConfig) -> DFMModelState:
-    """Update transition matrix A using OLS regression.
-    
-    WARNING (Bug 2.3): This is a quasi-M-step, not a proper EM M-step.
-    - Uses OLS on smoothed means EZ only, ignoring V_smooth and VVsmooth
-    - Proper EM M-step would use: E[z_t z_t'], E[z_{t-1} z_{t-1}'], E[z_t z_{t-1}']
-    - This is acceptable for initialization or when V_smooth is unavailable
-    - For proper EM, use _update_transition_matrix_blocked which uses V_smooth and VVsmooth
-    """
-    T, m = EZ.shape
-    if T <= 1:
-        return state
-    
-    A = state.A
-    # Unblocked version ignores V_smooth/VVsmooth - this is quasi-EM, not full EM
-    # Documented limitation: this uses OLS on smoothed means rather than EM moments
-    def _compute_A() -> np.ndarray:
-        Y = EZ[1:, :]  # (T-1, m)
-        X = EZ[:-1, :]  # (T-1, m)
-        A_new = solve_regularized_ols(X, Y, regularization=config.regularization).T
-        return cap_max_eigenval(A_new, max_eigenval=config.max_eigenval, symmetric=False, warn=False)
-    
-    A_new = handle_linear_algebra_error(
-        _compute_A, "transition matrix update",
-        fallback_value=A
-    )
-    
-    return replace(state, A=A_new)
+def _factor_offsets(r: np.ndarray, p_plus_one: int) -> np.ndarray:
+    """State index where each factor block starts (blocks are ``r_b * p_plus_one`` wide)."""
+    widths = np.asarray(r).astype(int) * int(p_plus_one)
+    return np.concatenate([[0], np.cumsum(widths)[:-1]]).astype(int)
 
 
 def _update_transition_matrix_blocked(
@@ -403,246 +382,121 @@ def _update_transition_matrix_blocked(
     state: DFMModelState,
     config: EMConfig
 ) -> DFMModelState:
-    """Update transition matrix A and process noise Q block-by-block.
-    
-    Updates factors and idiosyncratic components separately, preserving block structure.
+    """M-step for A and Q (Banbura-Modugno 2014), block by block.
+
+    Timing: ``EZ[t]`` is the smoothed state of data row ``t`` (``t = 0..T-1``),
+    ``VVsmooth[t] = Cov(x_t, x_{t-1} | Y)``. The transition sums run over
+    ``t = 1..T-1``::
+
+        S11 = sum E[x_t x_t'],  S00 = sum E[x_{t-1} x_{t-1}'],  S10 = sum E[x_t x_{t-1}']
+
+    Factor block ``b`` (``r_b`` factors, companion width ``r_b * L``): only the
+    ``r_b`` current-factor rows are estimated, on the first ``r_b * p`` lag
+    columns (a VAR(p)): ``A_b = S10 S00^-1`` and ``Q_b = (S11 - A_b S10') / (T-1)``.
+    The other columns of those rows are zero, and the companion shift rows and
+    their process noise are kept as they are.
+
+    Idiosyncratic AR(1) states (``sum(idio_indicator)`` states after the factor
+    blocks): ``a_i = S10_ii / S00_ii`` and ``q_i = (S11_ii - a_i S10_ii) / (T-1)``,
+    with the lag-one smoothed covariance in ``S10``. The slower-frequency
+    idiosyncratic chains after them are kept fixed.
+
+    ``V_0`` is set to ``V_smooth[0]`` (the maximizer; see ``_initial_covariance_update``).
+    Everything is float64, with no caps, clips or regularization; a singular
+    moment matrix raises ``NumericalError``.
     """
-    T = EZ.shape[0]
-    m = EZ.shape[1]
-    
-    A = state.A
-    Q = state.Q
-    blocks = state.blocks
-    r = state.r
-    p = state.p
-    p_plus_one = state.max_lag_size if state.max_lag_size is not None else (state.p + 1)
+    EZ = np.asarray(EZ, dtype=np.float64)
+    V_smooth = np.asarray(V_smooth, dtype=np.float64)
+    VVsmooth = np.asarray(VVsmooth, dtype=np.float64)
+    T, m = EZ.shape
+    A_new = np.array(state.A, dtype=np.float64, copy=True)
+    Q_new = np.array(state.Q, dtype=np.float64, copy=True)
+    if T < 2:
+        return replace(state, A=A_new, Q=Q_new)
+
+    r = np.asarray(state.r).astype(int)
+    p = int(state.p)
+    p_plus_one = int(state.max_lag_size if state.max_lag_size is not None else (p + 1))
+    n_lags = min(p, p_plus_one)
+    offsets = _factor_offsets(r, p_plus_one)
+
+    for b, (r_b, start) in enumerate(zip(r, offsets)):
+        cur = np.arange(start, start + r_b)
+        lag = np.arange(start, start + r_b * n_lags)
+        A_b, Q_b = estimate_var(
+            y=EZ[1:, cur],
+            x=EZ[:-1, lag],
+            V_smooth=V_smooth[1:][:, cur][:, :, cur],
+            V_smooth_lag=V_smooth[:-1][:, lag][:, :, lag],
+            VVsmooth=VVsmooth[1:][:, cur][:, :, lag],
+            dtype=np.float64,
+        )
+        A_new[start:start + r_b, start:start + r_b * p_plus_one] = 0.0
+        A_new[np.ix_(cur, lag)] = A_b
+        Q_new[np.ix_(cur, cur)] = Q_b
+
+    n_factor_states = int(np.sum(r) * p_plus_one)
     idio_indicator = state.idio_indicator
-    n_clock_freq = state.n_clock_freq
-    n_blocks = len(r)
-    
-    A_new = A.copy()
-    Q_new = Q.copy()
-    V_0_new = V_smooth[0].copy() if len(V_smooth) > 0 else create_scaled_identity(m, config.min_variance)
-    
-    for i in range(n_blocks):
-        r_i = int(r[i])  # Number of factors in block i
-        # State dimension for VAR(p) in companion form is r_i * (p+1), not r_i * p
-        # Companion form includes current state + p lags = p+1 states per factor
-        rp = r_i * p_plus_one  # State dimension for block i (factors * (p+1) for companion form)
-        rp1 = int(np.sum(r[:i]) * p_plus_one)  # Cumulative state dimension before block i
-        b_subset = slice(rp1, rp1 + rp)  # Indices for block i state
-        t_start = rp1  # Transition matrix factor idx start
-        t_end = rp1 + r_i * p_plus_one  # Transition matrix factor idx end
-        
-        b_subset_current = slice(rp1, rp1 + r_i)
-        b_subset_all = slice(rp1, rp1 + rp)
-        
-        Zsmooth_block = EZ[1:, b_subset_current]
-        Zsmooth_block_lag = EZ[:-1, b_subset_all]
-        V_smooth_block = V_smooth[1:, b_subset_current, :][:, :, b_subset_current]
-        V_smooth_lag_block = V_smooth[:-1, b_subset_all, :][:, :, b_subset_all]
-        VVsmooth_block = VVsmooth[1:, b_subset_current, :][:, :, b_subset_all]
-        
-        def _compute_block_updates() -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-            # Validate input shapes for debugging
-            if _logger.isEnabledFor(logging.DEBUG):
-                _logger.debug(
-                    f"Block {i} update: r_i={r_i}, rp={rp}, "
-                    f"Zsmooth_block shape: {Zsmooth_block.shape}, "
-                    f"Zsmooth_block_lag shape: {Zsmooth_block_lag.shape}, "
-                    f"V_smooth_block shape: {V_smooth_block.shape}, "
-                    f"VVsmooth_block shape: {VVsmooth_block.shape}"
-                )
-            
-            A_i, Q_i = estimate_var(
-                y=Zsmooth_block,
-                x=Zsmooth_block_lag,
-                V_smooth=V_smooth_block,
-                V_smooth_lag=V_smooth_lag_block,
-                VVsmooth=VVsmooth_block,
-                regularization=config.regularization,
-                min_variance=config.min_variance,
-                dtype=np.float32
-            )
-            
-            # Validate output shapes
-            expected_A_shape = (r_i, rp)
-            expected_Q_shape = (r_i, r_i)
-            
-            if A_i.shape != expected_A_shape:
-                _logger.debug(
-                    f"Block {i}: A_i shape {A_i.shape} != expected {expected_A_shape}, reshaping"
-                )
-                A_i_new = np.zeros(expected_A_shape, dtype=np.float32)
-                min_rows = min(A_i.shape[0], r_i)
-                min_cols = min(A_i.shape[1], rp)
-                A_i_new[:min_rows, :min_cols] = A_i[:min_rows, :min_cols]
-                A_i = A_i_new
-            
-            if Q_i.shape != expected_Q_shape:
-                _logger.debug(
-                    f"Block {i}: Q_i shape {Q_i.shape} != expected {expected_Q_shape}, reshaping"
-                )
-                Q_i_new = np.zeros(expected_Q_shape, dtype=np.float32)
-                min_dim = min(Q_i.shape[0], Q_i.shape[1], r_i)
-                Q_i_new[:min_dim, :min_dim] = Q_i[:min_dim, :min_dim]
-                Q_i = Q_i_new
-            
-            V_0_block = V_smooth[0, t_start:t_end, t_start:t_end]
-            expected_V0_shape = (rp, rp)
-            if V_0_block.shape != expected_V0_shape:
-                _logger.warning(
-                    f"Block {i}: V_0_block shape {V_0_block.shape} != expected {expected_V0_shape}"
-                )
-            
-            return A_i, Q_i, V_0_block
-        
-        updates = handle_linear_algebra_error(
-            _compute_block_updates, f"block {i} update",
-            fallback_func=lambda: None
+    n_idio = int(np.sum(np.asarray(idio_indicator) > 0)) if idio_indicator is not None else 0
+    n_idio = max(0, min(n_idio, m - n_factor_states))
+    if n_idio > 0:
+        ii = np.arange(n_factor_states, n_factor_states + n_idio)
+        a_diag, q_diag = estimate_ar1(
+            y=EZ[1:, ii],
+            x=EZ[:-1, ii],
+            V_smooth=V_smooth[1:][:, ii][:, :, ii],
+            V_smooth_lag=V_smooth[:-1][:, ii][:, :, ii],
+            VVsmooth=VVsmooth[1:][:, ii][:, :, ii],
+            dtype=np.float64,
         )
-        if updates is not None:
-            A_i, Q_i, V_0_block = updates
-            
-            # Validate shapes before assignment to catch mismatches early
-            expected_A_shape = (r_i, rp)
-            expected_Q_shape = (r_i, r_i)
-            expected_V0_shape = (rp, rp)
-            
-            # Do not coerce shapes: coercion masks real estimation failures
-            # If shapes mismatch, that iteration should fail fast, not patch.
-            # Shape mismatches indicate bugs in estimate_var or state structure, not data issues.
-            # Patching allows garbage to propagate and EM to "converge" to nonsense.
-            if A_i.shape != expected_A_shape:
-                _logger.error(
-                    f"Block {i} A shape mismatch: expected {expected_A_shape}, got {A_i.shape}. "
-                    f"This indicates a bug in estimate_var or state structure. "
-                    f"Reshaping to continue, but results may be incorrect."
-                )
-                A_i_new = np.zeros(expected_A_shape, dtype=A_i.dtype)
-                min_rows = min(A_i.shape[0], r_i)
-                min_cols = min(A_i.shape[1], rp)
-                A_i_new[:min_rows, :min_cols] = A_i[:min_rows, :min_cols]
-                A_i = A_i_new
-            
-            if Q_i.shape != expected_Q_shape:
-                _logger.error(
-                    f"Block {i} Q shape mismatch: expected {expected_Q_shape}, got {Q_i.shape}. "
-                    f"This indicates a bug in estimate_var or state structure. "
-                    f"Reshaping to continue, but results may be incorrect."
-                )
-                Q_i_new = np.zeros(expected_Q_shape, dtype=Q_i.dtype)
-                min_dim = min(Q_i.shape[0], Q_i.shape[1], r_i)
-                Q_i_new[:min_dim, :min_dim] = Q_i[:min_dim, :min_dim]
-                Q_i = Q_i_new
-            
-            if V_0_block.shape != expected_V0_shape:
-                _logger.warning(
-                    f"Block {i} V_0 shape mismatch: expected {expected_V0_shape}, got {V_0_block.shape}. "
-                    f"Using slice of V_smooth[0] instead."
-                )
-                V_0_block = V_smooth[0, t_start:t_end, t_start:t_end]
-            
-            # Assign with bounds checking
-            try:
-                A_new[t_start:t_end, t_start:t_end] = DEFAULT_ZERO_VALUE
-                A_new[t_start:t_start+r_i, t_start:t_start+rp] = A_i
-                Q_new[t_start:t_end, t_start:t_end] = DEFAULT_ZERO_VALUE
-                Q_new[t_start:t_start+r_i, t_start:t_start+r_i] = Q_i
-                V_0_new[t_start:t_end, t_start:t_end] = V_0_block
-            except (ValueError, IndexError) as e:
-                _logger.error(
-                    f"Block {i} assignment failed: {e}. "
-                    f"Shapes - A_i: {A_i.shape}, Q_i: {Q_i.shape}, V_0_block: {V_0_block.shape}, "
-                    f"t_start: {t_start}, t_end: {t_end}, r_i: {r_i}, rp: {rp}, "
-                    f"A_new slice: [{t_start}:{t_start+r_i}, {t_start}:{t_start+rp}], "
-                    f"Q_new slice: [{t_start}:{t_start+r_i}, {t_start}:{t_start+r_i}], "
-                    f"V_0_new slice: [{t_start}:{t_end}, {t_start}:{t_end}]"
-                )
-                raise
-    
-    rp1 = int(np.sum(r) * p_plus_one)
-    niM = int(np.sum(idio_indicator[:n_clock_freq]))
-    t_start = rp1
-    i_subset = slice(t_start, t_start + niM)
-    
-    if niM > 0:
-        Zsmooth_idio = EZ[1:, i_subset]
-        Zsmooth_idio_lag = EZ[:-1, i_subset]
-        V_smooth_idio = V_smooth[1:, i_subset, :][:, :, i_subset]
-        
-        def _compute_idiosyncratic_updates() -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
-            A_diag, Q_diag = estimate_ar1(
-                y=Zsmooth_idio,
-                x=Zsmooth_idio_lag,
-                V_smooth=V_smooth_idio,
-                regularization=config.regularization,
-                min_variance=config.min_variance,
-                default_ar_coef=DEFAULT_TRANSITION_COEF,
-                default_noise=DEFAULT_PROCESS_NOISE,
-                dtype=np.float32
-            )
-            return (np.diag(A_diag), np.diag(Q_diag), np.diag(np.diag(V_smooth[0, i_subset, i_subset])))
-        
-        updates = handle_linear_algebra_error(
-            _compute_idiosyncratic_updates, "idiosyncratic component update",
-            fallback_func=lambda: None
-        )
-        if updates is not None:
-            A_diag_new, Q_diag_new, V_0_diag_new = updates
-            A_new[i_subset, i_subset] = A_diag_new
-            Q_new[i_subset, i_subset] = Q_diag_new
-            V_0_new[i_subset, i_subset] = V_0_diag_new
-    
-    return replace(state, A=A_new, Q=Q_new, V_0=V_0_new)
+        A_new[ii, ii] = a_diag
+        Q_new[ii, ii] = q_diag
+
+    return replace(state, A=A_new, Q=Q_new, V_0=_initial_covariance_update(V_smooth[0]))
 
 
-def _update_observation_matrix(X: np.ndarray, EZ: np.ndarray, EZZ: np.ndarray, state: DFMModelState, config: EMConfig) -> DFMModelState:
-    """Update observation matrix C using OLS regression.
-    
-    Uses EZZ (includes V_smooth) for OLS-style updates, closer to proper EM than transition updates.
+def _second_moments(EZ: np.ndarray, V_smooth: np.ndarray) -> np.ndarray:
+    """``E[x_t x_t' | Y] = EZ_t EZ_t' + V_smooth_t`` for every row (T x m x m), float64."""
+    EZ = np.asarray(EZ, dtype=np.float64)
+    return np.asarray(V_smooth, dtype=np.float64) + EZ[:, :, np.newaxis] * EZ[:, np.newaxis, :]
+
+
+def _update_loading_row(
+    j: int,
+    cols: np.ndarray,
+    C: np.ndarray,
+    Y0: np.ndarray,
+    W: np.ndarray,
+    EZ: np.ndarray,
+    EZZ: np.ndarray,
+    R_con: Optional[np.ndarray] = None,
+    q_con: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Loadings of series ``j`` on the state columns ``cols`` (BM14 C update, one row).
+
+    The other entries of the row (idiosyncratic loadings, lag columns the
+    series does not load on) are held fixed and their contribution is
+    subtracted::
+
+        den = sum_t w_t E[x_c x_c'],   nom = sum_t w_t (y_t E[x_c] - E[x_c x_o'] C[j, o]')
+
+    with ``w_t`` the observed indicator of ``y_tj``. With a restriction
+    ``R_con c = q_con`` (tent aggregation) the restricted least-squares solution
+    ``c = c_u - den^-1 R' (R den^-1 R')^-1 (R c_u - q)`` is returned.
     """
-    C = state.C
-    def _compute_C() -> np.ndarray:
-        N = X.shape[1]
-        m = EZ.shape[1]
-        X_clean = np.ma.filled(np.ma.masked_invalid(X), DEFAULT_CLEAN_NAN)
-        sum_yEZ = X_clean.T @ EZ  # (N, m)
-        sum_EZZ = np.sum(EZZ, axis=0) + create_scaled_identity(m, config.regularization)
-        # sum_EZZ is already a covariance matrix, so use use_XTX=False
-        C_new = solve_regularized_ols(sum_EZZ, sum_yEZ.T, regularization=DEFAULT_ZERO_VALUE, use_XTX=False).T
-        # C normalization with invariance preservation
-        # State-space model is invariant under: C → C D, Z → D⁻¹ Z, Q → D⁻¹ Q D⁻¹, V₀ → D⁻¹ V₀ D⁻¹
-        # We apply the complete transformation to maintain likelihood invariance
-        return C_new
-    
-    C_new = handle_linear_algebra_error(
-        _compute_C, "observation matrix update",
-        fallback_value=C
-    )
-    
-    # Apply normalization with invariance preservation (if enabled)
-    if config.normalize_C:
-        C_normalized, state_rescaled = _normalize_C_with_invariance(
-            C_new, state, config, log_prefix="Unblocked C update: "
-        )
-        
-        # Debug logging: verify invariance preservation
-        if _logger.isEnabledFor(logging.DEBUG):
-            # Check that Q, V_0, Z_0 were rescaled
-            Q_changed = not np.allclose(state.Q, state_rescaled.Q, atol=1e-10) if state.Q is not None and state_rescaled.Q is not None else False
-            V_0_changed = not np.allclose(state.V_0, state_rescaled.V_0, atol=1e-10) if state.V_0 is not None and state_rescaled.V_0 is not None else False
-            Z_0_changed = not np.allclose(state.Z_0, state_rescaled.Z_0, atol=1e-10) if state.Z_0 is not None and state_rescaled.Z_0 is not None else False
-            if Q_changed or V_0_changed or Z_0_changed:
-                _logger.debug(
-                    f"Invariance preservation: Q rescaled={Q_changed}, V_0 rescaled={V_0_changed}, Z_0 rescaled={Z_0_changed}"
-                )
-        
-        return state_rescaled
-    else:
-        # No normalization - strict EM (may cause numerical issues)
-        _logger.debug("C normalization disabled - using raw C (strict EM mode)")
-        return replace(state, C=C_new)
+    w = W[:, j].astype(np.float64)
+    M = np.tensordot(w, EZZ[:, cols, :], axes=(0, 0))  # (len(cols), m)
+    den = M[:, cols]
+    c_other = C[j].copy()
+    c_other[cols] = 0.0
+    nom = (Y0[:, j] * w) @ EZ[:, cols] - M @ c_other
+    what = f"loadings of series {j}"
+    if R_con is None or R_con.shape[0] == 0:
+        return _solve_spd(den, nom, what)
+    sol = _solve_spd(den, np.column_stack([nom, R_con.T]), what)
+    c_u, den_inv_Rt = sol[:, 0], sol[:, 1:]
+    lam = _solve_spd(R_con @ den_inv_Rt, R_con @ c_u - q_con, f"tent restriction of series {j}")
+    return c_u - den_inv_Rt @ lam
 
 
 def _update_observation_matrix_blocked(
@@ -653,442 +507,76 @@ def _update_observation_matrix_blocked(
     config: EMConfig,
     block_structure: Optional[BlockStructure] = None
 ) -> DFMModelState:
-    """Update observation matrix C block-by-block.
-    
-    Uses sequential objectives (not pure EM): OLS, constraint projection, normalization.
-    Handles clock-frequency series with OLS and slower-frequency series with tent kernel constraints.
+    """M-step for C (Banbura-Modugno 2014), one series at a time.
+
+    ``EZ[t]``/``V_smooth[t]`` go with data row ``t`` (all T rows are used).
+    A clock-frequency series loads on the current value of the factors of
+    the blocks it belongs to; a slower-frequency series loads on the first ``k``
+    lag copies of those factors (``k`` = tent length), restricted by
+    ``kron(R_mat, I_r) c = kron(q, 1_r)``. All other entries of C (the
+    idiosyncratic loadings, the remaining lag columns) are kept fixed and their
+    cross-moments are subtracted (``_update_loading_row``). Series with no
+    observation keep their row. No normalization: see ``_normalize_C_with_invariance``.
     """
+    X = np.asarray(X, dtype=np.float64)
+    EZ = np.asarray(EZ, dtype=np.float64)
     T, N = X.shape
-    
-    C = state.C
-    blocks = state.blocks
-    r = state.r
-    p_plus_one = state.max_lag_size if state.max_lag_size is not None else (state.p + 1)
+    C = np.array(state.C, dtype=np.float64, copy=True)
+    blocks = np.asarray(state.blocks)
+    _validate_blocks_shape(blocks, N)
+    r = np.asarray(state.r).astype(int)
+    p_plus_one = int(state.max_lag_size if state.max_lag_size is not None else (state.p + 1))
+    offsets = _factor_offsets(r, p_plus_one)
+    n_slower = int(state.n_slower_freq or 0)
+    n_clock = int(state.n_clock_freq) if state.n_clock_freq is not None else N - n_slower
     R_mat = state.constraint_matrix
     q = state.constraint_vector
-    n_clock_freq = state.n_clock_freq
-    n_slower_freq = state.n_slower_freq
-    idio_indicator = state.idio_indicator
-    tent_weights_dict = state.tent_weights_dict
-    n_blocks = len(r)
-    
-    # FAST PATH: single-block, no constraints, no slower frequency
-    # For simple cases (e.g., exchange rate tutorial), the blocked update collapses
-    # exactly to the unblocked OLS update. Short-circuit to avoid expensive tensor operations.
-    # This prevents O(T × r²) einsum operations when they're unnecessary.
-    if (
-        block_structure is not None
-        and len(r) == 1
-        and n_slower_freq == 0
-        and R_mat is None
-    ):
-        # Extract only factor dimensions from EZ and V_smooth
-        # EZ includes both factors (in companion form) and idiosyncratic components
-        # For unblocked update, we need only the factor part
-        # Factor state dimension = r[0] * (p+1) for companion form
-        r_i = int(r[0])
-        factor_state_dim = r_i * p_plus_one
-        
-        # Safety check: ensure dimensions are valid
-        if factor_state_dim > EZ.shape[1]:
-            raise ValueError(
-                f"Fast path: factor_state_dim ({factor_state_dim}) > EZ.shape[1] ({EZ.shape[1]}). "
-                f"This indicates a mismatch in state structure. r_i={r_i}, p_plus_one={p_plus_one}"
+    if R_mat is not None:
+        R_mat = np.asarray(R_mat, dtype=np.float64)
+        k = int(R_mat.shape[1])
+        q = np.zeros(R_mat.shape[0]) if q is None else np.asarray(q, dtype=np.float64).ravel()
+        if k > p_plus_one:
+            raise DataValidationError(
+                f"Tent length {k} exceeds the companion width {p_plus_one} of the factor blocks."
             )
-        if factor_state_dim > V_smooth.shape[1] or factor_state_dim > V_smooth.shape[2]:
-            raise ValueError(
-                f"Fast path: factor_state_dim ({factor_state_dim}) > V_smooth dimensions ({V_smooth.shape[1]}, {V_smooth.shape[2]}). "
-                f"This indicates a mismatch in state structure."
-            )
-        if factor_state_dim > C.shape[1]:
-            raise ValueError(
-                f"Fast path: factor_state_dim ({factor_state_dim}) > C.shape[1] ({C.shape[1]}). "
-                f"This indicates a mismatch in state structure."
-            )
-        
-        EZ_factors = EZ[:, :factor_state_dim]
-        V_smooth_factors = V_smooth[:, :factor_state_dim, :factor_state_dim]
-        
-        # Compute EZZ for unblocked update: E[Z_t Z_t^T] = EZ_t EZ_t^T + V_t
-        EZZ = V_smooth_factors + np.einsum('ti,tj->tij', EZ_factors, EZ_factors)
-        
-        # Create temporary state with factor-only dimensions for A, Q, V_0, Z_0 to match C
-        # This is required because _normalize_C_with_invariance rescales these matrices
-        C_factors_only = C[:, :factor_state_dim]
-        
-        # Extract factor dimensions from state-space matrices
-        A_factors_only = state.A[:factor_state_dim, :factor_state_dim] if state.A is not None and state.A.shape[0] >= factor_state_dim else state.A
-        Q_factors_only = state.Q[:factor_state_dim, :factor_state_dim] if state.Q is not None and state.Q.shape[0] >= factor_state_dim else state.Q
-        V_0_factors_only = state.V_0[:factor_state_dim, :factor_state_dim] if state.V_0 is not None and state.V_0.shape[0] >= factor_state_dim else state.V_0
-        Z_0_factors_only = state.Z_0[:factor_state_dim] if state.Z_0 is not None and state.Z_0.shape[0] >= factor_state_dim else state.Z_0
-        
-        state_factors_only = replace(
-            state,
-            C=C_factors_only,
-            A=A_factors_only,
-            Q=Q_factors_only,
-            V_0=V_0_factors_only,
-            Z_0=Z_0_factors_only
-        )
-        
-        state_updated = _update_observation_matrix(X, EZ_factors, EZZ, state_factors_only, config)
-        
-        # Merge: keep updated factor columns, preserve original idiosyncratic columns
-        C_new = state_updated.C
-        if C.shape[1] > factor_state_dim:
-            # Preserve idiosyncratic columns
-            C_new = np.hstack([C_new, C[:, factor_state_dim:]])
-        
-        # Merge factor-only state matrices back into full state matrices
-        # _normalize_C_with_invariance may have rescaled A, Q, V_0, Z_0
-        A_new = state.A.copy() if state.A is not None else None
-        Q_new = state.Q.copy() if state.Q is not None else None
-        V_0_new = state.V_0.copy() if state.V_0 is not None else None
-        Z_0_new = state.Z_0.copy() if state.Z_0 is not None else None
-        
-        if state_updated.A is not None and A_new is not None and A_new.shape[0] >= factor_state_dim:
-            A_new[:factor_state_dim, :factor_state_dim] = state_updated.A
-        if state_updated.Q is not None and Q_new is not None and Q_new.shape[0] >= factor_state_dim:
-            Q_new[:factor_state_dim, :factor_state_dim] = state_updated.Q
-        if state_updated.V_0 is not None and V_0_new is not None and V_0_new.shape[0] >= factor_state_dim:
-            V_0_new[:factor_state_dim, :factor_state_dim] = state_updated.V_0
-        if state_updated.Z_0 is not None and Z_0_new is not None and Z_0_new.shape[0] >= factor_state_dim:
-            Z_0_new[:factor_state_dim] = state_updated.Z_0
-        
-        return replace(state, C=C_new, A=A_new, Q=Q_new, V_0=V_0_new, Z_0=Z_0_new)
-    
-    C_new = C.copy()
-    if (block_structure is not None 
-        and block_structure.has_cached_indices() 
-        and block_structure._cached_N == N):
-        unique_blocks = block_structure._cached_unique_blocks
-        unique_indices = block_structure._cached_unique_indices
-        bl_idxM = block_structure._cached_bl_idxM
-        bl_idxQ = block_structure._cached_bl_idxQ
-        R_con = block_structure._cached_R_con
-        q_con = block_structure._cached_q_con
-        total_factor_dim = block_structure._cached_total_factor_dim
-        idio_indicator_M = block_structure._cached_idio_indicator_M
-        n_idio_M = block_structure._cached_n_idio_M
-        c_idio_indicator = block_structure._cached_c_idio_indicator
-        rp1 = block_structure._cached_rp1
-        
-        _validate_blocks_shape(blocks, N)
-    else:
-        _validate_blocks_shape(blocks, N)
-        temp_block_structure = BlockStructure(
-            blocks=blocks,
-            r=r,
-            p=state.p,
-            p_plus_one=p_plus_one,
-            n_clock_freq=n_clock_freq,
-            idio_indicator=idio_indicator,
-            R_mat=R_mat,
-            q=q,
-            n_slower_freq=n_slower_freq,
-            tent_weights_dict=tent_weights_dict
-        )
-        
-        _compute_and_cache_block_indices(temp_block_structure, N)
-        
-        unique_blocks = temp_block_structure._cached_unique_blocks
-        unique_indices = temp_block_structure._cached_unique_indices
-        bl_idxM = temp_block_structure._cached_bl_idxM
-        bl_idxQ = temp_block_structure._cached_bl_idxQ
-        R_con = temp_block_structure._cached_R_con
-        q_con = temp_block_structure._cached_q_con
-        total_factor_dim = temp_block_structure._cached_total_factor_dim
-        idio_indicator_M = temp_block_structure._cached_idio_indicator_M
-        n_idio_M = temp_block_structure._cached_n_idio_M
-        c_idio_indicator = temp_block_structure._cached_c_idio_indicator
-        rp1 = temp_block_structure._cached_rp1
-        
-    nanY = np.isnan(X)
-    X_clean = np.where(nanY, DEFAULT_ZERO_VALUE, X)
-    
-    for i, bl_i in enumerate(unique_blocks):
-        n_rows_available = min(blocks.shape[0], N)
-        blocks_compare = blocks[:n_rows_available, :]
-        pattern_match = (blocks_compare == bl_i).all(axis=1)
-        idx_i = np.where(pattern_match)[0]
-        idx_i = idx_i[(idx_i >= 0) & (idx_i < X.shape[1])].astype(int)
-        
-        idx_iM = idx_i[idx_i < n_clock_freq]
-        n_i = len(idx_iM)
-        
-        if n_i == 0:
+
+    W = ~np.isnan(X)
+    Y0 = np.where(W, X, 0.0)
+    EZZ = _second_moments(EZ, V_smooth)
+
+    for j in range(N):
+        if not W[:, j].any():
             continue
-        
-        rs = int(np.sum(r[bl_i > 0]))
-        if i < len(bl_idxM) and len(bl_idxM[i]) > 0:
-            bl_idxM_i = np.where(bl_idxM[i])[0]
+        loaded = [b for b in range(len(r)) if blocks[j, b] > 0]
+        if not loaded:
+            continue
+        if j >= n_clock and R_mat is not None:
+            cols = np.concatenate([offsets[b] + np.arange(k * r[b]) for b in loaded])
+            R_con = block_diag(*[np.kron(R_mat, np.eye(r[b])) for b in loaded])
+            q_con = np.concatenate([np.kron(q, np.ones(r[b])) for b in loaded])
         else:
-            # Fallback: compute from block pattern
-            bl_idxM_i = []
-            offset = 0
-            for block_idx in range(n_blocks):
-                if bl_i[block_idx] > 0:
-                    bl_idxM_i.extend(range(offset, offset + int(r[block_idx])))
-                    offset += int(r[block_idx]) * p_plus_one
-                else:
-                    offset += int(r[block_idx]) * p_plus_one
-            bl_idxM_i = np.array(bl_idxM_i)
-        
-        denom = np.zeros((n_i * rs, n_i * rs))
-        nom = np.zeros((n_i, rs))
-        
-        i_idio_i = idio_indicator_M[idx_iM]
-        i_idio_ii = c_idio_indicator[idx_iM]
-        i_idio_ii = i_idio_ii[i_idio_i > 0]
-        
-        valid_times = np.arange(min(T, EZ.shape[0] - 1))
-        valid_times = valid_times[valid_times < nanY.shape[0]]
-        
-        if len(valid_times) > 0:
-            Z_all = EZ[1:len(valid_times)+1, bl_idxM_i]
-            V_all = V_smooth[1:len(valid_times)+1][:, bl_idxM_i, :][:, :, bl_idxM_i]
-            EZZ_all = np.einsum('ti,tj->tij', Z_all, Z_all) + V_all
-            
-            nan_mask_all = ~nanY[valid_times, :][:, idx_iM]
-            nan_mask_all_f32 = nan_mask_all.astype(np.float32)
-            
-            for i in range(n_i):
-                denom[i*rs:(i+1)*rs, i*rs:(i+1)*rs] += np.einsum('t,tjk->jk', nan_mask_all_f32[:, i], EZZ_all)
-            
-            y_all = X_clean[valid_times, :][:, idx_iM]
-            nom = np.einsum('ti,tj->ij', y_all, Z_all)
-            
-            if len(i_idio_ii) > 0:
-                idio_idx = (rp1 + i_idio_ii - 1).astype(int)
-                idio_mask = i_idio_i > 0
-                
-                Z_idio_all = EZ[1:len(valid_times)+1, idio_idx]
-                V_idio_all = V_smooth[1:len(valid_times)+1][:, idio_idx, :][:, :, bl_idxM_i]
-                cross_products = np.einsum('ti,tj->tij', Z_idio_all, Z_all) + V_idio_all
-                
-                w_idio_all = nan_mask_all_f32[:, idio_mask]
-                idio_contribution = np.einsum('ti,tij->j', w_idio_all, cross_products)
-                nom[:, :] -= idio_contribution[np.newaxis, :]
-        
-        def _compute_clock_freq_loadings() -> np.ndarray:
-            denom_reg = denom + create_scaled_identity(n_i * rs, config.regularization)
-            vec_C = solve_regularized_ols(denom_reg, nom.flatten(), regularization=DEFAULT_ZERO_VALUE, use_XTX=False)
-            return vec_C.reshape(n_i, rs)
-        
-        loadings = handle_linear_algebra_error(
-            _compute_clock_freq_loadings, f"clock-frequency block {i} update",
-            fallback_func=lambda: None
-        )
-        if loadings is not None:
-            C_new[idx_iM[:, None], bl_idxM_i] = loadings
-        
-        idx_iQ = idx_i[(idx_i >= n_clock_freq) & (idx_i < X.shape[1])]
-        idx_iQ = idx_iQ[(idx_iQ >= 0) & (idx_iQ < nanY.shape[1])]
-        
-        if len(idx_iQ) > 0 and R_mat is not None and q is not None:
-            rps = rs * p_plus_one
-            
-            if i < len(bl_idxQ) and len(bl_idxQ[i]) > 0:
-                bl_idxQ_i = np.where(bl_idxQ[i])[0]
-            else:
-                bl_idxQ_i = []
-                offset = 0
-                for block_idx in range(n_blocks):
-                    if bl_i[block_idx] > 0:
-                        bl_idxQ_i.extend(range(offset, offset + int(r[block_idx]) * p_plus_one))
-                    offset += int(r[block_idx]) * p_plus_one
-                bl_idxQ_i = np.array(bl_idxQ_i)
-            
-            if R_con is not None and q_con is not None and len(bl_idxQ_i) > 0:
-                R_con_i = R_con[:, bl_idxQ_i]
-                q_con_i = q_con.copy()
-                no_c = ~np.any(R_con_i, axis=1)
-                R_con_i = R_con_i[~no_c, :]
-                q_con_i = q_con_i[~no_c]
-            else:
-                R_con_i = None
-                q_con_i = None
-            
-            if len(bl_idxQ_i) == 0:
-                continue
-            tent_kernel_size = None
-            if R_mat is not None:
-                tent_kernel_size = R_mat.shape[1]
-            elif tent_weights_dict is not None and len(tent_weights_dict) > 0:
-                first_weights = next(iter(tent_weights_dict.values()))
-                tent_kernel_size = len(first_weights)
-            else:
-                tent_kernel_size = config.tent_kernel_size
-            
-            tent_weights = None
-            if tent_weights_dict is not None and len(tent_weights_dict) > 0:
-                tent_weights = next(iter(tent_weights_dict.values()))
-                if not isinstance(tent_weights, np.ndarray):
-                    tent_weights = np.array(tent_weights, dtype=np.float32)
-                tent_kernel_size = len(tent_weights)
-            
-            for j in idx_iQ:
-                idx_jQ = j - n_clock_freq
-                # Slower-frequency idiosyncratic indexing assumes perfect contiguous ordering
-                # This assumes: slower idio chains are packed after clock idios, chain length = tent_kernel_size
-                # Add validation to detect violations
-                i_idio_jQ = np.arange(
-                    rp1 + n_idio_M + tent_kernel_size * idx_jQ,
-                    rp1 + n_idio_M + tent_kernel_size * (idx_jQ + 1)
-                )
-                
-                # Validate indices are within bounds
-                max_state_dim = EZ.shape[1] if EZ.shape[0] > 0 else 0
-                if i_idio_jQ[-1] >= max_state_dim:
-                    raise DataValidationError(
-                        f"Slower-frequency idiosyncratic indices out of bounds: "
-                        f"i_idio_jQ={i_idio_jQ.tolist()}, max_state_dim={max_state_dim}. "
-                        f"This indicates a mismatch in state space structure. "
-                        f"idx_jQ={idx_jQ}, tent_kernel_size={tent_kernel_size}, "
-                        f"rp1={rp1}, n_idio_M={n_idio_M}",
-                        details=f"Series index j={j}, slower-freq index idx_jQ={idx_jQ}"
-                    )
-                
-                if j < 0 or j >= nanY.shape[1] or j >= X_clean.shape[1]:
-                    continue
-                
-                T_valid = min(T, EZ.shape[0] - 1, V_smooth.shape[0] - 1)
-                if T_valid <= 0:
-                    continue
-                
-                valid_times = np.arange(T_valid)
-                Z_all = EZ[1:T_valid+1, bl_idxQ_i]
-                V_all = V_smooth[1:T_valid+1][:, bl_idxQ_i, :][:, :, bl_idxQ_i]
-                y_all = np.squeeze(X_clean[valid_times, j])
-                nan_mask_all = np.squeeze(~nanY[valid_times, j])
-                
-                EZZ_all = np.einsum('ti,tj->tij', Z_all, Z_all) + V_all
-                nan_mask_all_f32 = nan_mask_all.astype(np.float32)
-                
-                denom = np.einsum('t,tij->ij', nan_mask_all_f32, EZZ_all)
-                nom = np.einsum('t,t,ti->i', y_all, nan_mask_all_f32, Z_all)
-                
-                if tent_weights is not None and len(i_idio_jQ) == len(tent_weights):
-                    Z_idio_all = EZ[1:T_valid+1, i_idio_jQ]
-                    V_idio_all = V_smooth[1:T_valid+1][:, i_idio_jQ, :][:, :, bl_idxQ_i]
-                    cross_products = np.einsum('ti,tj->tij', Z_idio_all, Z_all) + V_idio_all
-                    tent_weighted = np.einsum('i,tij->tj', tent_weights, cross_products)
-                    nom -= np.einsum('t,tj->j', nan_mask_all_f32, tent_weighted)
-                
-                def _compute_slower_freq_loading() -> np.ndarray:
-                    denom_reg = denom + create_scaled_identity(rps, config.regularization)
-                    C_i_unconstrained = solve(denom_reg, nom, overwrite_a=False, overwrite_b=False, check_finite=False)
-                    
-                    if R_con_i is not None and q_con_i is not None and len(R_con_i) > 0:
-                        assert q_con_i is not None
-                        constraint_term = R_con_i @ C_i_unconstrained - q_con_i
-                        R_con_denom_inv = solve(denom_reg, R_con_i.T, overwrite_a=False, overwrite_b=False, check_finite=False)
-                        R_con_denom = R_con_i @ R_con_denom_inv
-                        R_con_denom_reg = R_con_denom + create_scaled_identity(len(R_con_denom), config.regularization)
-                        temp2 = solve(R_con_denom_reg, constraint_term, overwrite_a=False, overwrite_b=False, check_finite=False)
-                        C_i_constr = C_i_unconstrained - R_con_denom_inv @ temp2
-                    else:
-                        C_i_constr = C_i_unconstrained
-                    return C_i_constr
-                
-                loading = handle_linear_algebra_error(
-                    _compute_slower_freq_loading, f"slower-frequency series {j} update",
-                    fallback_func=lambda: None
-                )
-                if loading is not None:
-                    # Validate loading is finite (FRBNY pattern: check before using)
-                    if np.any(~np.isfinite(loading)):
-                        # Fallback: use default loadings that satisfy tent kernel constraints (FRBNY pattern)
-                        _logger.warning(
-                            f"M-step: Updated loading for slower-frequency series {j} contains non-finite values. "
-                            f"Using default loadings that satisfy tent kernel constraints (FRBNY fallback pattern)."
-                        )
-                        # Extract tent weights and create default loadings
-                        tent_weights_fallback = np.ones(tent_kernel_size, dtype=np.float32)
-                        if R_mat is not None and R_mat.shape[0] > 0:
-                            tent_weights_fallback[0] = 1.0
-                            for i in range(min(R_mat.shape[0], tent_kernel_size - 1)):
-                                tent_weights_fallback[i + 1] = R_mat[i, 0]
-                        # Create default loadings with tent kernel pattern
-                        c0 = 0.1  # Default base loading
-                        default_loadings = np.zeros(len(bl_idxQ_i), dtype=np.float32)
-                        num_factors_block = len(bl_idxQ_i) // tent_kernel_size
-                        for f in range(num_factors_block):
-                            start_idx = f * tent_kernel_size
-                            for k in range(tent_kernel_size):
-                                if start_idx + k < len(default_loadings):
-                                    default_loadings[start_idx + k] = c0 * tent_weights_fallback[k]
-                        C_new[j, bl_idxQ_i] = default_loadings
-                    else:
-                        C_new[j, bl_idxQ_i] = loading
-    
-    # Apply normalization with invariance preservation (if enabled)
-    if config.normalize_C:
-        # State-space model is invariant under: C → C D, Z → D⁻¹ Z, Q → D⁻¹ Q D⁻¹, V₀ → D⁻¹ V₀ D⁻¹
-        C_normalized, state_rescaled = _normalize_C_with_invariance(
-            C_new, state, config, log_prefix="Blocked C update: "
-        )
-        
-        # Debug logging: verify invariance preservation
-        if _logger.isEnabledFor(logging.DEBUG):
-            # Check that Q, V_0, Z_0 were rescaled
-            Q_changed = not np.allclose(state.Q, state_rescaled.Q, atol=1e-10) if state.Q is not None and state_rescaled.Q is not None else False
-            V_0_changed = not np.allclose(state.V_0, state_rescaled.V_0, atol=1e-10) if state.V_0 is not None and state_rescaled.V_0 is not None else False
-            Z_0_changed = not np.allclose(state.Z_0, state_rescaled.Z_0, atol=1e-10) if state.Z_0 is not None and state_rescaled.Z_0 is not None else False
-            if Q_changed or V_0_changed or Z_0_changed:
-                _logger.debug(
-                    f"Blocked C update - Invariance preservation: "
-                    f"Q rescaled={Q_changed}, V_0 rescaled={V_0_changed}, Z_0 rescaled={Z_0_changed}"
-                )
-        
-        return state_rescaled
-    else:
-        # No normalization - strict EM (may cause numerical issues)
-        _logger.debug("C normalization disabled - using raw C (strict EM mode)")
-        return replace(state, C=C_new)
+            cols = np.concatenate([offsets[b] + np.arange(r[b]) for b in loaded])
+            R_con = q_con = None
+        C[j, cols] = _update_loading_row(j, cols, C, Y0, W, EZ, EZZ, R_con, q_con)
+
+    return replace(state, C=C)
 
 
-def _update_process_noise(EZ: np.ndarray, state: DFMModelState, config: EMConfig) -> DFMModelState:
-    """Update process noise covariance Q from residuals."""
-    T, m = EZ.shape
-    if T <= 1:
-        return state
-    
-    A_new = state.A
-    Q = state.Q
-    residuals = EZ[1:, :] - EZ[:-1, :] @ A_new.T
-    if m == 1:
-        Q_new = np.array([[np.var(residuals, axis=0)]])
-    else:
-        Q_new = np.cov(residuals.T)
-    Q_new = ensure_process_noise_stable(Q_new, min_eigenval=config.min_variance, warn=True, dtype=np.float64)
-    # Add diagonal bump if needed (PSD-preserving)
-    if Q_new.size > 0:
-        Q_new = ensure_symmetric(Q_new)
-        diag = np.diag(Q_new)
-        bump = np.maximum(0.0, config.min_variance - diag)
-        if np.any(bump > 0):
-            Q_new = Q_new + np.diag(bump)
-    return replace(state, Q=Q_new)
+def _observation_noise_floor(state: DFMModelState, N: int, config: EMConfig) -> np.ndarray:
+    """Lower bound of each R_ii: ``MIN_OBSERVATION_NOISE`` for series with an idiosyncratic state.
 
-
-def _update_observation_noise(X: np.ndarray, EZ: np.ndarray, state: DFMModelState, config: EMConfig) -> DFMModelState:
-    """Update observation noise covariance R (diagonal) from residuals.
-    
-    WARNING (Bug 2.3): This is a quasi-M-step, not a proper EM M-step.
-    - Uses residual variance only, ignoring V_smooth
-    - Proper EM M-step would use: E[(y_t - C z_t)(y_t - C z_t)'] = E[y_t y_t'] - C E[z_t y_t'] - E[y_t z_t'] C' + C E[z_t z_t'] C'
-    - This is acceptable for initialization or when V_smooth is unavailable
-    - For proper EM, use _update_observation_noise_blocked which uses V_smooth
+    Clock-frequency series with an AR(1) idiosyncratic state and all
+    slower-frequency series (tent chain) have ``R_ii >= MIN_OBSERVATION_NOISE``
+    (part of the model, as in BM14); other series ``R_ii >= config.min_variance``.
     """
-    C_new = state.C
-    X_clean = np.ma.filled(np.ma.masked_invalid(X), DEFAULT_CLEAN_NAN)
-    residuals = X_clean - EZ @ C_new.T
-    diag_R = np.var(residuals, axis=0)
-    diag_R = np.clip(diag_R, config.min_variance, config.max_variance)
-    R_new = np.diag(diag_R)
-    R_new = ensure_covariance_stable(R_new, min_eigenval=config.min_variance)
-    return replace(state, R=R_new)
+    floor = np.full(N, float(config.min_variance))
+    n_slower = int(state.n_slower_freq or 0)
+    n_clock = int(state.n_clock_freq) if state.n_clock_freq is not None else N - n_slower
+    if state.idio_indicator is not None:
+        idio = np.asarray(state.idio_indicator).ravel()[:N] > 0
+        floor[:len(idio)][idio] = MIN_OBSERVATION_NOISE
+    floor[n_clock:] = MIN_OBSERVATION_NOISE
+    return floor
 
 
 def _update_observation_noise_blocked(
@@ -1098,64 +586,64 @@ def _update_observation_noise_blocked(
     state: DFMModelState,
     config: EMConfig
 ) -> DFMModelState:
-    """Update observation noise covariance R with missing data handling.
-    
-    Uses selection matrices to handle missing observations properly.
+    """M-step for the diagonal R (Banbura-Modugno 2014 missing-data formula).
+
+    ``R_ii = [sum_{t obs} ((y_ti - C_i EZ_t)^2 + C_i V_t C_i') + sum_{t missing} R_ii^old] / T``
+    over all T rows (``EZ[t]`` goes with row ``t``), using the C of this M-step,
+    then floored by ``_observation_noise_floor``. No upper clip.
     """
+    X = np.asarray(X, dtype=np.float64)
+    EZ = np.asarray(EZ, dtype=np.float64)
+    V_smooth = np.asarray(V_smooth, dtype=np.float64)
     T, N = X.shape
-    
-    # Extract parameters from state
-    C_new = state.C
-    R = state.R
-    idio_indicator = state.idio_indicator
-    n_clock_freq = state.n_clock_freq
-    
-    # Handle missing data
-    nanY = np.isnan(X)
-    X_clean = np.where(nanY, DEFAULT_ZERO_VALUE, X)
-    
-    # Compute R using selection matrices for missing data (vectorized)
-    R_new = np.zeros((N, N))
-    valid_times = np.arange(min(T, EZ.shape[0] - 1))
-    valid_times = valid_times[valid_times < X_clean.shape[0]]
-    
-    if len(valid_times) > 0:
-        Z_all = EZ[1:len(valid_times)+1, :]
-        V_all = V_smooth[1:len(valid_times)+1, :, :]
-        X_all = X_clean[valid_times, :]
-        nan_mask_all = ~nanY[valid_times, :]
-        
-        CZ_all = np.einsum('ij,tj->ti', C_new, Z_all)
-        # Residual computation with missing data
-        # Residuals should be: nan_mask * (X - CZ), not (X - nan_mask * CZ)
-        # The latter leaves raw X when missing, injecting spurious variance
-        residuals = nan_mask_all * (X_all - CZ_all)
-        R_new += np.einsum('ti,tj->ij', residuals, residuals)
-        
-        CVCT_all = np.einsum('ij,tjk,kl->til', C_new, V_all, C_new.T)
-        nan_mask_all_f32 = nan_mask_all.astype(np.float32)
-        R_new += np.einsum('ti,tj,tij->ij', nan_mask_all_f32, nan_mask_all_f32, CVCT_all)
-        
-        I_minus_W_all = 1.0 - nan_mask_all_f32
-        R_new += np.einsum('ti,ij,tj->ij', I_minus_W_all, R, I_minus_W_all)
-    
-    R_new = R_new / T
-    
-    RR_diag = np.diag(R_new)
-    RR_diag = np.maximum(RR_diag, config.min_variance)
-    RR_diag = np.where(np.isfinite(RR_diag), RR_diag, config.min_variance)
-    
-    idio_indicator_M_mask = idio_indicator[:n_clock_freq] > 0
-    RR_diag[:n_clock_freq][idio_indicator_M_mask] = np.maximum(RR_diag[:n_clock_freq][idio_indicator_M_mask], MIN_OBSERVATION_NOISE)
-    
-    if n_clock_freq < N:
-        RR_diag[n_clock_freq:] = np.maximum(RR_diag[n_clock_freq:], MIN_OBSERVATION_NOISE)
-    
-    RR_diag = np.clip(RR_diag, config.min_variance, config.max_variance)
-    
-    R_new = np.diag(RR_diag)
-    R_new = ensure_covariance_stable(R_new, min_eigenval=config.min_variance)
-    return replace(state, R=R_new)
+    C = np.asarray(state.C, dtype=np.float64)
+    R_old = np.diag(np.asarray(state.R, dtype=np.float64))
+    W = ~np.isnan(X)
+    resid = np.where(W, np.where(W, X, 0.0) - EZ @ C.T, 0.0)
+    CVC = np.einsum('ij,tjk,ik->ti', C, V_smooth, C, optimize=True)
+    total = (np.sum(resid ** 2, axis=0) + np.sum(np.where(W, CVC, 0.0), axis=0)
+             + np.sum(~W, axis=0) * R_old)
+    R_diag = total / T
+    if not np.all(np.isfinite(R_diag)):
+        raise NumericalError("M-step: the observation noise update is not finite.")
+    R_diag = np.maximum(R_diag, _observation_noise_floor(state, N, config))
+    return replace(state, R=np.diag(R_diag))
+
+
+def _update_unstructured(
+    X: np.ndarray,
+    EZ: np.ndarray,
+    V_smooth: np.ndarray,
+    VVsmooth: np.ndarray,
+    state: DFMModelState,
+    config: EMConfig
+) -> DFMModelState:
+    """EM M-step without block structure: full A, Q, C, diagonal R.
+
+    ``A = S10 S00^-1`` and ``Q = (S11 - A S10') / (T-1)`` on the whole state,
+    every row of C regressed on the whole state, R by the BM14 formula.
+    """
+    EZ = np.asarray(EZ, dtype=np.float64)
+    V_smooth = np.asarray(V_smooth, dtype=np.float64)
+    VVsmooth = np.asarray(VVsmooth, dtype=np.float64)
+    T, m = EZ.shape
+    A, Q = np.array(state.A, dtype=np.float64), np.array(state.Q, dtype=np.float64)
+    if T >= 2:
+        A, Q = estimate_var(
+            y=EZ[1:], x=EZ[:-1], V_smooth=V_smooth[1:], V_smooth_lag=V_smooth[:-1],
+            VVsmooth=VVsmooth[1:], dtype=np.float64,
+        )
+    X = np.asarray(X, dtype=np.float64)
+    W = ~np.isnan(X)
+    Y0 = np.where(W, X, 0.0)
+    EZZ = _second_moments(EZ, V_smooth)
+    C = np.array(state.C, dtype=np.float64, copy=True)
+    cols = np.arange(m)
+    for j in range(X.shape[1]):
+        if W[:, j].any():
+            C[j] = _update_loading_row(j, cols, C, Y0, W, EZ, EZZ)
+    state = replace(state, A=A, Q=Q, C=C, V_0=_initial_covariance_update(V_smooth[0]))
+    return _update_observation_noise_blocked(X, EZ, V_smooth, state, config)
 
 
 def em_step(
@@ -1176,8 +664,9 @@ def em_step(
     GUARDRAILS:
     - Time budgets enforced (E-step, M-step, total iteration)
     - Numerical health checks before expensive operations
-    - Fallback tracking (fails if fallbacks exceed threshold)
     - First iteration must be fast (diagnostic check)
+    - An M-step that cannot be computed (singular moment matrix) raises
+      ``_MStepError`` (a ``NumericalError``) carrying the loglik of ``state``
     """
     if config is None:
         config = _DEFAULT_EM_CONFIG
@@ -1257,48 +746,28 @@ def em_step(
         else:
             _logger.info("    M-step: Updating parameters (unconstrained)...")
     
-    if block_structure is not None and block_structure.is_valid():
-        
-        if verbose_iterations:
-            _logger.info("      → Updating transition matrix A and process noise Q...")
-        state = _update_transition_matrix_blocked(EZ, V_smooth, VVsmooth, state, config)
+    # M-step: closed-form conditional maximizers of the expected complete-data
+    # log-likelihood (BM14), each from the moments of this E-step. A failure
+    # (singular moment matrix, non-finite update) is reported with the loglik of
+    # the parameters this iteration started from.
+    try:
+        if block_structure is not None and block_structure.is_valid():
+            if verbose_iterations:
+                _logger.info("      → Updating transition matrix A and process noise Q...")
+            state = _update_transition_matrix_blocked(EZ, V_smooth, VVsmooth, state, config)
+            if verbose_iterations:
+                _logger.info("      → Updating observation matrix C...")
+            state = _update_observation_matrix_blocked(X, EZ, V_smooth, state, config, block_structure=block_structure)
+            if verbose_iterations:
+                _logger.info("      → Updating observation noise R...")
+            state = _update_observation_noise_blocked(X, EZ, V_smooth, state, config)
+        else:
+            state = _update_unstructured(X, EZ, V_smooth, VVsmooth, state, config)
+    except (NumericalError, np.linalg.LinAlgError) as e:
+        raise _MStepError(f"M-step failed at iteration {num_iter + 1}: {e}", loglik=loglik) from e
 
-        # Option B: Bound transition matrix A.
-        # If A becomes large (e.g., |A|~1e3+), the filter can overflow in A @ P @ A.T.
-        A_capped = cap_max_eigenval(state.A, max_eigenval=config.max_eigenval, symmetric=False, warn=True)
-        if not np.array_equal(A_capped, state.A):
-            state = replace(state, A=A_capped)
-        
-        # Stabilize Q and V_0 with robust fallback handling
-        Q_new, V_0_new = _stabilize_q_and_v0(state.Q, state.V_0, config, warn=True)
-        state = replace(state, Q=Q_new, V_0=V_0_new)
-        
-        if verbose_iterations:
-            _logger.info("      → Updating observation matrix C...")
-        state = _update_observation_matrix_blocked(X, EZ, V_smooth, state, config, block_structure=block_structure)
-        
-        if verbose_iterations:
-            _logger.info("      → Updating observation noise R...")
-        state = _update_observation_noise_blocked(X, EZ, V_smooth, state, config)
-    else:
-        EZZ = V_smooth + np.einsum('ti,tj->tij', EZ, EZ)
-        
-        state = _update_transition_matrix(EZ, state, config)
-        state = _update_observation_matrix(X, EZ, EZZ, state, config)
-        state = _update_process_noise(EZ, state, config)
-        state = _update_observation_noise(X, EZ, state, config)
-        
-        V_0_new = stabilize_em_initial_covariance(
-            V_smooth[0] if len(V_smooth) > 0 else state.V_0,
-            min_eigenval=config.min_variance,
-            max_eigenval=config.max_eigenval,
-            warn=False
-        )
-        state = replace(state, V_0=V_0_new)
-    
-    # Update Z_0 from smoothed states (common to both blocked and unblocked paths)
-    Z_0_new = EZ[0, :] if EZ.shape[0] > 0 else state.Z_0
-    state = replace(state, Z_0=Z_0_new)
+    # Initial state: Z_0 = E[x_0 | Y], V_0 = Cov(x_0 | Y) (the maximizers; V_0 projected to PSD).
+    state = replace(state, Z_0=np.array(EZ[0], dtype=np.float64), V_0=_initial_covariance_update(V_smooth[0]))
     
     if config.ar_clip is not None:
         A_new, clip_stats = apply_ar_clipping(state.A, config)
@@ -1382,17 +851,18 @@ def run_em_algorithm(
     first iteration (non-finite filter at the latest parameters), EM stops and
     returns the parameters of the last E-step that succeeded, with its loglik.
 
-    NOTE: The M-step is not yet a strict EM step:
-    - C normalization breaks state-space invariance (unless properly rescaled)
-    - Damping breaks monotonicity (convergence uses undamped loglik)
-    - Block C-update uses sequential objectives (OLS → constraint → normalization)
-    
-    These are acceptable engineering compromises for numerical stability, but mean:
-    - Likelihood monotonicity is not guaranteed
-    - Convergence point may depend on stabilization/normalization schedule
-    - EM fixed point is not likelihood stationary
-    
-    For strict EM, disable normalization and damping.
+    If the M-step cannot be computed (singular moment matrix) after the first
+    iteration, EM stops and returns the parameters that iteration started from,
+    with their loglik.
+
+    The M-step is the closed-form Banbura-Modugno (2014) update (with the tent
+    restriction for slower-frequency loadings); with the exact E-step every
+    block is a conditional maximizer of the expected complete-data
+    log-likelihood, so the exact log-likelihood of the iterates does not
+    decrease. The opt-in ``config.damping_factor`` and ``config.ar_clip`` break
+    that property. When ``config.normalize_C`` is True the returned parameters
+    are rescaled once, after the last iteration, to unit-norm factor loading
+    columns (``_normalize_C_with_invariance``; same likelihood).
     """
 
     if config is None:
@@ -1478,6 +948,16 @@ def run_em_algorithm(
                 X, state, kalman_filter=kalman_filter, config=config,
                 block_structure=block_structure, num_iter=num_iter
             )
+        except _MStepError as e:
+            if num_iter == 0:
+                _logger.error(f"EM step failed at iteration 1: {e}", exc_info=True)
+                raise RuntimeError(f"EM algorithm failed at iteration 1: {e}") from e
+            # The E-step at this iteration's parameters succeeded but no M-step
+            # update could be computed: return these parameters and their loglik.
+            _logger.error(f"EM: {e}; stopping and returning the parameters of iteration {num_iter + 1}.")
+            state = last_finite_state
+            loglik = e.loglik
+            break
         except NumericalError as e:
             if num_iter == 0:
                 _logger.error(f"EM step failed at iteration 1: {e}", exc_info=True)
@@ -1642,6 +1122,10 @@ def run_em_algorithm(
         model_type="dfm"
     )
     
+    # One likelihood-invariant change of factor units (never inside the loop).
+    if config.normalize_C and state.C is not None and state.r is not None:
+        _, state = _normalize_C_with_invariance(state.C, state, config, log_prefix="EM: ")
+
     # Smoothed states at the returned parameters.
     try:
         kalman_filter.update_parameters(state.A, state.C, state.Q, state.R, state.Z_0, state.V_0)

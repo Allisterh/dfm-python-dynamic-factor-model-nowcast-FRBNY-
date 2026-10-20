@@ -192,7 +192,10 @@ class TestEStepFailureFallback:
 
         monkeypatch.setattr(em, "em_step", recording_step)
         monkeypatch.setattr(DFMKalmanFilter, "filter_and_smooth", failing_third_smooth)
-        state, meta = run_em_algorithm(X, self._state(5, 3), max_iter=10, threshold=1e-12)
+        # normalize_C=False: compare the returned parameters as they are (the
+        # final normalization is a change of state units).
+        state, meta = run_em_algorithm(X, self._state(5, 3), max_iter=10, threshold=1e-12,
+                                       config=EMConfig(normalize_C=False))
         # E-steps 1 and 2 succeeded, E-step 3 failed: EM returns the input of iteration 2 and its loglik.
         assert len(inputs) == 3
         assert meta["num_iter"] == 2 and not meta["converged"]

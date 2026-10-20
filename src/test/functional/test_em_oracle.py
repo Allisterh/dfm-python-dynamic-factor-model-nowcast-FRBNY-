@@ -5,10 +5,9 @@ records the parameters every EM iteration starts from (and the data EM sees);
 the returned parameters are appended. The exact missing-data log-likelihood of
 each iterate is then computed with the independent reference filter
 (``src/test/ssm/_reference_kf.py``). EM must not decrease it (tolerance 1e-6
-relative).
-
-The E-step is exact, but today's M-step is not an ascent step, so these tests
-are ``xfail(strict=True)`` until the M-step is fixed.
+relative): the E-step is exact and every M-step block is a conditional
+maximizer of the expected complete-data log-likelihood (see
+``test_mstep_qfunction.py`` for the block-by-block check).
 """
 
 from __future__ import annotations
@@ -22,7 +21,6 @@ import pytest
 
 from ..ssm import _reference_kf as ref
 
-PRE_FIX = "pre-fix M-step: not an ascent step (stabilization caps, C normalization, misaligned moments)"
 MONOTONE_RTOL = 1e-6
 PARAMS = ("A", "C", "Q", "R", "Z_0", "V_0")
 
@@ -108,7 +106,6 @@ def _monthly_quarterly():
 _CASES = {"dfm_synthetic": _synthetic, "dfm_macro_monthly_quarterly": _monthly_quarterly}
 
 
-@pytest.mark.xfail(strict=True, reason=PRE_FIX)
 @pytest.mark.parametrize("case", list(_CASES))
 def test_em_exact_loglik_is_monotone(case, monkeypatch):
     """The exact loglik of the EM iterates is non-decreasing (15 iterations, tol=0)."""
@@ -122,7 +119,6 @@ def test_em_exact_loglik_is_monotone(case, monkeypatch):
     assert_monotone(reference_logliks(X, iterates), case)
 
 
-@pytest.mark.xfail(strict=True, reason="C-normalization rescale goes the wrong way and symmetrizes A")
 def test_c_normalization_rescale_preserves_loglik():
     """C -> C diag(D_inv) with the rescaled (A, Q, V_0, Z_0) is the same model: same exact loglik."""
     from dfm_python.numeric.stability import rescale_ssm_params_for_C_normalization
@@ -143,7 +139,6 @@ def _clip_bound(T: int) -> float:
     return math.sqrt(1e3 * T)
 
 
-@pytest.mark.xfail(strict=True, reason=PRE_FIX)
 @pytest.mark.parametrize("rows", [300, 400, 600])
 def test_macro_truncation_sweep(rows, monkeypatch):
     """data/macro.csv with config/dfm_macro.yaml (weekly clock, monthly tent [1,2,1]) on its last rows.

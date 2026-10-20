@@ -7,6 +7,7 @@ clipping utilities for numerical stability.
 
 import numpy as np
 from typing import Optional, Tuple, Dict, Any, TYPE_CHECKING
+from scipy import linalg
 from scipy.linalg import solve
 
 if TYPE_CHECKING:
@@ -20,33 +21,23 @@ from ..config.constants import (
     DEFAULT_REGULARIZATION,
     MIN_EIGENVALUE,
     MAX_EIGENVALUE,
-    MIN_STD,
     VAR_STABILITY_THRESHOLD,
     AR_CLIP_MIN,
     AR_CLIP_MAX,
     MIN_Q_FLOOR,
-    DEFAULT_CLEAN_NAN,
-    DEFAULT_CLEAN_INF,
     DEFAULT_IDENTITY_SCALE,
     DEFAULT_ZERO_VALUE,
     DEFAULT_PROCESS_NOISE,
     DEFAULT_TRANSITION_COEF,
-    DEFAULT_VARIANCE_FALLBACK,
     DEFAULT_MIN_OBS,
 )
 from .stability import (
-    ensure_process_noise_stable,
-    cap_max_eigenval,
     compute_var_safe,
     compute_cov_safe,
-    ensure_covariance_stable,
     solve_regularized_ols,
     stabilize_innovation_covariance,
     create_scaled_identity,
-    ensure_symmetric,
-    cap_smoothed_states,
 )
-from ..utils.helper import handle_linear_algebra_error
 from ..utils.misc import get_config_attr
 from ..config.constants import DEFAULT_DTYPE
 from .validator import validate_ndarray_ndim, validate_no_nan_inf
@@ -502,6 +493,84 @@ def estimate_idio_dynamics(
 # Unified Estimation Functions (work with raw data or smoothed expectations)
 # ============================================================================
 
+
+def _split_smoothed_covariances(
+    V_smooth: np.ndarray,
+    V_smooth_lag: Optional[np.ndarray],
+    n_rows: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Covariances of the current rows and of the lagged rows, float64.
+
+    ``V_smooth`` with ``n_rows + 1`` rows is the whole smoothed sequence (rows
+    ``1:`` current, rows ``:-1`` lagged); otherwise it holds the current rows
+    and ``V_smooth_lag`` the lagged ones (``V_smooth`` itself if None).
+    """
+    V = np.asarray(V_smooth, dtype=np.float64)
+    if V.ndim == 3 and V.shape[0] == n_rows + 1 and V_smooth_lag is None:
+        return V[1:], V[:-1]
+    V_lag = V if V_smooth_lag is None else np.asarray(V_smooth_lag, dtype=np.float64)
+    return V, V_lag
+
+
+def _diag_sum(V: np.ndarray) -> np.ndarray:
+    """Diagonal of the sum over time of a (T x n x n) or (n x n) covariance array."""
+    V = np.asarray(V, dtype=np.float64)
+    if V.ndim == 3:
+        return np.einsum('tii->i', V)
+    return np.diag(V).copy()
+
+
+def _cov_sum(V: np.ndarray) -> np.ndarray:
+    """Sum over time of a (T x a x b) covariance array, or the (a x b) array itself."""
+    V = np.asarray(V, dtype=np.float64)
+    return V.sum(axis=0) if V.ndim == 3 else V
+
+
+def _var_from_smoothed_moments(
+    y: np.ndarray,
+    x: np.ndarray,
+    V_smooth: np.ndarray,
+    V_smooth_lag: Optional[np.ndarray],
+    VVsmooth: Optional[np.ndarray],
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Exact EM update of a VAR from smoothed moments (float64, no caps).
+
+    ``S11 = y'y + sum V``, ``S00 = x'x + sum V_lag``, ``S10 = y'x + sum VV``;
+    ``A = S10 S00^-1`` (Cholesky solve) and ``Q = (S11 - A S10') / n`` with
+    ``n`` the number of rows of ``y``, symmetrized. A singular ``S00`` raises
+    ``NumericalError``.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64)
+    n_rows = y.shape[0]
+    V_cur, V_lag = _split_smoothed_covariances(V_smooth, V_smooth_lag, n_rows)
+    S11 = y.T @ y + _cov_sum(V_cur)
+    S00 = x.T @ x + _cov_sum(V_lag)
+    S10 = y.T @ x
+    if VVsmooth is not None:
+        VV = np.asarray(VVsmooth, dtype=np.float64)
+        if VV.ndim == 3 and VV.shape[0] == n_rows + 1:
+            VV = VV[1:]
+        S10 = S10 + _cov_sum(VV)
+    S00 = 0.5 * (S00 + S00.T)
+    try:
+        factor = linalg.cho_factor(S00, lower=True, check_finite=True)
+    except (np.linalg.LinAlgError, ValueError) as e:
+        raise NumericalError(f"VAR update: the lagged moment matrix is not positive definite ({e}).") from e
+    d = np.abs(np.diag(factor[0]))
+    if d.size and d.min() ** 2 <= S00.shape[0] * np.finfo(np.float64).eps * d.max() ** 2:
+        raise NumericalError(
+            f"VAR update: the lagged moment matrix is singular to working precision "
+            f"(Cholesky diagonal ratio {d.min() / d.max():.2e})."
+        )
+    A = linalg.cho_solve(factor, S10.T).T
+    Q = (S11 - A @ S10.T) / n_rows
+    Q = 0.5 * (Q + Q.T)
+    if not (np.all(np.isfinite(A)) and np.all(np.isfinite(Q))):
+        raise NumericalError("VAR update is not finite.")
+    return A, Q
+
+
 def estimate_var(
     y: np.ndarray,
     x: np.ndarray,
@@ -530,7 +599,10 @@ def estimate_var(
     VVsmooth : np.ndarray, optional
         Lag-1 cross-covariances (T x m x p). Required for smoothed expectations.
     regularization : float, default DEFAULT_REGULARIZATION
-        Regularization parameter for OLS
+        Regularization parameter for OLS (raw data mode only; the smoothed
+        expectations mode is the exact EM update ``A = S10 S00^-1``,
+        ``Q = (S11 - A S10') / n`` in float64 with no regularization, caps or
+        floors, and raises ``NumericalError`` if ``S00`` is singular)
     min_variance : float, default MIN_EIGENVALUE
         Minimum variance floor
     dtype : type, default np.float32
@@ -544,295 +616,10 @@ def estimate_var(
         Process noise covariance (m x m)
     """
     if V_smooth is not None:
-        # Smoothed expectations mode
-        # E[z_t z_t'] = EZ @ EZ' + V_smooth
-        # E[z_{t-1} z_{t-1}'] = EZ_lag @ EZ_lag' + V_smooth_lag
-        # E[z_t z_{t-1}'] = EZ @ EZ_lag' + VVsmooth
-        
-        T = y.shape[0] if y is not None and len(y.shape) > 0 else 1
-        m = y.shape[1]
-        p = x.shape[1]
-        
-        # Cap V_smooth eigenvalues before computing EZZ to prevent explosion
-        # This addresses root cause of Q explosions: V_smooth explosion → EZZ explosion → Q explosion
-        # 
-        if V_smooth.ndim == 3:
-            # Validate shapes BEFORE the loop to avoid exceptions in hot path
-            # V_smooth should be (T, m, m) where each V_smooth[t] is square
-            T_v, m_v, n_v = V_smooth.shape
-            if m_v != n_v:
-                raise ValueError(
-                    f"V_smooth must contain square matrices, got shape={V_smooth.shape}. "
-                    f"This indicates a bug in state structure or slicing."
-                )
-            
-            # Sum in float64 first to prevent overflow, then cap, then cast
-            # The sum of 2538 large covariance matrices can exceed float32 max (~3.4e38)
-            # Sum in higher precision, cap eigenvalues, then cast to target dtype
-            V_smooth_sum = np.sum(V_smooth.astype(np.float64), axis=0)
-            # Cap the sum after accumulation to prevent explosion
-            V_smooth_sum = cap_max_eigenval(
-                V_smooth_sum,
-                max_eigenval=MAX_EIGENVALUE,
-                symmetric=True,
-                warn=False
-            ).astype(dtype)
-        elif V_smooth.ndim == 2:
-            V_smooth_sum = cap_max_eigenval(
-                V_smooth, 
-                max_eigenval=MAX_EIGENVALUE, 
-                symmetric=True, 
-                warn=False
-            ).astype(dtype)
-        else:
-            V_smooth_sum = V_smooth.astype(dtype) if V_smooth is not None else None
-        
-        # Compute expectations
-        # De-duplicate: use shared helper for state capping (also used in EM).
-        y = cap_smoothed_states(y, max_eigenval=MAX_EIGENVALUE, warn=True)
-        
-        EZZ = y.T @ y
-        if V_smooth_sum is not None:
-            EZZ = EZZ + V_smooth_sum
-        
-        EZZ_BB = x.T @ x
-        # Use V_smooth_lag if provided, otherwise try to derive from V_smooth
-        if V_smooth_lag is not None:
-            # Use explicitly provided lagged state covariance
-            if V_smooth_lag.ndim == 3:
-                # Validate shapes BEFORE processing
-                T_lag, m_lag, n_lag = V_smooth_lag.shape
-                if m_lag != n_lag:
-                    raise ValueError(
-                        f"V_smooth_lag must contain square matrices, got shape={V_smooth_lag.shape}. "
-                        f"This indicates a bug in state structure or slicing."
-                    )
-                
-                # Sum in float64 first to prevent overflow, then cap, then cast
-                V_smooth_lag_sum = np.sum(V_smooth_lag.astype(np.float64), axis=0)
-                V_smooth_lag_sum = cap_max_eigenval(
-                    V_smooth_lag_sum,
-                    max_eigenval=MAX_EIGENVALUE,
-                    symmetric=True,
-                    warn=False
-                ).astype(dtype)
-            elif V_smooth_lag.ndim == 2:
-                V_smooth_lag_sum = cap_max_eigenval(
-                    V_smooth_lag,
-                    max_eigenval=MAX_EIGENVALUE,
-                    symmetric=True,
-                    warn=False
-                ).astype(dtype)
-            else:
-                V_smooth_lag_sum = V_smooth_lag.astype(dtype)
-            EZZ_BB = EZZ_BB + V_smooth_lag_sum
-        elif V_smooth is not None:
-            # Fallback: derive from V_smooth (only works if m == p)
-            if V_smooth.ndim == 3:
-                # Use original V_smooth, not V_smooth_capped (which no longer exists after optimization)
-                V_smooth_lag_derived = V_smooth[:-1] if V_smooth.shape[0] == T + 1 else V_smooth
-                # Sum in float64 first to prevent overflow, then cap, then cast
-                V_smooth_lag_sum = np.sum(V_smooth_lag_derived.astype(np.float64), axis=0)
-                # Validate shape matches x dimension
-                if V_smooth_lag_sum.shape[0] != p or V_smooth_lag_sum.shape[1] != p:
-                    _logger.warning(
-                        f"Shape mismatch: V_smooth_lag derived from V_smooth has shape {V_smooth_lag_sum.shape}, "
-                        f"but x has {p} columns. This may cause errors. Provide V_smooth_lag explicitly."
-                    )
-                # Cap the lag sum as well
-                V_smooth_lag_sum = cap_max_eigenval(
-                    V_smooth_lag_sum,
-                    max_eigenval=MAX_EIGENVALUE,
-                    symmetric=True,
-                    warn=False
-                ).astype(dtype)
-                EZZ_BB = EZZ_BB + V_smooth_lag_sum
-            elif V_smooth.ndim == 2:
-                if V_smooth_sum.shape[0] == p and V_smooth_sum.shape[1] == p:
-                    EZZ_BB = EZZ_BB + V_smooth_sum
-                else:
-                    _logger.warning(
-                        f"Shape mismatch: V_smooth has shape {V_smooth_sum.shape}, but x has {p} columns. "
-                        f"Provide V_smooth_lag explicitly."
-                    )
-        
-        # De-duplicate: reuse shared helper for lagged state capping.
-        x = cap_smoothed_states(x, max_eigenval=MAX_EIGENVALUE, warn=True)
-        
-        EZZ_FB = y[1:].T @ x if y.shape[0] > x.shape[0] else y.T @ x
-        # Cap VVsmooth eigenvalues as well to prevent explosion
-        if VVsmooth is not None:
-            if VVsmooth.ndim == 3:
-                # Validate shapes BEFORE processing
-                T_vv, m_vv, n_vv = VVsmooth.shape
-                # NOTE: VVsmooth can be rectangular (m_vv × n_vv) when used in block updates
-                # For VAR(p) estimation, VVsmooth_block has shape (T-1, r_i, rp) where:
-                # - r_i = number of factors in current state
-                # - rp = r_i * (p+1) = number of factors in all state (current + lags)
-                # This is correct: it's cross-covariance between current state and lagged state
-                # Only validate that dimensions are positive, not that they're square
-                if m_vv <= 0 or n_vv <= 0:
-                    raise ValueError(
-                        f"VVsmooth has invalid dimensions: shape={VVsmooth.shape}. "
-                        f"Both m_vv={m_vv} and n_vv={n_vv} must be positive."
-                    )
-                
-                # Sum in float64 first to prevent overflow, then cap/clip, then cast
-                # VVsmooth is cross-covariance, so we sum over time axis
-                # NOTE: VVsmooth can be rectangular (m_vv × n_vv) for block updates
-                # For VAR(p): VVsmooth_block is (T-1, r_i, rp) where r_i < rp
-                # This is cross-covariance between current state (r_i) and lagged state (rp)
-                VVsmooth_to_sum = VVsmooth[1:] if VVsmooth.shape[0] == T + 1 else VVsmooth
-                VVsmooth_sum = np.sum(VVsmooth_to_sum.astype(np.float64), axis=0)
-                # Cap the sum after accumulation
-                # For rectangular matrices, only cap if square (symmetric case)
-                # For rectangular cross-covariance, just add directly (no eigenvalue capping)
-                if m_vv == n_vv:
-                    # Square case: symmetric cross-covariance, can cap eigenvalues
-                    VVsmooth_sum = cap_max_eigenval(
-                        VVsmooth_sum,
-                        max_eigenval=MAX_EIGENVALUE,
-                        symmetric=True,
-                        warn=False
-                    ).astype(dtype)
-                else:
-                    # Rectangular case: cross-covariance between different state dimensions
-                    # Clip values to prevent numerical issues, but don't cap eigenvalues
-                    VVsmooth_sum = np.clip(VVsmooth_sum, -MAX_EIGENVALUE, MAX_EIGENVALUE).astype(dtype)
-                EZZ_FB = EZZ_FB + VVsmooth_sum
-            elif VVsmooth.ndim == 2:
-                VVsmooth_capped = cap_max_eigenval(
-                    VVsmooth, 
-                    max_eigenval=MAX_EIGENVALUE, 
-                    symmetric=True, 
-                    warn=False
-                ).astype(dtype)
-                EZZ_FB = EZZ_FB + VVsmooth_capped
-        
-        # Check for extreme values in EZZ and EZZ_FB before Q computation (prevent overflow)
-        # EZZ = y.T @ y + V_smooth_sum can be huge if y has extreme values
-        max_EZZ = np.max(np.abs(EZZ)) if EZZ.size > 0 else 0.0
-        max_EZZ_FB = np.max(np.abs(EZZ_FB)) if EZZ_FB.size > 0 else 0.0
-        safe_max = MAX_EIGENVALUE * T  # Safe maximum for Q computation
-        
-        if max_EZZ > safe_max or max_EZZ_FB > safe_max:
-            _logger.warning(
-                f"EZZ or EZZ_FB has extreme values (max_EZZ={max_EZZ:.2e}, max_EZZ_FB={max_EZZ_FB:.2e}, "
-                f"safe_max={safe_max:.2e}). This will cause Q to overflow. "
-                f"Scaling moments to safe range to prevent overflow..."
-            )
-            # IMPORTANT:
-            # - EZZ is (m x m)
-            # - EZZ_FB is (m x p) and MUST remain rectangular when p != m (companion form)
-            #
-            # FRBNY-style safe fallback: shrink (scale) the moments rather than reshaping them.
-            # This preserves the cross-cov structure and avoids shape-mismatch errors (e.g., 5 vs 15).
-
-            # Stabilize EZZ: keep it PSD-ish by using a scaled identity at the correct (m x m) shape.
-            EZZ = create_scaled_identity(EZZ.shape[0], MAX_EIGENVALUE, dtype=dtype) * T
-
-            # Stabilize EZZ_FB: keep its (m x p) shape by scaling existing values down to safe_max.
-            EZZ_FB = np.where(np.isfinite(EZZ_FB), EZZ_FB, 0.0)
-            max_abs_fb = np.max(np.abs(EZZ_FB)) if EZZ_FB.size > 0 else 0.0
-            if max_abs_fb > safe_max and max_abs_fb > 0:
-                scale = safe_max / max_abs_fb
-                EZZ_FB = (EZZ_FB * scale).astype(dtype, copy=False)
-            else:
-                EZZ_FB = EZZ_FB.astype(dtype, copy=False)
-
-            _logger.warning(
-                f"Stabilized moments for Q computation: EZZ set to scaled identity, "
-                f"EZZ_FB scaled to preserve shape={EZZ_FB.shape} (safe_max={safe_max:.2e})."
-            )
-        
-        # Regularize
-        EZZ_BB_reg = EZZ_BB + create_scaled_identity(p, regularization, dtype=dtype)
-        
-        def _compute_A_Q():
-            # OLS: A = (EZZ_BB)^(-1) @ EZZ_FB'
-            # Note: EZZ_BB_reg is already regularized, so use use_XTX=False
-            # EZZ_BB_reg is (p x p), EZZ_FB.T is (p x m)
-            # solve_regularized_ols with use_XTX=False returns (p x m), so we transpose to get (m x p)
-            A = solve_regularized_ols(EZZ_BB_reg, EZZ_FB.T, regularization=DEFAULT_ZERO_VALUE, use_XTX=False, dtype=dtype).T  # (m x p)
-            
-            
-            # Q = (EZZ - A @ EZZ_FB') / T
-            # Check EZZ and EZZ_FB for non-finite values before computation
-            if np.any(~np.isfinite(EZZ)) or np.any(~np.isfinite(EZZ_FB)) or np.any(~np.isfinite(A)):
-                _logger.error(
-                    f"EZZ, EZZ_FB, or A contains non-finite values before Q computation. "
-                    f"EZZ: Inf={np.sum(np.isinf(EZZ))}, NaN={np.sum(np.isnan(EZZ))}. "
-                    f"EZZ_FB: Inf={np.sum(np.isinf(EZZ_FB))}, NaN={np.sum(np.isnan(EZZ_FB))}. "
-                    f"A: Inf={np.sum(np.isinf(A))}, NaN={np.sum(np.isnan(A))}. "
-                    f"Using fallback Q."
-                )
-                Q = create_scaled_identity(m, DEFAULT_PROCESS_NOISE, dtype=dtype)
-            else:
-                # Check for extreme values that will cause overflow
-                max_EZZ_val = np.max(np.abs(EZZ))
-                max_EZZ_FB_val = np.max(np.abs(EZZ_FB))
-                max_A_val = np.max(np.abs(A))
-                safe_max = MAX_EIGENVALUE * T  # Safe maximum for Q computation
-                
-                if max_EZZ_val > safe_max or max_EZZ_FB_val > safe_max or max_A_val > 10:
-                    _logger.error(
-                        f"Extreme values detected before Q computation: "
-                        f"max_EZZ={max_EZZ_val:.2e}, max_EZZ_FB={max_EZZ_FB_val:.2e}, max_A={max_A_val:.2e}. "
-                        f"Safe max={safe_max:.2e}. Using fallback Q."
-                    )
-                    Q = create_scaled_identity(m, DEFAULT_PROCESS_NOISE, dtype=dtype)
-                else:
-                    try:
-                        # Compute A @ EZZ_FB.T first to check for overflow
-                        A_EZZ_FB_T = A @ EZZ_FB.T
-                        if np.any(~np.isfinite(A_EZZ_FB_T)):
-                            _logger.error("A @ EZZ_FB.T produced non-finite values. Using fallback Q.")
-                            Q = create_scaled_identity(m, DEFAULT_PROCESS_NOISE, dtype=dtype)
-                        else:
-                            Q = (EZZ - A_EZZ_FB_T) / T
-                    except (OverflowError, FloatingPointError) as e:
-                        _logger.error(
-                            f"Overflow in Q computation: {e}. Using fallback Q."
-                        )
-                        Q = create_scaled_identity(m, DEFAULT_PROCESS_NOISE, dtype=dtype)
-                    else:
-                        # Check for non-finite values after computation (overflow recovery)
-                        if np.any(~np.isfinite(Q)):
-                            _logger.warning(
-                                f"Q computation produced non-finite values (Inf: {np.sum(np.isinf(Q))}, NaN: {np.sum(np.isnan(Q))}). "
-                                f"This indicates overflow. Using fallback Q."
-                            )
-                            Q = create_scaled_identity(m, DEFAULT_PROCESS_NOISE, dtype=dtype)
-            
-            Q = ensure_process_noise_stable(Q, min_eigenval=min_variance, warn=True, dtype=dtype)
-            
-            # Final check: ensure Q is finite and bounded before return (prevent overflow in downstream code)
-            if np.any(~np.isfinite(Q)) or np.max(np.abs(Q)) > MAX_EIGENVALUE * 10:
-                _logger.warning(
-                    f"Q still has extreme values after stabilization (max={np.max(np.abs(Q)):.2e}). "
-                    f"Applying additional clipping..."
-                )
-                Q = np.clip(Q, -MAX_EIGENVALUE, MAX_EIGENVALUE)
-                Q = np.where(np.isfinite(Q), Q, DEFAULT_PROCESS_NOISE)
-                Q = ensure_symmetric(Q)
-                # Re-stabilize after clipping
-                Q = ensure_process_noise_stable(Q, min_eigenval=min_variance, warn=False, dtype=dtype)
-            
-            return A, Q
-        
-        def _fallback_A_Q():
-            # Fallback: use identity
-            A = create_scaled_identity(m, DEFAULT_TRANSITION_COEF, dtype)
-            if p > m:
-                # Pad A to match p columns
-                A = np.hstack([A, np.zeros((m, p - m), dtype=dtype)])
-            Q = create_scaled_identity(m, DEFAULT_PROCESS_NOISE, dtype)
-            return A, Q
-        
-        A, Q = handle_linear_algebra_error(
-            _compute_A_Q, "VAR estimation",
-            fallback_func=_fallback_A_Q
-        )
+        # Smoothed expectations mode (EM M-step): exact closed form, float64,
+        # no caps, clips or regularization.
+        A, Q = _var_from_smoothed_moments(y, x, V_smooth, V_smooth_lag, VVsmooth)
+        return A, Q
     else:
         # Raw data mode
 
@@ -873,9 +660,22 @@ def estimate_ar1(
     min_variance: float = MIN_EIGENVALUE,
     default_ar_coef: float = DEFAULT_TRANSITION_COEF,
     default_noise: float = DEFAULT_PROCESS_NOISE,
-    dtype: type = np.float32
+    dtype: type = np.float32,
+    V_smooth_lag: Optional[np.ndarray] = None,
+    VVsmooth: Optional[np.ndarray] = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """AR(1) estimation that works with raw data or smoothed expectations.
+
+    Smoothed expectations mode (``V_smooth`` given) is the exact EM update of
+    diagonal AR(1) states, in float64 with no regularization or floors::
+
+        a_i = (sum y_t x_t + sum VV_t)_ii / (sum x_t^2 + sum V_lag_t)_ii
+        q_i = ((sum y_t^2 + sum V_t)_ii - a_i (sum y_t x_t + sum VV_t)_ii) / n
+
+    where ``n`` is the number of rows of ``y``. ``regularization``,
+    ``min_variance``, ``default_ar_coef``, ``default_noise`` and ``dtype`` apply
+    to the raw data mode only; a non-positive lagged moment raises
+    ``NumericalError``.
     
     Parameters
     ----------
@@ -886,6 +686,9 @@ def estimate_ar1(
         If None, uses y[:-1] for raw data mode.
     V_smooth : np.ndarray, optional
         Smoothed state covariances. Required for smoothed expectations mode.
+        Either the covariances of the rows of ``y`` (then ``V_smooth_lag`` gives
+        those of ``x``), or the whole sequence with one more row than ``y``
+        (then rows ``1:`` go with ``y`` and rows ``:-1`` with ``x``).
     regularization : float, default DEFAULT_REGULARIZATION
         Regularization parameter
     min_variance : float, default MIN_EIGENVALUE
@@ -896,6 +699,11 @@ def estimate_ar1(
         Default noise variance if estimation fails
     dtype : type, default np.float32
         Data type
+    V_smooth_lag : np.ndarray, optional
+        Smoothed covariances of the rows of ``x`` (smoothed expectations mode).
+    VVsmooth : np.ndarray, optional
+        Lag-one covariances ``Cov(y_t, x_t | Y)`` of the rows of ``y`` (or the
+        whole sequence with one more row; row 0 is then dropped).
         
     Returns
     -------
@@ -905,43 +713,32 @@ def estimate_ar1(
         Innovation variances (n,) - diagonal
     """
     if V_smooth is not None:
-        # Smoothed expectations mode
-        T = y.shape[0]
-        n = y.shape[1]
-        
+        # Smoothed expectations mode (EM M-step): exact closed form, float64.
+        y = np.asarray(y, dtype=np.float64)
         if x is None:
             x = y[:-1]
             y = y[1:]
-            T = T - 1
-        
-        # Compute diagonal expectations
-        EZZ = np.diag(y.T @ y)
-        if V_smooth.ndim == 3:
-            EZZ = EZZ + np.diag(np.sum(V_smooth[1:], axis=0))
-        elif V_smooth.ndim == 2:
-            EZZ = EZZ + np.diag(V_smooth)
-        
-        EZZ_BB = np.diag(x.T @ x)
-        if V_smooth.ndim == 3:
-            V_smooth_lag = V_smooth[:-1] if V_smooth.shape[0] == T + 1 else V_smooth
-            EZZ_BB = EZZ_BB + np.diag(np.sum(V_smooth_lag, axis=0))
-        elif V_smooth.ndim == 2:
-            EZZ_BB = EZZ_BB + np.diag(V_smooth)
-        
-        EZZ_FB = np.diag(y.T @ x)
-        # Note: VVsmooth handling would go here if needed
-        
-        # Regularize
-        EZZ_BB_reg = EZZ_BB + regularization
-        
-        # AR(1) coefficients: A = EZZ_FB / EZZ_BB
-        A_diag = EZZ_FB / np.maximum(EZZ_BB_reg, min_variance)
-        A_diag = np.where(np.isfinite(A_diag), A_diag, default_ar_coef)
-        
-        # Q = (EZZ - A * EZZ_FB) / T
-        Q_diag = (EZZ - A_diag * EZZ_FB) / T
-        Q_diag = np.maximum(Q_diag, min_variance)
-        Q_diag = np.where(np.isfinite(Q_diag), Q_diag, default_noise)
+        x = np.asarray(x, dtype=np.float64)
+        n_rows = y.shape[0]
+        V_cur, V_lag = _split_smoothed_covariances(V_smooth, V_smooth_lag, n_rows)
+        S11 = np.sum(y * y, axis=0) + _diag_sum(V_cur)
+        S00 = np.sum(x * x, axis=0) + _diag_sum(V_lag)
+        S10 = np.sum(y * x, axis=0)
+        if VVsmooth is not None:
+            VV = np.asarray(VVsmooth, dtype=np.float64)
+            if VV.shape[0] == n_rows + 1:
+                VV = VV[1:]
+            S10 = S10 + _diag_sum(VV)
+        if np.any(~np.isfinite(S00)) or np.any(S00 <= 0.0):
+            raise NumericalError(
+                "AR(1) update: the lagged second moment is not positive and finite "
+                f"(min {np.min(S00) if S00.size else float('nan'):.3e})."
+            )
+        A_diag = S10 / S00
+        Q_diag = np.maximum((S11 - A_diag * S10) / n_rows, 0.0)
+        if not (np.all(np.isfinite(A_diag)) and np.all(np.isfinite(Q_diag))):
+            raise NumericalError("AR(1) update is not finite.")
+        return A_diag, Q_diag
     else:
         # Raw data mode
         if x is None:

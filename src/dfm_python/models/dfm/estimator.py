@@ -178,10 +178,13 @@ class DFM(BaseFactorModel):
         Clip the data at this many standard deviations around the mean before
         EM. None does not clip.
     regularization : dict, optional
-        Keys among ``"scale"`` (ridge penalty of the regressions),
-        ``"min_eigenvalue"`` and ``"max_eigenvalue"`` (the eigenvalue cap of
-        the transition matrix); missing keys use the engine's values. None
-        uses the engine's defaults.
+        Keys among ``"scale"``, ``"min_eigenvalue"`` and
+        ``"max_eigenvalue"``; missing keys use the engine's values. None uses
+        the engine's defaults. The EM M-step is the exact closed-form update
+        with no ridge term and no eigenvalue cap, so ``"scale"`` and
+        ``"max_eigenvalue"`` are accepted and validated but not used;
+        ``"min_eigenvalue"`` is the smallest loading-column norm the final
+        factor normalization rescales.
     damping_factor : float, optional
         In (0, 1]: each EM update is ``damping_factor * new + (1 -
         damping_factor) * old``. None does not damp.

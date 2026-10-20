@@ -862,58 +862,25 @@ def rescale_ssm_params_for_C_normalization(
     max_abs_Q: float = MAX_EIGENVALUE * 10,
     dtype: type = np.float64,
 ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
-    """Rescale (A, Q, V_0, Z_0) to preserve invariance under C → C D.
+    """Rescale (A, Q, V_0, Z_0) so that ``C diag(D_inv)`` gives the same model.
 
-    If C is column-normalized via C → C D (D diagonal), the state-space model is invariant under:
-      - A → D⁻¹ A D
-      - Q → D⁻¹ Q D⁻¹
-      - V₀ → D⁻¹ V₀ D⁻¹
-      - Z₀ → D⁻¹ Z₀
+    With ``C' = C diag(D_inv)`` the state in the new units is ``x' = D x`` where
+    ``D = diag(1 / D_inv)``, and the model (likelihood, fitted values) is
+    unchanged under::
 
-    This helper performs those transforms on raw arrays (no DFMModelState dependency),
-    and includes basic overflow/non-finite guards with revert behavior.
+        A' = D A D^-1,   Q' = D Q D,   V_0' = D V_0 D,   Z_0' = D Z_0
+
+    A is not symmetrized. The keyword arguments are accepted for compatibility
+    and unused (no guards or fallbacks: the transform is exact).
     """
     if D_inv.size == 0:
         return A, Q, V_0, Z_0
 
-    D_inv_diag = np.diag(D_inv.astype(dtype, copy=False))
-    D_diag = np.diag((1.0 / D_inv).astype(dtype, copy=False))
-
-    A_new = A.copy() if A is not None else None
-    Q_new = Q.copy() if Q is not None else None
-    V_0_new = V_0.copy() if V_0 is not None else None
-    Z_0_new = Z_0.copy() if Z_0 is not None else None
-
-    if A_new is not None:
-        if np.any(~np.isfinite(A_new)):
-            _logger.warning("A contains non-finite values before C-normalization rescaling. Skipping A rescale.")
-        else:
-            A_rescaled = D_inv_diag @ A_new @ D_diag
-            A_rescaled = ensure_symmetric(A_rescaled)
-            if np.any(~np.isfinite(A_rescaled)) or np.max(np.abs(A_rescaled)) > max_abs_A:
-                _logger.warning("A overflowed during C-normalization rescaling. Reverting A.")
-            else:
-                A_new = A_rescaled
-
-    if Q_new is not None:
-        if np.any(~np.isfinite(Q_new)):
-            _logger.warning("Q contains non-finite values before C-normalization rescaling. Skipping Q rescale.")
-        else:
-            Q_rescaled = D_inv_diag @ Q_new @ D_inv_diag
-            Q_rescaled = ensure_symmetric(Q_rescaled)
-            if np.any(~np.isfinite(Q_rescaled)) or np.max(np.abs(Q_rescaled)) > max_abs_Q:
-                _logger.warning("Q overflowed during C-normalization rescaling. Reverting and re-stabilizing Q.")
-                Q_new = ensure_process_noise_stable(Q_new, min_eigenval=min_variance, warn=False, dtype=dtype)
-            else:
-                Q_new = Q_rescaled
-
-    if V_0_new is not None:
-        V_0_new = D_inv_diag @ V_0_new @ D_inv_diag
-        V_0_new = ensure_symmetric(V_0_new)
-
-    if Z_0_new is not None:
-        Z_0_new = Z_0_new * D_inv
-
+    d = 1.0 / np.asarray(D_inv, dtype=np.float64)
+    A_new = None if A is None else np.asarray(A, dtype=np.float64) * d[:, np.newaxis] / d[np.newaxis, :]
+    Q_new = None if Q is None else np.asarray(Q, dtype=np.float64) * d[:, np.newaxis] * d[np.newaxis, :]
+    V_0_new = None if V_0 is None else np.asarray(V_0, dtype=np.float64) * d[:, np.newaxis] * d[np.newaxis, :]
+    Z_0_new = None if Z_0 is None else np.asarray(Z_0, dtype=np.float64) * d
     return A_new, Q_new, V_0_new, Z_0_new
 
 
