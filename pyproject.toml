@@ -26,7 +26,7 @@ dependencies = [
     "pandas>=2.0.0",
     "scikit-learn>=1.7.2",
     "scipy>=1.10.0",
-    "torch>=2.0.0",
+    "torch>=2.10.0",  # 2.10 fixes CVE-2026-24747 in the weights_only=True unpickler used by load()
 ]
 
 [project.optional-dependencies]
