@@ -925,11 +925,11 @@ class DFM(BaseFactorModel):
           smoothed state, update rows included, which ``update`` extends),
           ``data/last_smoothed_state`` (its last row) and
           ``data/last_smoothed_cov`` (the last filtered state covariance
-          P_T|T, from the filter call ``update`` starts from; all NaN, with a
-          ``RuntimeWarning``, when that filter is not finite with the fitted
-          parameters, as on some mixed-frequency panels: ``update`` then
-          raises on the fitted and on the loaded model alike, and ``load``
-          does not read it); plus the ``scaler/`` entries. Every array keeps
+          P_T|T, from the filter call ``update`` starts from; as a safeguard,
+          all NaN, with a ``RuntimeWarning``, if that filter is not finite
+          with the fitted parameters: ``update`` then raises on the fitted
+          and on the loaded model alike, and ``load`` does not read it); plus
+          the ``scaler/`` entries. Every array keeps
           its memory order.
         - ``state.json``: the engine config dict, ``num_factors``, ``p``,
           ``n_slower_freq``, ``n_clock_freq``, ``max_lag_size``,

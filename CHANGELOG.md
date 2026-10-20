@@ -1,5 +1,122 @@
 # Changelog
 
+## Unreleased
+
+DFM numerical-stability rewrite. **DFM numbers change**: fitted parameters,
+factors, forecasts, log-likelihoods, iteration counts and convergence flags
+all differ from earlier 0.8.0 development builds and from 0.7. **DDFM, iVDFM
+and AFM numbers are unchanged**: their golden fixtures are bitwise identical.
+Every change to the DFM numbers is checked against an independent oracle (a
+reference Kalman filter in the test suite that does not import the package,
+and statsmodels' `KalmanSmoother` when installed). The public estimator API is
+unchanged.
+
+- **DFM E-step rewritten.** `DFMKalmanFilter` is an in-house float64 Kalman
+  filter and Durbin-Koopman smoother (the lag-one covariances come from the
+  same recursion). Missing values are handled per element: at each row the
+  observed entries are used and only the missing ones are skipped. Before,
+  any NaN in a row dropped the whole row from the update, so on mixed-frequency
+  panels the E-step ignored most of the data. The update uses a Cholesky
+  factor of the innovation covariance and a Joseph-form covariance. The ad-hoc
+  E-step stabilizations are removed: diagonal loading of the filtered and
+  predicted covariances, eigenvalue caps, the condition-number guard (which
+  never fired) and the clipping of smoothed states. A failing filter raises
+  `NumericalError`.
+- **Exact log-likelihood.** `result_.loglik` (and `loglik_`) is the exact
+  Gaussian log-likelihood of the observed entries, computed in the filter
+  pass, at the returned parameters. Before, every panel with a NaN reported
+  exactly `-T/2` (`-60.0` for 120 rows, `-57.0` for 114, `-200.0` for 400),
+  a side effect of passing a NaN-filled array to pykalman, and EM then
+  "converged" after 3 iterations on every mixed-frequency panel. On fully
+  observed data the old value came from the E-step before the last M-step.
+- **pykalman removed** from the dependencies; the runtime dependencies are
+  numpy, pandas, scipy, scikit-learn, torch and einops.
+- **EM M-step is the closed-form Banbura-Modugno (2014) update**, with the
+  tent restriction on slower-frequency loadings solved as restricted least
+  squares. Defects fixed:
+  - off-by-one alignment: the loading and `R` updates paired data row `t`
+    with the smoothed state of row `t+1`;
+  - the C-normalization "invariance" rescale went the wrong way and
+    symmetrized `A`, so it changed the likelihood; normalization now runs
+    once after EM, per factor, with the correct transform
+    (`normalize_C=True`), and never inside the loop;
+  - the `A` update zeroed the companion shift (lag identity) rows, which made
+    the lag states deterministic zeros and the loading solves singular
+    (rcond ~1e-21); only the current-factor rows are estimated now (a VAR(p)
+    on the r*p lag columns);
+  - the clock loading update subtracted the idiosyncratic cross-moments
+    summed over all series from every series; they are per series now;
+  - the idiosyncratic AR(1) update left out the lag-one smoothed covariance;
+  - moment sums were capped at 1e3, `A`, `Q` and `V_0` eigenvalues at 0.99,
+    `R` clipped, and the solves ridge-regularized and run in float32; all
+    removed (float64, Cholesky solves, a singular system raises);
+  - the single-frequency fast path for `C` dropped the idiosyncratic
+    cross-moment and the missing-data weights; it is removed.
+- **BM14 state layout for slower-frequency series.** A slower-frequency
+  series now has only its tent-weighted idiosyncratic chain (a weekly AR(1)
+  state is kept only for clock-frequency series), the chain loadings are the
+  unnormalized tent weights, and the lag and chain shift states have exactly
+  zero noise. The state dimension shrinks (for example 28 -> 26 states for the
+  monthly/quarterly example, 44 -> 37 for weekly/monthly).
+- **Initialization consistent with the model:** exact tent-restricted
+  least-squares initial loadings, no column normalization of `C`, `R`
+  initialized at the M-step floor (1e-4) instead of 1e-8, nonzero chain
+  noise, `V_0` from the exact Lyapunov solve (with a finite diffuse part on
+  unit-root directions). Two init bugs fixed: `build_lag_matrix` copied the
+  current factor into every lag column, and the pairwise branch of
+  `compute_cov_safe` indexed time points instead of variables.
+- **EM driver on the exact log-likelihood.** Convergence is tested on the
+  relative change of the exact log-likelihood, which does not decrease over
+  the iterations. If, after the first iteration, it falls (by more than 1e-6
+  relative), or a parameter or the filter becomes non-finite, EM stops and
+  returns the best parameters seen, with `converged=False`; the metadata of
+  `functional.em.run_em_algorithm` gains `stop_reason` and `best_loglik`. On `data/macro.csv` with
+  `config/dfm_macro.yaml` (the last 300, 400 and 600 rows and the full panel)
+  EM no longer diverges or leaves a non-finite filter, so `save` no longer
+  writes a NaN `last_smoothed_cov` and `update` no longer raises there.
+- **`update()` and `predict(h, data=)` continue the training filter**: the
+  prior of the first new row is `(A x_T|T, A P_T|T A' + Q)` from the filter
+  over the conditioning rows. Before, `update` skipped that transition step
+  for several new rows (but not for one), and `predict(data=)` restarted from
+  `V_0`. One new row and many new rows now take the same path, and
+  `predict(h, data=new)` equals `update(new).predict(h)`. A single new row in
+  `predict(h, data=)` used to raise a broadcasting `ValueError`.
+  `update(data, refit=True)` still runs one EM iteration on all rows, now
+  through the same EM driver.
+- **Save directories:** DFM save directories written by development builds of
+  0.8.0 before this change do not load (the state layout changed);
+  `DFM.load` raises `ConfigurationError` asking to fit the model again.
+  `FORMAT_VERSION` is unchanged because 0.8.0 was never released.
+- **DDFM under pandas 3 (copy-on-write):** `DDFM.fit` raised "assignment
+  destination is read-only" with pandas>=3 (allowed by `pandas>=2.0.0`); the
+  writes now go through the frame, with unchanged numbers. Under pandas 3 the
+  iVDFM time features now use nanoseconds as under pandas 2 (pandas 3 parses
+  dates in microseconds, which moved them by ~1e-6).
+- **Golden fixtures:** only the five DFM fixtures were recaptured, each
+  checked against the reference filter (the reported log-likelihood equals
+  the reference's to 6e-16 relative; all arrays finite):
+
+  | Case | log-likelihood before (reported / true at those parameters) | after | EM iterations before -> after |
+  |---|---|---|---|
+  | `dfm_synthetic` (80 rows, no NaN) | -542.6755 / -542.6347 | -274.9745 | 20 -> 20 |
+  | `dfm_macro_monthly_quarterly` (120 rows) | -60.0 / -1257.3704 | -998.5058 | 3 -> 10 |
+  | `dfm_macro_monthly_quarterly_permuted` | -60.0 / -1257.3704 | -998.5058 | 3 -> 10 |
+  | `dfm_macro_monthly_quarterly_update` (114 rows) | -57.0 / -1242.8559 | -941.1799 | 3 -> 10 |
+  | ... its refit on 120 rows | -60.0 / -1566.0253 | -991.5799 | 1 -> 1 |
+  | `dfm_macro_weekly_monthly` (400 rows) | -200.0 / -69446964.17 | -1639.5278 | 3 -> 10 |
+
+  The old refit of `dfm_macro_monthly_quarterly_update` reached smoothed
+  states of 9e41 and forecasts of 1e6; now 4.8 and 11. The five DFM cases
+  agree within 1e-6 relative (2.5e-10 at most, norm-relative, on parameters
+  and forecasts) between the default AVX-512 kernels and forced AVX2
+  (OpenBLAS Haswell, Sandybridge) or SSE (Nehalem) kernels, so
+  `dfm_macro_weekly_monthly` and `dfm_macro_monthly_quarterly_update` are
+  compared across platforms again (`cross_platform=True`). Before, forcing
+  AVX2 kernels moved `A` of the weekly/monthly case by 0.99 absolute.
+- Tests: oracle tests for the E-step, EM monotonicity, the M-step Q-function
+  and update/predict(data=); statsmodels is in the `dev` group for the
+  optional cross-check.
+
 ## 0.8.0
 
 - **Breaking: estimator API for all four models.** `DFM`, `DDFM`, `iVDFM`
@@ -17,11 +134,12 @@
   its constructor and reads the `model:`/`data:` YAML layout. The four
   models, their configs, `PanelData`, `load`, `set_verbosity`,
   `get_verbosity`, `NotFittedError` and `UnsupportedInputError` are exported
-  from `dfm_python`. The numbers are
-  unchanged: the same data and the same hyperparameters give the same
+  from `dfm_python`. The migration itself left the
+  numbers unchanged: the same data and the same hyperparameters give the same
   parameters, factors, forecasts and diagnostics as 0.7 (golden fixtures
   captured from the old code enforce this, bitwise on CPU with pinned
-  threads). The old API is removed, not deprecated; scripts and checkpoints
+  threads). DFM's numbers then changed on purpose with the numerical-stability
+  fixes under Unreleased; DDFM, iVDFM and AFM still match 0.7. The old API is removed, not deprecated; scripts and checkpoints
   written for 0.7 keep working with `pip install "dfm-python==0.7.0"`.
 
   Old calls and their replacements:
@@ -145,13 +263,15 @@
       filter from `V_0` on a copy, forecasting from the last filtered state)
       and `update(new_rows)` (a filter and smoother from the last filtered
       covariance) take only the rows after the last conditioning date; an
-      overlap raises `DataValidationError`. They give different numbers, as
-      before. `update(data, refit=True)` is the old `retrain=True` (one EM
+      overlap raises `DataValidationError`. They gave different numbers, as
+      before (now both continue the training filter and agree; see
+      Unreleased). `update(data, refit=True)` is the old `retrain=True` (one EM
       iteration on all rows) and refreshes `result_`.
     - The old `DFMConfig` (the engine's config) is private, and its
       never-read `idio_rho0` and `idio_min_var` are gone.
-    - Known engine issues, left in place (the engine is frozen for identical
-      numbers; each fix changes the golden outputs): mixed-frequency fits
+    - Known engine issues, left in place here (the engine was frozen for
+      identical numbers) and fixed under Unreleased, except the one-iteration
+      refit, which is kept: mixed-frequency fits
       report `result_.loglik` as exactly `-T/2` (`-57.0` for the README's
       114-row example), which is not a usable log-likelihood; on some
       mixed-frequency panels (truncated slices of `data/macro.csv`, or the
@@ -240,8 +360,8 @@
   **Migration:** to keep the 0.7.0 behaviour, depend on `dfm-python[all]`
   (for example in a `requirements.txt` that pinned bare `dfm-python`).
 - Runtime dependencies reduced to numpy, pandas, scipy, scikit-learn, torch,
-  pykalman and einops. pytorch-lightning and matplotlib were never imported
-  and are dropped; optuna, omegaconf, sktime and polars (with pyarrow) moved
+  pykalman and einops (pykalman was then dropped; see Unreleased).
+  pytorch-lightning and matplotlib were never imported and are dropped; optuna, omegaconf, sktime and polars (with pyarrow) moved
   to the `tune`, `yaml`, `metrics` and `polars` extras (`all` installs every
   extra). hydra-core is no longer a dependency of any extra: the tutorials
   stopped using Hydra, and the short-lived `examples` extra is removed.

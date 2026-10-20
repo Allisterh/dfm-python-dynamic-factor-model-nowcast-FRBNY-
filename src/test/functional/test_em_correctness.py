@@ -448,19 +448,18 @@ class TestIndexingInvariance:
         )
         
         # Run one EM step on both
-        try:
-            state1_new, loglik1, _ = em_step(X, state1, config=EMConfig())
-            state2_new, loglik2, _ = em_step(X_perm, state2, config=EMConfig())
-            
-            # A and Q should be identical (not permuted)
-            assert np.allclose(state1_new.A, state2_new.A, atol=1e-5)
-            assert np.allclose(state1_new.Q, state2_new.Q, atol=1e-5)
-            
-            # C and R should be permuted versions of each other
-            assert np.allclose(state1_new.C, state2_new.C[perm, :], atol=1e-5)
-            assert np.allclose(state1_new.R, state2_new.R[np.ix_(perm, perm)], atol=1e-5)
-        except Exception as e:
-            pytest.skip(f"Permutation invariance test failed: {e}")
+        state1_new, loglik1, _ = em_step(X, state1, config=EMConfig())
+        state2_new, loglik2, _ = em_step(X_perm, state2, config=EMConfig())
+        assert np.isclose(loglik1, loglik2, rtol=1e-12)
+
+        # A and Q should be identical (not permuted)
+        assert np.allclose(state1_new.A, state2_new.A, atol=1e-10)
+        assert np.allclose(state1_new.Q, state2_new.Q, atol=1e-10)
+
+        # Series j of the permuted panel is series perm[j] of the original, so
+        # the permuted run's C and R are the original's rows (and columns) perm.
+        assert np.allclose(state1_new.C[perm, :], state2_new.C, atol=1e-10)
+        assert np.allclose(state1_new.R[np.ix_(perm, perm)], state2_new.R, atol=1e-10)
 
 
 class TestCacheInvalidation:

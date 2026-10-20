@@ -31,11 +31,11 @@ Comparison rules (design spec, section 11):
   ill-conditioned to compare across platforms at any useful tolerance. Off the
   capture platform every test that consumes it is skipped
   (:func:`skip_unless_comparable`); on the capture platform it is compared
-  bitwise like every other case.
+  bitwise like every other case. No registered case uses this opt-out today.
 
 CI runs on GitHub-hosted runners whose CPUs differ from the capture machine, so
 CI takes the tolerance path (look for ``GoldenToleranceWarning`` in its output)
-and skips the ``cross_platform=False`` cases. Only the capture machine, the one
+and would skip any ``cross_platform=False`` case. Only the capture machine, the one
 whose fingerprint the manifests record, runs the bitwise comparison.
 """
 

@@ -31,7 +31,7 @@
     "python": "3.12",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "23fbcadff81f47041a70bc79dce61dd4bad24ccc",
+  "git_commit": "482a32c66dc6e9074cda8b980aff071ae2e6a0e0",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "blocks": [
@@ -179,22 +179,22 @@
     "A": {
       "dtype": "float64",
       "shape": [
-        44,
-        44
+        37,
+        37
       ]
     },
     "C": {
       "dtype": "float64",
       "shape": [
         14,
-        44
+        37
       ]
     },
     "Q": {
       "dtype": "float64",
       "shape": [
-        44,
-        44
+        37,
+        37
       ]
     },
     "R": {
@@ -207,14 +207,14 @@
     "V_0": {
       "dtype": "float64",
       "shape": [
-        44,
-        44
+        37,
+        37
       ]
     },
     "Z_0": {
       "dtype": "float64",
       "shape": [
-        44
+        37
       ]
     },
     "columns": {
@@ -237,8 +237,8 @@
     "last_filtered_cov": {
       "dtype": "float64",
       "shape": [
-        44,
-        44
+        37,
+        37
       ]
     },
     "loglik": {
@@ -260,14 +260,14 @@
       "dtype": "float64",
       "shape": [
         6,
-        44
+        37
       ]
     },
     "result_Z": {
       "dtype": "float64",
       "shape": [
         400,
-        44
+        37
       ]
     },
     "result_x_sm": {

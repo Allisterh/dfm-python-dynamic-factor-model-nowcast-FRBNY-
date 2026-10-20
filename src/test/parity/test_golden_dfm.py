@@ -33,15 +33,15 @@ golden output of the fit reproduced from the loaded engine alone, the saved
 last smoothed covariance equal to the fixture's last filtered covariance, and
 the golden update and refit outputs from the loaded model.
 
-``dfm_macro_weekly_monthly`` and ``dfm_macro_monthly_quarterly_update`` are
-registered with ``cross_platform=False``: every test here skips them off the
-capture platform (see ``_golden``).
+Every DFM case is compared across platforms (within the ``_golden``
+tolerances off the capture platform); none is registered with
+``cross_platform=False``.
 
-The DFM E-step was replaced (exact per-element Kalman filter and smoother,
-exact log-likelihood, update/predict(data=) continuing the training filter), so
-the DFM numbers changed on purpose; the fixtures are recaptured once the
-numerical-stability work is complete. Until then every test here is
-``xfail(strict=False)``. The DDFM, iVDFM and AFM goldens are unaffected.
+The DFM fixtures were recaptured after the numerical-stability rewrite (exact
+per-element Kalman filter and DK smoother with the exact log-likelihood, the
+Banbura-Modugno M-step, the BM14 state layout, the EM driver on the exact
+log-likelihood, and update/predict(data=) continuing the training filter); see
+the CHANGELOG. The DDFM, iVDFM and AFM fixtures were not recaptured.
 """
 
 from __future__ import annotations
@@ -78,8 +78,6 @@ from ._cases import (
     normalized,
 )
 from ._golden import assert_golden, load_golden
-
-pytestmark = pytest.mark.xfail(strict=False, reason="DFM fixtures recaptured in final item")
 
 _YAML = importlib.util.find_spec("omegaconf") is not None or importlib.util.find_spec("yaml") is not None
 

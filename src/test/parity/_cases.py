@@ -54,6 +54,11 @@ class Case:
     ``cross_platform=False`` marks a case too ill-conditioned to compare off
     the capture platform at any useful tolerance: it is compared bitwise on
     the capture platform and skipped elsewhere (``_golden.skip_unless_comparable``).
+    No registered case uses it today. ``dfm_macro_weekly_monthly`` and
+    ``dfm_macro_monthly_quarterly_update`` did until the DFM numerical-stability
+    rewrite; their recaptured fits agree within 1e-6 relative (2.5e-10 at most,
+    norm-relative, on parameters and forecasts) between the default AVX-512
+    kernels and forced AVX2 (Haswell, Sandybridge) or SSE (Nehalem) kernels.
     """
 
     name: str
@@ -954,19 +959,16 @@ CASES: dict[str, Case] = {c.name: c for c in [
     Case("afm_pca_longconv_patience", "afm",
          lambda: _afm_case("pca", "longconv", max_epochs=40, learning_rate=0.1, patience=3)),
     Case("dfm_synthetic", "dfm", _dfm_synthetic),
-    # Weekly clock with monthly series: EM on this panel is ill-conditioned
-    # (it diverges), so another CPU's last-bit differences grow to O(1) in A
-    # and the covariances. Pinned bitwise on the capture platform only.
-    Case("dfm_macro_weekly_monthly", "dfm", _dfm_macro_weekly_monthly, cross_platform=False),
+    # Weekly clock with monthly series (tent [1, 2, 1]). Before the DFM
+    # numerical-stability rewrite EM diverged on this panel and the case was
+    # pinned to the capture platform; it is now compared everywhere.
+    Case("dfm_macro_weekly_monthly", "dfm", _dfm_macro_weekly_monthly),
     Case("dfm_macro_monthly_quarterly", "dfm", _dfm_macro_monthly_quarterly),
     Case("dfm_macro_monthly_quarterly_permuted", "dfm", _dfm_macro_monthly_quarterly_permuted),
-    # The refit on the update rows diverges (its smoothed states reach ~1e41),
-    # and the fit on this shorter panel is already sensitive enough that
-    # another CPU moves small entries by ~1e-2 relative. Pinned bitwise on the
-    # capture platform only; dfm_synthetic covers the update and refit paths
-    # across platforms.
-    Case("dfm_macro_monthly_quarterly_update", "dfm", _dfm_macro_monthly_quarterly_update,
-         cross_platform=False),
+    # The update and refit paths on a mixed-frequency panel. Before the DFM
+    # numerical-stability rewrite the refit diverged (smoothed states ~1e41) and
+    # the case was pinned to the capture platform; it is now compared everywhere.
+    Case("dfm_macro_monthly_quarterly_update", "dfm", _dfm_macro_monthly_quarterly_update),
     Case("ddfm_macro", "ddfm", _ddfm_macro),
     Case("ddfm_exchange", "ddfm", _ddfm_exchange),
     Case("ddfm_finance", "ddfm", _ddfm_finance),

@@ -9,7 +9,7 @@ import threadpoolctl
 import torch
 
 from . import _golden
-from ._cases import CASES
+from ._cases import CASES, Case
 from ._golden import (
     TOLERANCES,
     GoldenToleranceWarning,
@@ -33,7 +33,12 @@ def fixture_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
-PINNED_TO_CAPTURE_PLATFORM = {"dfm_macro_weekly_monthly", "dfm_macro_monthly_quarterly_update"}
+# No registered case opts out of the cross-platform comparison since the DFM
+# numerical-stability rewrite (the former dfm_macro_weekly_monthly and
+# dfm_macro_monthly_quarterly_update opt-outs agree within 1e-6 relative under
+# forced AVX2/Sandybridge/SSE kernels). The mechanism is tested on a stand-in case.
+PINNED_TO_CAPTURE_PLATFORM: set[str] = set()
+PINNED_STAND_IN = "pinned_stand_in"
 RTOL_F32, ATOL_F32 = TOLERANCES[np.dtype(np.float32)]
 RTOL_F64, ATOL_F64 = TOLERANCES[np.dtype(np.float64)]
 
@@ -156,8 +161,15 @@ class TestAssertGolden:
             assert_golden(dict(ARRAYS), "case", exclude=exclude)
 
 
+@pytest.fixture
+def pinned_case(monkeypatch):
+    """Register a stand-in case with ``cross_platform=False`` for the duration of a test."""
+    monkeypatch.setitem(CASES, PINNED_STAND_IN, Case(PINNED_STAND_IN, "dfm", lambda: None, cross_platform=False))
+    return PINNED_STAND_IN
+
+
 class TestCrossPlatformOptOut:
-    def test_ill_conditioned_cases_are_pinned_to_the_capture_platform(self):
+    def test_registered_opt_outs(self):
         assert {name for name, case in CASES.items() if not case.cross_platform} == PINNED_TO_CAPTURE_PLATFORM
 
     def test_matches_capture_platform(self, fixture_dir):
@@ -166,22 +178,22 @@ class TestCrossPlatformOptOut:
         assert matches_capture_platform("here")
         assert not matches_capture_platform("elsewhere")
 
-    @pytest.mark.parametrize("name", sorted(PINNED_TO_CAPTURE_PLATFORM))
-    def test_skips_off_the_capture_platform(self, fixture_dir, name):
+    def test_skips_off_the_capture_platform(self, fixture_dir, pinned_case):
+        name = pinned_case
         _write_fixture(fixture_dir, name, ARRAYS, dict(fingerprint(), python="0.0"))
         with pytest.raises(pytest.skip.Exception, match=f"golden '{name}' is pinned bitwise on the capture platform"):
             skip_unless_comparable(name)
         with pytest.raises(pytest.skip.Exception):  # assert_golden skips instead of comparing
             assert_golden(dict(ARRAYS, f64=ARRAYS["f64"] + 1), name)
 
-    def test_compared_bitwise_on_the_capture_platform(self, fixture_dir):
-        name = "dfm_macro_weekly_monthly"
+    def test_compared_bitwise_on_the_capture_platform(self, fixture_dir, pinned_case):
+        name = pinned_case
         _write_fixture(fixture_dir, name, ARRAYS, fingerprint())
         skip_unless_comparable(name)  # no skip
         with pytest.raises(AssertionError):
             assert_golden(dict(ARRAYS, f64=np.nextafter(ARRAYS["f64"], np.inf)), name)
 
     def test_other_cases_and_names_are_never_skipped(self, fixture_dir):
-        for name in ("dfm_synthetic", "case"):
+        for name in ("dfm_synthetic", "dfm_macro_weekly_monthly", "dfm_macro_monthly_quarterly_update", "case"):
             _write_fixture(fixture_dir, name, ARRAYS, {"machine": "elsewhere"})
             skip_unless_comparable(name)

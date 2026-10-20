@@ -44,8 +44,9 @@ the moments and the log-likelihood describe exactly the model given to
 :meth:`DFMKalmanFilter.update_parameters`. Non-finite results raise
 :class:`~dfm_python.utils.errors.NumericalError`.
 
-Earlier versions used pykalman for this E-step; it skipped every row with a
-missing entry and returned ``-T/2`` as the log-likelihood of any panel with NaN.
+Earlier versions used a third-party filter for this E-step; it skipped every
+row with a missing entry and returned ``-T/2`` as the log-likelihood of any
+panel with NaN (see the CHANGELOG).
 """
 
 from __future__ import annotations

@@ -205,8 +205,10 @@ model = DFM.load("runs/dfm")                            # no data needed
   used when `blocks` is None (None means 1);
   `blocks={"name": {"n_factors": 2, "series": [...]}, ...}` replaces it (set
   one of the two; the block order is the factor order). `max_iter` and `tol`
-  control EM; `ar_clip`, `data_clip`, `regularization` and `damping_factor`
-  are the engine's optional stabilizers (None leaves them off).
+  control EM; `ar_clip`, `data_clip` and `damping_factor` are opt-in
+  stabilizers (None leaves them off; `ar_clip` and `damping_factor` give up
+  the monotone log-likelihood of EM), and `regularization` only sets the
+  smallest loading norm that the final factor normalization rescales.
 - **Scaling.** `scaler=None` is the default and fits the data as given; the
   engine then rejects series whose standard deviation is above 100 or below
   1e-4, so pass `scaler="standard"` (or `"robust"`, `"minmax"`, `"maxabs"`,
@@ -224,20 +226,25 @@ model = DFM.load("runs/dfm")                            # no data needed
   overlap raises `DataValidationError`. Both continue the Kalman filter over
   the conditioning rows and give the same forecast (see
   [update and predict(data=)](#update-and-predictdata)).
-- **Known engine issues.** The engine is kept as it was, for identical
-  numbers, so these remain until a separate fix:
-  - EM reports the log-likelihood of its last E-step, i.e. of the
-    parameters before the last M-step, not of the returned parameters, and
-    the M-step does not yet guarantee a non-decreasing log-likelihood;
-  - on some mixed-frequency panels (for example truncated slices of
-    `data/macro.csv`, or the full file with `config/dfm_macro.yaml`) EM
-    diverges or leaves parameters under which the Kalman filter is not
-    finite: `save` then warns and stores a NaN `last_smoothed_cov`, and
-    `update` raises;
-  - one or two EM iterations on short weekly/monthly slices can give
-    explosive forecasts;
-  - `update(data, refit=True)` runs one EM iteration on all rows, not a full
-    refit.
+- **Estimation.** EM is the closed-form Banbura-Modugno (2014) EM. The
+  E-step is an exact Kalman filter and Durbin-Koopman smoother that uses
+  every observed entry (missing values are handled per element, so a
+  quarterly NaN never hides the monthly values of the same row), and
+  `result_.loglik` is the exact Gaussian log-likelihood of the observed data
+  at the returned parameters. The log-likelihood of the EM iterates does not
+  decrease; EM stops when its relative change is below `tol`
+  (`converged_=True`) or after `max_iter` iterations (`converged_=False`).
+  If, after the first iteration, the log-likelihood falls or a parameter or
+  the filter becomes non-finite, EM stops early and returns the best
+  parameters it saw, with `converged_=False` (in the first iteration it
+  raises). In the example above, `result_.loglik` is -522.31
+  after 50 iterations (`converged_=False` at `tol=1e-5`); the full
+  `data/macro.csv` with `config/dfm_macro.yaml` (2538 weekly rows, 14 series)
+  reaches -10995.0 after its 10 iterations.
+- **`update(data, refit=True)`** runs one EM iteration on all rows (the
+  conditioning rows and the new ones), starting from the current parameters;
+  it is not a full refit. To re-estimate from scratch, call `fit` on the
+  whole panel.
 
 `tutorial/tutorial_{macro,finance,exchange}_dfm.py` fit the shipped
 configurations end to end.
