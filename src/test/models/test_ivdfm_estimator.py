@@ -130,18 +130,20 @@ def test_invalid_parameters_raise_configuration_error(params):
     assert not hasattr(est, "result_")
 
 
-def test_more_factors_than_targets_with_ar_order_above_one_is_rejected(monkeypatch):
-    # The engine's AR initialization zero-pads the PCA factors beyond the targets and its
-    # L1 normalization of the all-zero coefficient rows made the loss NaN in the first batch.
-    def no_engine(*args, **kwargs):
-        raise AssertionError("the engine must not be built")
-
-    monkeypatch.setattr("dfm_python.models.ivdfm.estimator.iVDFMEngine", no_engine)
-    for params in ({"n_factors": 4, "factor_order": 2}, {"n_factors": 5, "factor_order": 3}):
-        est = iVDFM(**{**TINY, **params})
-        with pytest.raises(ConfigurationError, match=r"n_factors=\d exceeds the 3 target series"):
-            est.fit(_panel(N=3))
-        assert not hasattr(est, "result_")
+@pytest.mark.parametrize(
+    "params", [{"n_factors": 5, "factor_order": 3}, {"n_factors": 4, "factor_order": 2},
+               # window 4 < n_factors: the PCA of the initialization window has only 4 components
+               {"n_factors": 6, "factor_order": 3, "window": 4}],
+)
+def test_more_factors_than_targets_with_ar_order_above_one_trains(params):
+    # The engine's AR initialization used to zero-pad the PCA factors beyond the targets (or beyond
+    # the rows of the initialization window); the L1 normalization of their all-zero coefficient
+    # rows made the loss NaN in the first batch, and fit rejected the combination.
+    est = iVDFM(**{**TINY, **params}).fit(_panel(N=3))
+    assert est.n_factors_ == params["n_factors"]
+    assert np.isfinite(est.result_.training_elbo)
+    forecast = est.predict(4)
+    assert forecast.shape == (4, 3) and np.isfinite(forecast.to_numpy()).all()
 
 
 @pytest.mark.parametrize(

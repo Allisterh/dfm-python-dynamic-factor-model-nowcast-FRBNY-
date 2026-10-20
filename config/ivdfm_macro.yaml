@@ -9,7 +9,6 @@
 # The model: section holds iVDFM's constructor parameters and is exactly what
 # runs. Earlier releases let constructor defaults override some values of this
 # file; these values now take effect and differ from what ran before:
-#   n_factors: 3                 (ran as 5; see below)
 #   factor_order: 3              (ran as 1)
 #   encoder_n_hidden_layers: 3   (ran as 2)
 #   decoder_n_hidden_layers: 3   (ran as 2)
@@ -21,15 +20,12 @@
 # context), so there are no exog columns: the context u_t is the generated time
 # feature (time_context=1, the default).
 #
-# n_factors is 3, the number of targets (earlier files said 5). With more
-# factors than targets and factor_order > 1, the engine's initialization of the
-# AR coefficients (OLS on zero-padded PCA factors) makes the ELBO NaN in the
-# first batch, so fit rejects that combination with a ConfigurationError; 5
-# factors only ran because factor_order was silently 1. The spec's n_factors=5
-# needs at least 5 targets, factor_order=1 or n_regimes > 1.
+# n_factors (5) exceeds the 3 targets. The AR coefficients are initialized by OLS
+# on the PCA factors of the last window; the factors beyond the number of
+# targets keep the engine's default random initialization.
 model:
   # Latent structure
-  n_factors: 3                   # at most the number of targets when factor_order > 1
+  n_factors: 5                   # may exceed the number of targets
   window: 200                    # sliding-window length; stride=None means window // 2
   factor_order: 3                # AR order p of the factor dynamics
   innovation_distribution: laplace

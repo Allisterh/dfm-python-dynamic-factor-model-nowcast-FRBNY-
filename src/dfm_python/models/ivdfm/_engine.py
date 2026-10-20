@@ -800,6 +800,14 @@ class iVDFMEngine(nn.Module):
         
         Extracts PCA factors from data, estimates AR(p) coefficients for each factor,
         and initializes SSM parameters.
+
+        The initialization window has min(data_dim, T_init, latent_dim) PCA
+        factors. With ``factor_order > 1``, the factors beyond those keep the
+        SSM's own (non-data) initialization of their AR coefficients and
+        innovation scale; an OLS fit on all-zero padded factors would give
+        all-zero coefficient rows. With ``factor_order == 1`` the padded
+        factors get the OLS values of a zero series (A = 0, a stable AR(1)
+        after the sigmoid), as before.
         
         Parameters
         ----------
@@ -820,9 +828,11 @@ class iVDFMEngine(nn.Module):
             y_win = dataset.data[T_total - T_init:T_total, :]  # (T_init, N)
             max_components = min(self.data_dim, T_init, self.latent_dim)
             factors, _ = extract_pca_factors(y_win, n_components=max_components)
-            
-            # Pad if needed
-            if factors.shape[1] < self.latent_dim:
+            n_data = factors.shape[1]
+            keep_default = self.factor_order > 1 and n_data < self.latent_dim
+
+            # Pad if needed (factor_order == 1 only; see the docstring)
+            if factors.shape[1] < self.latent_dim and not keep_default:
                 factors = np.pad(factors, ((0, 0), (0, self.latent_dim - factors.shape[1])))
             
             # Estimate AR(p) coefficients using OLS
@@ -832,6 +842,17 @@ class iVDFMEngine(nn.Module):
                 regularization=DEFAULT_REGULARIZATION,
                 dtype=DEFAULT_DTYPE
             )
+
+            if keep_default:
+                # The factors without a PCA factor keep the SSM's non-data initialization.
+                ar_default = self.ssm.ar_coeffs.detach().cpu().numpy().astype(ar_coeffs.dtype)
+                B_default = self.ssm.B.detach().cpu().numpy().astype(B_diag.dtype)
+                ar_coeffs = np.concatenate([ar_coeffs, ar_default[n_data:]], axis=0)
+                B_diag = np.concatenate([B_diag, B_default[n_data:]], axis=0)
+                _logger.info(
+                    f"AR({self.factor_order}) initialization: {n_data} PCA factors for {self.latent_dim} "
+                    f"factors; factors {n_data}..{self.latent_dim - 1} keep the default initialization."
+                )
             
             # Initialize SSM parameters
             self._set_ssm_ar_params(ar_coeffs, B_diag)

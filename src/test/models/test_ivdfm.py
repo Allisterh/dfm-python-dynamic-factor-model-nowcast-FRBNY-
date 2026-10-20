@@ -412,7 +412,7 @@ class TestiVDFM:
 
 _SHIPPED = {
     "macro": {
-        "model": {"n_factors": 3, "window": 200, "factor_order": 3, "innovation_distribution": "laplace",
+        "model": {"n_factors": 5, "window": 200, "factor_order": 3, "innovation_distribution": "laplace",
                   "decoder_var": 0.01, "encoder_hidden_dim": 200, "encoder_n_hidden_layers": 3,
                   "decoder_hidden_dim": 200, "decoder_n_hidden_layers": 3, "prior_hidden_dim": 100,
                   "prior_n_hidden_layers": 2, "activation": "lrelu", "slope": 0.1, "learning_rate": 0.001,
@@ -422,7 +422,7 @@ _SHIPPED = {
         "csv": "macro.csv",
     },
     "finance": {
-        "model": {"n_factors": 1, "window": 200, "factor_order": 2, "innovation_distribution": "laplace",
+        "model": {"n_factors": 5, "window": 200, "factor_order": 2, "innovation_distribution": "laplace",
                   "decoder_var": 0.01, "encoder_hidden_dim": 50, "encoder_n_hidden_layers": 2,
                   "decoder_hidden_dim": 50, "decoder_n_hidden_layers": 2, "prior_hidden_dim": 100,
                   "prior_n_hidden_layers": 2, "activation": "lrelu", "slope": 0.1, "learning_rate": 0.001,

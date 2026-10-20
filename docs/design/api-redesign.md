@@ -102,8 +102,7 @@ from dfm_python import iVDFM, PanelData
 from dfm_python.tuning import tune_hyperparameters       # needs the `tune` extra
 
 data = PanelData.from_wide(raw_df, time_col="date", exog_cols=["policy_rate"])  # exog = context u_t
-# with factor_order > 1 and n_regimes == 1, n_factors must not exceed the number of targets
-model = iVDFM(n_factors=2, factor_order=3, window=200, stride=None,
+model = iVDFM(n_factors=5, factor_order=3, window=200, stride=None,
               innovation_distribution="laplace", learning_rate=1e-3,
               batch_size=256, max_epochs=10, scaler="standard",
               random_state=3, device="auto")
@@ -486,6 +485,8 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
   - a second `update` inverse-transformed the training targets with the scaler the first one refitted;
   - refitting the target scaler inverse-transformed the training targets only when the scaler had `mean_` and `scale_` (`StandardScaler`); with `"minmax"`, `"robust"`, `"maxabs"`, `"quantile"` or another transformer it stacked the still-scaled training targets with the raw update targets and refitted on that mixed-unit matrix (forecasts such as 11.2 and -14.0 for series between 46 and 64 with `"minmax"`);
   - the encoded factors of the whole update panel were appended after the training factors, so rows that overlapped the training data were appended twice.
+
+- **iVDFM AR initialization with more factors than PCA factors, fixed before the 0.8.0 release.** The engine initializes the AR coefficients by OLS on the PCA factors of the last training window and zero-padded them to `n_factors` when there were fewer (more factors than targets, or than window rows). With `factor_order > 1` the padded factors got all-zero coefficient rows, which `iVDFMCompanionSSM.norm` L1-normalized by zero, so the loss was NaN in the first batch and `fit` raised `ConfigurationError` for `n_factors` above the number of targets with `n_regimes == 1`. The factors without a PCA factor now keep the SSM's non-data random initialization, `norm` leaves a zero-norm row unnormalized, and the `ConfigurationError` is gone; `factor_order == 1` keeps its zero-padded OLS values. The shipped `ivdfm_macro` and `ivdfm_finance` YAMLs are back to `n_factors: 5`. Every iVDFM golden fixture is bitwise unchanged.
 
 - **DFM engine issues, fixed after the migration.** The migration kept the DFM engine frozen for identical numbers. The numerical-stability rewrite that followed (CHANGELOG, Unreleased) fixed its known issues and changed the DFM numbers on purpose, with the DFM golden fixtures recaptured and checked against an independent reference Kalman filter; the DDFM, iVDFM and AFM fixtures are bitwise unchanged. Fixed:
   - mixed-frequency EM reported the log-likelihood as exactly `-T/2` (`-200` for 400 rows, `-60` for 120); `result_.loglik` is now the exact missing-data log-likelihood of the returned parameters;

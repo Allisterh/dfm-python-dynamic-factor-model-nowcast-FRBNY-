@@ -351,8 +351,10 @@ model.save("runs/ivdfm", overwrite=True)
 model = iVDFM.load("runs/ivdfm", device="cpu")
 ```
 
-- With `factor_order > 1` and `n_regimes == 1`, `n_factors` must not exceed
-  the number of targets (`fit` raises `ConfigurationError`).
+- `n_factors` may exceed the number of targets. The AR coefficients are
+  initialized by OLS on the PCA factors of the last training window; with
+  `factor_order > 1` the factors beyond those keep the default random
+  initialization.
 - Without `futr_exog`, a model fitted with exog warns and fills the future
   context with time features. A `futr_exog` DataFrame is matched by column
   name and its index must be the forecast dates (a default `RangeIndex` or an

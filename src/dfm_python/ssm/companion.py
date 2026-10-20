@@ -14,6 +14,9 @@ from .base import BaseSSM
 from ..functional.krylov import krylov
 from ..numeric.builder import ivdfm_companion_from_p, build_ivdfm_diagonal_companion
 
+# norm() leaves a row (along the last dimension) whose norm is at or below this unnormalized.
+_ZERO_ROW_NORM = 1e-12
+
 
 class iVDFMCompanionSSM(BaseSSM):
     """Companion form SSM for iVDFM with block-diagonal structure.
@@ -127,6 +130,11 @@ class iVDFMCompanionSSM(BaseSSM):
         x_norm = torch.linalg.norm(x, ord=ord, dim=-1, keepdim=True)
         # Only normalize if norm is not too small (avoid division by zero)
         if torch.abs(x_norm).mean().item() > 1e-4:
+            # A row whose own norm is (near) zero is left as is: dividing it by its norm
+            # gives NaN (0/0). Without such a row the division is the plain one.
+            zero_rows = x_norm <= _ZERO_ROW_NORM
+            if bool(zero_rows.any()):
+                x_norm = torch.where(zero_rows, torch.ones_like(x_norm), x_norm)
             x = x / x_norm
         return x
     

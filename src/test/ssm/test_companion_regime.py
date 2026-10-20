@@ -131,3 +131,34 @@ class TestCompanionRegime:
         group_id = torch.zeros(batch, device=device, dtype=torch.long)
         out_grouped = ssm_p4._forward_with_coeffs_grouped(eta, f0, ar_coeffs, B_diag, group_id)
         torch.testing.assert_close(out_grouped, out_loop, atol=1e-5, rtol=1e-5)
+
+
+class TestCompanionNorm:
+    """The L1 normalization of the AR coefficient rows."""
+
+    def test_all_zero_row_is_left_unnormalized(self):
+        ssm = iVDFMCompanionSSM(latent_dim=3, factor_order=3, device="cpu")
+        x = torch.tensor([[0.5, -0.2, 0.1], [0.0, 0.0, 0.0], [0.3, 0.3, -0.4]], requires_grad=True)
+        out = ssm.norm(x)
+        assert torch.isfinite(out).all()
+        torch.testing.assert_close(out[1], torch.zeros(3), rtol=0, atol=0)
+        out.sum().backward()
+        assert torch.isfinite(x.grad).all()
+
+    def test_nonzero_rows_are_normalized_exactly_as_before(self):
+        ssm = iVDFMCompanionSSM(latent_dim=3, factor_order=3, device="cpu")
+        x = torch.tensor([[0.5, -0.2, 0.1], [0.0, 0.0, 0.0], [0.3, 0.3, -0.4]])
+        out = ssm.norm(x)
+        for i in (0, 2):
+            expected = x[i] / torch.linalg.norm(x[i], ord=1)
+            torch.testing.assert_close(out[i], expected, rtol=0, atol=0)
+        # without a zero row the result is the plain row-wise division, bit for bit
+        y = x[[0, 2]]
+        torch.testing.assert_close(ssm.norm(y), y / torch.linalg.norm(y, ord=1, dim=-1, keepdim=True),
+                                   rtol=0, atol=0)
+
+    def test_padded_factor_ar_coefficients_give_a_finite_impulse_response(self):
+        ssm = iVDFMCompanionSSM(latent_dim=3, factor_order=3, device="cpu")
+        with torch.no_grad():
+            ssm.ar_coeffs[2] = 0.0
+        assert torch.isfinite(ssm.get_impulse_response(12, use_cache=False)).all()

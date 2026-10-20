@@ -198,3 +198,76 @@ class TestEngineRegimeKGreaterThan1:
         assert out["factors"].shape == (2, 20, 3)
         assert len(seen) == 1 and seen[0].shape == (2, 2)
         torch.testing.assert_close(seen[0], out["regime_weights"][:, 0, :])
+
+
+class TestARInitializationPadding:
+    """The OLS initialization of the AR coefficients when there are fewer PCA factors than factors.
+
+    The PCA of the initialization window has min(data_dim, T_init, num_factors) components. With
+    factor_order > 1, the factors beyond those keep the SSM's own (non-data) initialization of their
+    AR coefficients and innovation scale instead of an OLS fit on all-zero padded factors (all-zero
+    coefficient rows, which the L1 normalization divided by zero). With factor_order == 1 the padded
+    factors keep the OLS values (A = 0, a finite AR(1) after the sigmoid), as before.
+    """
+
+    @staticmethod
+    def _dataset(T: int = 40, N: int = 3, window: int = 24):
+        from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
+
+        y = np.random.default_rng(0).standard_normal((T, N))
+        return iVDFMDataset(data=y, window=window, stride=1, time_context=1)
+
+    @staticmethod
+    def _ols(dataset, n_components: int, order: int, T_init: int):
+        from dfm_python.config.constants import DEFAULT_DTYPE, DEFAULT_REGULARIZATION
+        from dfm_python.layer.pca import extract_pca_factors
+        from dfm_python.numeric.estimator import estimate_arp_ols
+
+        factors, _ = extract_pca_factors(dataset.data[-T_init:, :], n_components=n_components)
+        return estimate_arp_ols(factors=factors, order=order, regularization=DEFAULT_REGULARIZATION,
+                                dtype=DEFAULT_DTYPE)
+
+    @pytest.mark.parametrize("num_factors, factor_order, N, window, n_pca", [
+        (5, 3, 3, 24, 3),   # more factors than targets
+        (6, 2, 8, 4, 4),    # more factors than rows of the initialization window
+    ])
+    def test_padded_factors_keep_the_non_data_initialization(self, num_factors, factor_order, N, window, n_pca):
+        dataset = self._dataset(N=N, window=window)
+        engine = iVDFMEngine(dataset=dataset, num_factors=num_factors, factor_order=factor_order,
+                             max_epochs=1, batch_size=8, device=torch.device("cpu"))
+        ar_default = engine.ssm.ar_coeffs.detach().clone()
+        B_default = engine.ssm.B.detach().clone()
+        engine._initialize_ar_coeffs_from_data(dataset)
+        ar, B = engine.ssm.ar_coeffs.detach(), engine.ssm.B.detach()
+
+        ar_ols, B_ols = self._ols(dataset, n_pca, factor_order, window)
+        np.testing.assert_array_equal(ar[:n_pca].numpy(), ar_ols.astype(ar.numpy().dtype))
+        np.testing.assert_array_equal(B[:n_pca].numpy(), B_ols.astype(B.numpy().dtype))
+        torch.testing.assert_close(ar[n_pca:], ar_default[n_pca:], rtol=0, atol=0)
+        torch.testing.assert_close(B[n_pca:], B_default[n_pca:], rtol=0, atol=0)
+        assert (ar.abs().sum(dim=-1) > 0).all()
+        H = engine.ssm.get_impulse_response(10, use_cache=False)
+        assert torch.isfinite(H).all()
+
+    def test_factor_order_one_padding_is_unchanged(self):
+        dataset = self._dataset(N=3)
+        engine = iVDFMEngine(dataset=dataset, num_factors=5, factor_order=1,
+                             max_epochs=1, batch_size=8, device=torch.device("cpu"))
+        engine._initialize_ar_coeffs_from_data(dataset)
+        factors = np.pad(
+            self._factors(dataset, 3, 24), ((0, 0), (0, 2))
+        )
+        from dfm_python.config.constants import DEFAULT_DTYPE, DEFAULT_REGULARIZATION
+        from dfm_python.numeric.estimator import estimate_arp_ols
+
+        ar_ols, B_ols = estimate_arp_ols(factors=factors, order=1, regularization=DEFAULT_REGULARIZATION,
+                                         dtype=DEFAULT_DTYPE)
+        A, B = engine.ssm.A.detach().numpy(), engine.ssm.B.detach().numpy()
+        np.testing.assert_array_equal(A, ar_ols[:, 0].astype(A.dtype))
+        np.testing.assert_array_equal(B, B_ols.astype(B.dtype))
+
+    @staticmethod
+    def _factors(dataset, n_components: int, T_init: int):
+        from dfm_python.layer.pca import extract_pca_factors
+
+        return extract_pca_factors(dataset.data[-T_init:, :], n_components=n_components)[0]

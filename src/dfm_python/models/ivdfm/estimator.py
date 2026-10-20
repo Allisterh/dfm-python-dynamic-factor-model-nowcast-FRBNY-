@@ -183,12 +183,11 @@ class iVDFM(BaseFactorModel):
     slope : float, default 0.1
         Leaky ReLU slope.
     factor_order : int, default 1
-        AR order p of the factor dynamics. With ``factor_order > 1`` and
-        ``n_regimes=1``, ``n_factors`` must not exceed the number of targets
-        (``fit`` raises ``ConfigurationError``): the engine initializes the
-        AR coefficients from PCA factors, zero-pads the factors beyond the
-        number of targets, and the normalization of an all-zero coefficient
-        row makes the loss NaN in the first batch.
+        AR order p of the factor dynamics. The AR coefficients are
+        initialized by OLS on the PCA factors of the last training window;
+        with ``factor_order > 1``, factors beyond the number of PCA factors
+        (``n_factors`` above the number of targets or the window length) keep
+        the default random initialization.
     innovation_distribution : str, default "laplace"
         One of "laplace", "gaussian", "student_t", "gamma", "beta",
         "exponential".
@@ -657,9 +656,7 @@ class iVDFM(BaseFactorModel):
         Raises
         ------
         ConfigurationError
-            For an invalid hyperparameter, or ``n_factors`` greater than the
-            number of targets with ``factor_order > 1`` and ``n_regimes=1``
-            (see ``factor_order``).
+            For an invalid hyperparameter.
         UnsupportedInputError
             For ``series_exog`` or a mixed-frequency panel.
 
@@ -674,27 +671,10 @@ class iVDFM(BaseFactorModel):
         """
         return super().fit(data, **fit_kwargs)
 
-    def _check_factor_count(self, n_targets: int) -> None:
-        """Reject the factor count the engine's AR initialization cannot train.
-
-        With ``factor_order > 1`` and one regime, the engine's OLS
-        initialization zero-pads the PCA factors beyond ``n_targets``; their
-        all-zero AR coefficient rows are then L1-normalized by zero
-        (``iVDFMCompanionSSM.norm``), so the loss is NaN in the first batch.
-        """
-        if self.factor_order > 1 and self.n_regimes == 1 and self.n_factors > n_targets:
-            raise ConfigurationError(
-                f"{type(self).__name__}: n_factors={self.n_factors} exceeds the {n_targets} target series, which "
-                f"the engine cannot train with factor_order={self.factor_order} > 1 and n_regimes=1 (its AR "
-                "initialization zero-pads the extra PCA factors and the loss becomes NaN). Use n_factors <= "
-                f"{n_targets}, factor_order=1 or n_regimes > 1."
-            )
-
     def _fit(self, data: PanelData, **fit_kwargs: Any) -> None:
         if fit_kwargs:
             raise TypeError(f"iVDFM.fit() got unexpected keyword arguments {sorted(fit_kwargs)}.")
         self._validate_params()
-        self._check_factor_count(len(data.series_names))
         device = self._resolve_device()
         dataset = self._adapter(data, device)
         params = self._engine_params(dataset.window, dataset.stride)

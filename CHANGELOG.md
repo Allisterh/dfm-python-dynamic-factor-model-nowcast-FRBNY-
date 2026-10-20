@@ -302,9 +302,8 @@ unchanged.
       and the `DDFMConfig` fields `use_batch_norm`, `use_idiosyncratic`,
       `min_obs_idio` and `lags_input`.
   - **iVDFM:** `stride=None` means `window // 2`, the only stride that
-    reached training. With `factor_order > 1` and `n_regimes == 1`,
-    `n_factors` must not exceed the number of targets (`fit` raises
-    `ConfigurationError`; the engine's AR initialization made the ELBO NaN).
+    reached training. `n_factors` may exceed the number of targets with any
+    `factor_order` (see "Bug fixes before release" below).
     `update(data)` encodes with the fixed weights and appends the factors;
     `update(data, refit=True)` raises `UnsupportedInputError`.
   - **AFM:** `allocate(data=None)` returns the weights on
@@ -452,6 +451,27 @@ unchanged.
     whole panel; `ddfm_macro` has no rows after the 400 it fits, so it no
     longer has update outputs (its test checks that an update with the
     fitted rows raises).
+- **iVDFM with more factors than targets and `factor_order > 1`.** The
+  engine initialized the AR coefficients by OLS on the PCA factors of the
+  last training window, zero-padded to `n_factors` when there were fewer PCA
+  factors (`n_factors` above the number of targets, or above the window
+  length). With `factor_order > 1` the padded factors got all-zero
+  coefficient rows, which the companion SSM's L1 normalization divided by
+  zero, so training stopped with "NaN/Inf in loss" in the first batch, and
+  the estimator rejected the combination with `ConfigurationError`. The
+  factors without a PCA factor now keep the SSM's own (non-data) random
+  initialization of their AR coefficients and innovation scale (the
+  initialization used when the engine does not initialize from data), the
+  normalization leaves a row with zero norm unnormalized instead of
+  dividing it by zero, and the `ConfigurationError` is removed. With
+  `factor_order == 1` the padded factors keep their OLS values (a stable
+  AR(1)), as before. `config/ivdfm_macro.yaml` (3 targets, `factor_order: 3`)
+  and `config/ivdfm_finance.yaml` (1 target, `factor_order: 2`) are back to
+  `n_factors: 5`; both train on the full data with finite ELBO and
+  forecasts. No numbers change otherwise: every iVDFM golden fixture is
+  bitwise identical (`ivdfm_macro` has 5 factors on 3 targets but
+  `factor_order` 1; `ivdfm_regimes` and `ivdfm_exog_context` have no more
+  factors than targets).
 
 ## 0.7.0
 
