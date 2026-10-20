@@ -425,6 +425,25 @@ class TestTuneHyperparameters:
         )
         assert seeds == [7]
 
+    def test_resumed_study_draws_new_trials(self, tmp_path):
+        """Resuming a stored study (load_if_exists) with the same seed draws new trials, not the first run's."""
+        storage = f"sqlite:///{tmp_path / 'study.db'}"
+
+        def run():
+            _, study = tune_hyperparameters(
+                iVDFM(random_state=0, device="cpu"), _panel(), n_trials=3, fixed=dict(_TINY_FIXED),
+                storage=storage, study_name="resume", load_if_exists=True, return_study=True, **_TINY_SEARCH,
+            )
+            return [t.params for t in study.trials]
+
+        first = run()
+        both = run()
+        assert len(both) == 6 and both[:3] == first
+        assert all(both[i + 3] != first[i] for i in range(3))
+        # A fresh study with the same seed still reproduces the first run.
+        _, fresh = self._trial_params(0)
+        assert fresh == first
+
     def test_window_and_stride_ranges_not_divisible_by_the_step_raise_no_warning(self):
         import warnings
 

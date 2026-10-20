@@ -271,3 +271,25 @@ class TestARInitializationPadding:
         from dfm_python.layer.pca import extract_pca_factors
 
         return extract_pca_factors(dataset.data[-T_init:, :], n_components=n_components)[0]
+
+    @pytest.mark.parametrize("num_regimes", [2, 3])
+    def test_regime_path_keeps_the_zero_padded_ols_values(self, num_regimes):
+        """With n_regimes > 1 the padding is as before the fix (it trained finitely): every factor,
+        including the padded ones, gets the OLS values of the zero-padded PCA factors, which seed the
+        regime-0 coefficients A_diag[0], B_diag[0]; only the one-regime path keeps the non-data init."""
+        from dfm_python.config.constants import DEFAULT_DTYPE, DEFAULT_REGULARIZATION
+        from dfm_python.numeric.estimator import estimate_arp_ols
+
+        dataset = self._dataset(N=3)
+        engine = iVDFMEngine(dataset=dataset, num_factors=5, factor_order=3, num_regimes=num_regimes,
+                             max_epochs=1, batch_size=8, device=torch.device("cpu"))
+        engine._initialize_ar_coeffs_from_data(dataset)
+        factors = np.pad(self._factors(dataset, 3, 24), ((0, 0), (0, 2)))
+        ar_ols, B_ols = estimate_arp_ols(factors=factors, order=3, regularization=DEFAULT_REGULARIZATION,
+                                         dtype=DEFAULT_DTYPE)
+        ar, B = engine.ssm.ar_coeffs.detach().numpy(), engine.ssm.B.detach().numpy()
+        np.testing.assert_array_equal(ar, ar_ols.astype(ar.dtype))
+        np.testing.assert_array_equal(B, B_ols.astype(B.dtype))
+        np.testing.assert_array_equal(engine.A_diag.detach()[0].numpy(), ar_ols.T.astype(ar.dtype))
+        np.testing.assert_array_equal(engine.B_diag.detach()[0].numpy(), B_ols.astype(B.dtype))
+        assert not ar[3:].any()  # the padded factors' OLS rows are zero, as before the fix

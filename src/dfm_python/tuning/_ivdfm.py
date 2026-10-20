@@ -562,6 +562,10 @@ def tune_hyperparameters(
     trials and, on CPU, return the same ``best``; different seeds draw
     different trials. ``random_state=None`` leaves the sampler unseeded, as
     before. A ``timeout`` can stop runs after different numbers of trials.
+    A study resumed from ``storage`` (``load_if_exists=True``) that already
+    has ``n`` trials is sampled with seed ``random_state + n`` (modulo
+    2**32), so the resumed run draws new trials rather than replaying the
+    first run's.
 
     ``window`` and ``stride`` are suggested in steps of 10. When the range
     is not a multiple of 10 (``max_window - min_window``, or ``1000`` minus
@@ -725,6 +729,11 @@ def tune_hyperparameters(
         sampler=None if seed is None else optuna.samplers.TPESampler(seed=int(seed)),
         pruner=pruner,
     )
+    n_existing = len(study.trials)
+    if seed is not None and n_existing:
+        # A study resumed from storage (load_if_exists) already holds trials; reseeding with the same
+        # seed would replay the earlier run's draws, so the seed is offset by the number of trials.
+        study.sampler = optuna.samplers.TPESampler(seed=(int(seed) + n_existing) % 2**32)
     if initial_params:
         study.enqueue_trial(initial_params)
     study.optimize(objective, n_trials=n_trials, timeout=timeout, show_progress_bar=bool(estimator.verbose))

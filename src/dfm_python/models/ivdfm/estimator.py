@@ -185,9 +185,9 @@ class iVDFM(BaseFactorModel):
     factor_order : int, default 1
         AR order p of the factor dynamics. The AR coefficients are
         initialized by OLS on the PCA factors of the last training window;
-        with ``factor_order > 1``, factors beyond the number of PCA factors
-        (``n_factors`` above the number of targets or the window length) keep
-        the default random initialization.
+        with ``factor_order > 1`` and ``n_regimes=1``, factors beyond the
+        number of PCA factors (``n_factors`` above the number of targets or
+        the window length) keep the default random initialization.
     innovation_distribution : str, default "laplace"
         One of "laplace", "gaussian", "student_t", "gamma", "beta",
         "exponential".

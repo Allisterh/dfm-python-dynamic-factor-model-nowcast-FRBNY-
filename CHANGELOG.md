@@ -451,34 +451,44 @@ unchanged.
     whole panel; `ddfm_macro` has no rows after the 400 it fits, so it no
     longer has update outputs (its test checks that an update with the
     fitted rows raises).
-- **iVDFM with more factors than targets and `factor_order > 1`.** The
-  engine initialized the AR coefficients by OLS on the PCA factors of the
-  last training window, zero-padded to `n_factors` when there were fewer PCA
+- **iVDFM with more factors than targets and `factor_order > 1`.** The engine
+  initialized the AR coefficients by OLS on the PCA factors of the last
+  training window, zero-padded to `n_factors` when there were fewer PCA
   factors (`n_factors` above the number of targets, or above the window
-  length). With `factor_order > 1` the padded factors got all-zero
-  coefficient rows, which the companion SSM's L1 normalization divided by
-  zero, so training stopped with "NaN/Inf in loss" in the first batch, and
-  the estimator rejected the combination with `ConfigurationError`. The
-  factors without a PCA factor now keep the SSM's own (non-data) random
-  initialization of their AR coefficients and innovation scale (the
-  initialization used when the engine does not initialize from data), the
-  normalization leaves a row with zero norm unnormalized instead of
+  length). With `factor_order > 1` and `n_regimes == 1` the padded factors got
+  all-zero coefficient rows, which the companion SSM's L1 normalization
+  divided by zero, so training stopped with "NaN/Inf in loss" in the first
+  batch, and the estimator rejected the combination with `ConfigurationError`.
+  With one regime, the factors without a PCA factor now keep the SSM's own
+  (non-data) random initialization of their AR coefficients and innovation
+  scale (the initialization used when the engine does not initialize from
+  data), the normalization leaves a row with zero norm unnormalized instead of
   dividing it by zero, and the `ConfigurationError` is removed. With
   `factor_order == 1` the padded factors keep their OLS values (a stable
-  AR(1)), as before. `config/ivdfm_macro.yaml` (3 targets, `factor_order: 3`)
-  and `config/ivdfm_finance.yaml` (1 target, `factor_order: 2`) are back to
-  `n_factors: 5`; both train on the full data with finite ELBO and
-  forecasts. No numbers change otherwise: every iVDFM golden fixture is
-  bitwise identical (`ivdfm_macro` has 5 factors on 3 targets but
-  `factor_order` 1; `ivdfm_regimes` and `ivdfm_exog_context` have no more
-  factors than targets).
+  AR(1)), as before. With `n_regimes > 1`, which already trained with finite
+  numbers (the zero-padded OLS values seed the regime coefficients), the
+  padding is unchanged too, so its numbers are bitwise those of the code
+  before the fix (checked on 80x3 and 40x3 panels with `n_factors=5`,
+  `factor_order` 2 and 3, `n_regimes` 2 and 3: forecasts, ELBO and every
+  fitted weight identical). `config/ivdfm_macro.yaml` (3 targets,
+  `factor_order: 3`) and `config/ivdfm_finance.yaml` (1 target,
+  `factor_order: 2`) are back to `n_factors: 5`; both train on the full data
+  with finite ELBO and forecasts. No numbers change otherwise (only `factor_order > 1`,
+  `n_regimes == 1` with fewer PCA factors than `n_factors`, which used to
+  raise, has new numbers): every iVDFM golden fixture is bitwise identical
+  (`ivdfm_macro` has 5 factors on 3 targets but `factor_order` 1;
+  `ivdfm_regimes` and `ivdfm_exog_context` have no more factors than targets).
 - **iVDFM tuning is reproducible.** `tune_hyperparameters` created its optuna
   study with the default, unseeded TPE sampler, so two searches with the same
   `random_state` drew different trials and could return different `best`
   values. The sampler is now `TPESampler(seed=random_state)`, seeded from the
   trials' `random_state` (`fixed["random_state"]` if given, else
   `estimator.random_state`); `random_state=None` keeps the unseeded sampler.
-  The function signature is unchanged (it has no seed argument).
+  The function signature is unchanged (it has no seed argument). A study
+  resumed from `storage` with `load_if_exists=True` that already holds `n`
+  trials is sampled with seed `random_state + n` (modulo 2**32), so the
+  resumed run draws new trials instead of replaying the first run's; a new
+  study's draws are unchanged.
 - **No optuna step warning for `window` and `stride`.** Both are suggested in
   steps of 10; when `max_window - min_window` (or `1000` minus the lowest
   stride, e.g. 12 for `fixed={"window": 25}`) was not a multiple of 10,

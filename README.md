@@ -375,9 +375,11 @@ model.set_params(**best).fit(data)
 The search is reproducible: the estimator's `random_state` (or
 `fixed["random_state"]`) also seeds optuna's TPE sampler, so the same seed,
 data and arguments give the same trials and, on CPU, the same `best`;
-`random_state=None` leaves the sampler unseeded. `window` and `stride` step
-by 10, and a range that is not a multiple of 10 is cut to its last step
-(`min_window=10, max_window=25` searches 10 and 20).
+`random_state=None` leaves the sampler unseeded. Resuming a stored study
+(`storage`, `load_if_exists=True`) that already has `n` trials seeds the
+sampler with `random_state + n`, so the resumed run draws new trials.
+`window` and `stride` step by 10, and a range that is not a multiple of 10 is
+cut to its last step (`min_window=10, max_window=25` searches 10 and 20).
 
 `tutorial/tutorial_{macro,finance,exchange}_ivdfm.py` fit the shipped
 configurations.

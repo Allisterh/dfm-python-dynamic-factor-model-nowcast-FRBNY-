@@ -802,12 +802,13 @@ class iVDFMEngine(nn.Module):
         and initializes SSM parameters.
 
         The initialization window has min(data_dim, T_init, latent_dim) PCA
-        factors. With ``factor_order > 1``, the factors beyond those keep the
-        SSM's own (non-data) initialization of their AR coefficients and
-        innovation scale; an OLS fit on all-zero padded factors would give
-        all-zero coefficient rows. With ``factor_order == 1`` the padded
-        factors get the OLS values of a zero series (A = 0, a stable AR(1)
-        after the sigmoid), as before.
+        factors. With ``factor_order > 1`` and one regime, the factors beyond
+        those keep the SSM's own (non-data) initialization of their AR
+        coefficients and innovation scale; an OLS fit on all-zero padded
+        factors would give all-zero coefficient rows. With ``factor_order == 1``,
+        or with ``n_regimes > 1`` (whose regime coefficients start from the OLS
+        values and trained finitely), the padded factors get the OLS values of
+        a zero series, as before.
         
         Parameters
         ----------
@@ -829,9 +830,11 @@ class iVDFMEngine(nn.Module):
             max_components = min(self.data_dim, T_init, self.latent_dim)
             factors, _ = extract_pca_factors(y_win, n_components=max_components)
             n_data = factors.shape[1]
-            keep_default = self.factor_order > 1 and n_data < self.latent_dim
+            # One regime only: with n_regimes > 1 the zero-padded OLS values seed the regime
+            # coefficients (A_diag, B_diag), which trained with finite numbers; that path is unchanged.
+            keep_default = self.factor_order > 1 and n_data < self.latent_dim and self.num_regimes == 1
 
-            # Pad if needed (factor_order == 1 only; see the docstring)
+            # Pad if needed (see the docstring)
             if factors.shape[1] < self.latent_dim and not keep_default:
                 factors = np.pad(factors, ((0, 0), (0, self.latent_dim - factors.shape[1])))
             
