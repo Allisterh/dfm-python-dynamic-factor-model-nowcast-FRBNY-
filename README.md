@@ -486,6 +486,11 @@ cut to its last step (`min_window=10, max_window=25` searches 10 and 20).
 `tutorial/tutorial_{macro,finance,exchange}_ivdfm.py` fit the shipped
 configurations.
 
+**Method.** Chang, M. and Kim, J.-Y. (2026), "Conditionally Identifiable
+Latent Representation for Multivariate Time Series with Structural Dynamics",
+[arXiv:2603.22886](https://arxiv.org/abs/2603.22886). The paper introduces
+iVDFM; this package is its reference implementation.
+
 ### AFM
 
 AFM takes asset returns `(T, N)` and, for learned attention factors, firm
@@ -553,7 +558,10 @@ column per characteristic) build the same panel with
 **Method.** Epstein, Wang, Choi and Pelger (2025), "Attention Factors for
 Statistical Arbitrage", arXiv:2510.11616. This is an implementation from the
 paper (no reference code exists). The LongConv filter follows Fu et al.
-(2023), and the OU benchmark the Avellaneda and Lee (2010) recipe.
+(2023), and the OU benchmark the Avellaneda and Lee (2010) recipe. AFM is a
+baseline in Chang, M. (2026), "Amortized Neural Filtering for Calibrated
+Posteriors in Statistical Arbitrage",
+[arXiv:2610.25802](https://arxiv.org/abs/2610.25802) (ICAIF '26).
 
 ## Data
 
@@ -968,6 +976,35 @@ metadata is in
 [CITATION.cff](https://github.com/minkeymouse/dfm-python/blob/main/CITATION.cff)
 (GitHub's "Cite this repository" button reads it). Please also cite the paper
 behind the model you use (see each model's **Method** note above).
+
+Papers by the author that use dfm-python:
+
+- Chang, M. and Kim, J.-Y. (2026). Conditionally Identifiable Latent
+  Representation for Multivariate Time Series with Structural Dynamics.
+  [arXiv:2603.22886](https://arxiv.org/abs/2603.22886). (iVDFM)
+- Chang, M. (2026). Amortized Neural Filtering for Calibrated Posteriors in
+  Statistical Arbitrage. 7th ACM International Conference on AI in Finance
+  (ICAIF '26). [arXiv:2610.25802](https://arxiv.org/abs/2610.25802). (AFM as a
+  baseline; code in [minkeymouse/nfe](https://github.com/minkeymouse/nfe))
+
+```bibtex
+@misc{chang2026ivdfm,
+  title         = {Conditionally Identifiable Latent Representation for Multivariate Time Series with Structural Dynamics},
+  author        = {Chang, Minkey and Kim, Jae-Young},
+  year          = {2026},
+  eprint        = {2603.22886},
+  archivePrefix = {arXiv}
+}
+
+@inproceedings{chang2026amortized,
+  title         = {Amortized Neural Filtering for Calibrated Posteriors in Statistical Arbitrage},
+  author        = {Chang, Minkey},
+  booktitle     = {Proceedings of the 7th ACM International Conference on AI in Finance (ICAIF '26)},
+  year          = {2026},
+  eprint        = {2610.25802},
+  archivePrefix = {arXiv}
+}
+```
 
 ## License
 

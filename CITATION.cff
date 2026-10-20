@@ -25,3 +25,36 @@ keywords:
   - time series
   - econometrics
   - deep learning
+references:
+  - type: article
+    title: >-
+      Conditionally Identifiable Latent Representation for Multivariate Time
+      Series with Structural Dynamics
+    authors:
+      - given-names: Minkey
+        family-names: Chang
+      - given-names: Jae-Young
+        family-names: Kim
+    year: 2026
+    repository: "https://arxiv.org/abs/2603.22886"
+    identifiers:
+      - type: other
+        value: "arXiv:2603.22886"
+        description: arXiv identifier
+    notes: Introduces iVDFM; dfm-python is its reference implementation.
+  - type: conference-paper
+    title: >-
+      Amortized Neural Filtering for Calibrated Posteriors in Statistical
+      Arbitrage
+    authors:
+      - given-names: Minkey
+        family-names: Chang
+    year: 2026
+    conference:
+      name: "7th ACM International Conference on AI in Finance (ICAIF '26)"
+    repository: "https://arxiv.org/abs/2610.25802"
+    identifiers:
+      - type: other
+        value: "arXiv:2610.25802"
+        description: arXiv identifier
+    notes: Uses the AFM implementation in dfm-python as a baseline.
