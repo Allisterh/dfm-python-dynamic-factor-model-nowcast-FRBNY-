@@ -239,6 +239,11 @@ class DFM(BaseFactorModel):
     forecast month (the tent-weighted combination of the factor forecasts),
     as the engine computes it.
 
+    The transition matrix ``A`` is not capped, so on non-stationary inputs
+    the maximum-likelihood ``A`` can be explosive and long-horizon forecasts
+    grow geometrically; ``fit`` warns when its spectral radius is above 1.
+    Difference or transform such series to stationarity before fitting.
+
     Examples
     --------
     >>> from dfm_python import DFM, PanelData
@@ -627,6 +632,11 @@ class DFM(BaseFactorModel):
         UserWarning
             When ``scaler`` is an already fitted transformer (it is cloned and
             refitted).
+        UserWarning
+            When the fitted transition matrix ``result_.A`` has spectral
+            radius above 1: the model is non-stationary and forecasts grow
+            geometrically with the horizon. ``A`` is not capped, so difference
+            or transform non-stationary series before fitting.
 
         A failed fit leaves the model unfitted (earlier fitted attributes are
         removed).
@@ -662,6 +672,26 @@ class DFM(BaseFactorModel):
         self.freq_ = freq
         self.conditioning_index_ = data.index
         self.factors_ = self._state_frame(self.result_.Z, data.index)
+        self._warn_if_explosive(self.result_.A)
+
+    def _warn_if_explosive(self, A: np.ndarray) -> None:
+        """Warn when the fitted transition matrix has spectral radius above 1 (forecasts grow geometrically).
+
+        The M-step does not cap the eigenvalues of ``A`` (a cap biases the
+        likelihood), so on non-stationary inputs the MLE can be explosive.
+        """
+        A = np.asarray(A, dtype=np.float64)
+        if A.size == 0 or not np.isfinite(A).all():
+            return
+        rho = float(np.max(np.abs(np.linalg.eigvals(A))))
+        if rho > 1.0:
+            warnings.warn(
+                f"{type(self).__name__}: the fitted transition matrix A has spectral radius {rho:.4f} > 1, so the "
+                "fitted model is non-stationary and forecasts grow geometrically with the horizon. A is not "
+                "capped; difference or transform the series to stationarity before fitting.",
+                UserWarning,
+                stacklevel=5,  # _warn_if_explosive < _fit < BaseFactorModel.fit < DFM.fit < caller
+            )
 
     @staticmethod
     def _state_columns(m: int) -> list:

@@ -86,6 +86,25 @@ def test_defaults_are_the_values_that_ran_when_omitted():
     assert _DFMEngineConfig(blocks={"b": {"num_factors": 1, "series": []}}).threshold == 1e-5
 
 
+def test_documented_em_defaults_equal_get_params():
+    """The EM defaults stated in the docstring, the config mirror and the CHANGELOG are the ones that run."""
+    import re
+
+    params = DFM().get_params()
+    doc = DFM.__doc__
+    max_iter = re.search(r"^\s*max_iter : int, default (\S+)\s*$", doc, re.M)
+    tol = re.search(r"^\s*tol : float, default (\S+)\s*$", doc, re.M)
+    assert max_iter and tol
+    assert int(max_iter.group(1)) == params["max_iter"]
+    assert float(tol.group(1)) == params["tol"]
+    assert DFMConfig().max_iter == params["max_iter"] and DFMConfig().tol == params["tol"]
+    changelog = (Path(__file__).resolve().parents[3] / "CHANGELOG.md").read_text(encoding="utf-8")
+    row = re.search(r"`DFM\(\*, [^`]*`", changelog)
+    assert row, "the CHANGELOG constructor row for DFM"
+    assert int(re.search(r"max_iter=([^,]+),", row.group(0)).group(1)) == params["max_iter"]
+    assert float(re.search(r"\btol=([^,]+),", row.group(0)).group(1)) == params["tol"]
+
+
 def test_constructor_only_stores_and_is_keyword_only():
     np_state = np.random.get_state()
     est = DFM(n_factors=0, clock="x", tent_weights="nonsense", scaler="nonsense", blocks=[1])
@@ -432,6 +451,44 @@ def test_scaler_instance_is_cloned_and_a_fitted_one_warns():
         model = DFM(**TINY, scaler=fitted_scaler).fit(_mixed())
     assert record[0].filename == __file__
     assert fitted_scaler.mean_.shape == (1,) and model.scaler_.mean_.shape == (5,)
+
+
+def _ar_panel(phi: float, *, T: int = 80, seed: int = 0) -> PanelData:
+    """Four monthly series loading on one AR(1) factor ``f[t] = phi f[t-1] + e[t]``."""
+    rng = np.random.default_rng(seed)
+    f = np.zeros(T)
+    for t in range(1, T):
+        f[t] = phi * f[t - 1] + rng.standard_normal()
+    y = np.outer(f, rng.standard_normal(4) + 1.0) + 0.3 * rng.standard_normal((T, 4))
+    idx = pd.date_range("2010-01-31", periods=T, freq="ME", name="date")
+    return PanelData(y=pd.DataFrame(y, index=idx, columns=_MONTHLY))
+
+
+def _nonstationary_warnings(record) -> list:
+    return [w for w in record if "spectral radius" in str(w.message)]
+
+
+def test_fit_warns_when_the_fitted_transition_is_explosive():
+    """No eigenvalue cap on A: on an explosive input the MLE is explosive and fit says so."""
+    with pytest.warns(UserWarning, match="spectral radius") as record:
+        model = DFM(n_factors=1, max_iter=200, scaler="standard").fit(_ar_panel(1.05))
+    rho = float(np.max(np.abs(np.linalg.eigvals(model.result_.A))))
+    assert rho > 1.0
+    found = _nonstationary_warnings(record)
+    assert len(found) == 1 and found[0].filename == __file__
+    message = str(found[0].message)
+    assert f"{rho:.4f}" in message and "stationar" in message
+    # The forecasts it warns about grow with the horizon instead of reverting to the mean.
+    fc = model.predict(120).to_numpy()
+    assert np.abs(fc[-1]).max() > 2 * np.abs(fc[0]).max()
+
+
+def test_fit_does_not_warn_on_stationary_data():
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        model = DFM(n_factors=1, max_iter=200, scaler="standard").fit(_ar_panel(0.7))
+    assert float(np.max(np.abs(np.linalg.eigvals(model.result_.A)))) < 1.0
+    assert _nonstationary_warnings(record) == []
 
 
 def test_scaler_none_fits_on_the_data_as_given():

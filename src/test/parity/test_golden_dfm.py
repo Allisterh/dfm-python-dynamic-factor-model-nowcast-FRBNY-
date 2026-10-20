@@ -48,6 +48,7 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -239,7 +240,12 @@ def test_golden_dfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     model = _build(build, params, tmp_path)
     assert model.get_params() == {**DFM().get_params(), **params}
     assert list(model.blocks) == list(params["blocks"])
-    assert model.fit(data) is model
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        assert model.fit(data) is model
+    # Every golden fit is stationary (spectral radius of A below 1): no non-stationarity warning.
+    assert float(np.max(np.abs(np.linalg.eigvals(model.result_.A)))) < 1.0
+    assert [str(w.message) for w in record if "spectral radius" in str(w.message)] == []
 
     # The engine held the recorded config, EM config and block structure when EM started.
     assert engine_at_fit == [hyper]

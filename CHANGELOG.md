@@ -397,6 +397,25 @@ unchanged.
   prefixes and leftover KDFM references removed; the unused
   `DEFAULT_KDFM_*` and `DEFAULT_INF_VALUE` constants removed.
 
+### Bug fixes before release
+
+- **DFM non-stationarity warning.** The transition matrix `A` is no longer
+  capped (the 0.99 eigenvalue cap biased the likelihood), so on
+  non-stationary inputs the maximum-likelihood `A` can be explosive and
+  long-horizon forecasts grow geometrically. `DFM.fit` now issues a
+  `UserWarning` naming the spectral radius when that of the fitted
+  `result_.A` is above 1, and the README says to difference or transform
+  series to stationarity first. No numbers change; the stationary golden DFM
+  fits (largest spectral radius 0.89) do not warn.
+- **DFM `max_iter` default kept at 5000.** With the exact EM, the golden DFM
+  panels converge at `tol=1e-5` in 67 to 566 iterations (`dfm_synthetic` 501,
+  `dfm_macro_weekly_monthly` 566, the monthly/quarterly cases 67-68); a
+  default of 100 would stop the first two before convergence, so the default
+  is unchanged. `tol=1e-5` is the threshold of the EM's relative
+  log-likelihood change test and is unchanged. A test now checks that the
+  documented defaults (docstring, `DFMConfig`, this changelog) equal
+  `DFM().get_params()`.
+
 ## 0.7.0
 
 - The Attention Factor Model (`dfm_python.models.afm`: `AFM`, attention and PCA

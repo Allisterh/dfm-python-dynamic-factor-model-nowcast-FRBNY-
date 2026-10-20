@@ -241,6 +241,13 @@ model = DFM.load("runs/dfm")                            # no data needed
   after 50 iterations (`converged_=False` at `tol=1e-5`); the full
   `data/macro.csv` with `config/dfm_macro.yaml` (2538 weekly rows, 14 series)
   reaches -10995.0 after its 10 iterations.
+- **Stationarity.** The transition matrix `A` is not capped: the old 0.99
+  eigenvalue cap was removed because it biased the likelihood. On
+  non-stationary inputs (trending levels, unit roots) the maximum-likelihood
+  `A` can be explosive, and long-horizon forecasts then grow geometrically.
+  Difference or otherwise transform the series to stationarity before
+  fitting. `fit` warns (`UserWarning`) when the spectral radius of the fitted
+  `result_.A` is above 1.
 - **`update(data, refit=True)`** runs one EM iteration on all rows (the
   conditioning rows and the new ones), starting from the current parameters;
   it is not a full refit. To re-estimate from scratch, call `fit` on the

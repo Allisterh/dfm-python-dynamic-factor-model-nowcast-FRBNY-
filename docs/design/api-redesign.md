@@ -490,7 +490,7 @@ Each item fits one agent session, ends with the suite and `ruff check` green, an
   - one or two EM iterations on short weekly/monthly slices gave explosive forecasts;
   - `predict(h, data=)` filtered the new rows from `V_0` while `update` started from the last filtered covariance; both now continue the training filter and agree.
 
-  Still true by design: `update(data, refit=True)` (the old `retrain=True`) runs one EM iteration on all rows, not a full refit.
+  Still true by design: `update(data, refit=True)` (the old `retrain=True`) runs one EM iteration on all rows, not a full refit. The transition matrix `A` is not capped (the old 0.99 eigenvalue cap biased the likelihood), so on non-stationary inputs the maximum-likelihood `A` can be explosive and long-horizon forecasts grow geometrically; `DFM.fit` warns (`UserWarning`) when the spectral radius of the fitted `A` is above 1, and the README tells users to difference or transform series to stationarity first. The `max_iter` default stays 5000: the golden DFM panels need up to 566 EM iterations to converge at `tol=1e-5`.
 
 ## 15. Open questions for the owner
 
