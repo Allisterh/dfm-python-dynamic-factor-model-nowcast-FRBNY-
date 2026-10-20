@@ -47,7 +47,7 @@
     "python": "3.12",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "d8c432b9e9d68ce21b7022da213c43c87133c59b",
+  "git_commit": "520f55c1cda870454f8bff20f02670d01e5f8403",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "activation": "relu",
@@ -411,40 +411,6 @@
       "shape": [
         2,
         32
-      ]
-    },
-    "update_factors": {
-      "dtype": "float32",
-      "shape": [
-        1,
-        800,
-        2
-      ]
-    },
-    "update_predict_X": {
-      "dtype": "float64",
-      "shape": [
-        6,
-        1
-      ]
-    },
-    "update_predict_Z": {
-      "dtype": "float64",
-      "shape": [
-        6,
-        2
-      ]
-    },
-    "update_scaler_mean": {
-      "dtype": "float64",
-      "shape": [
-        1
-      ]
-    },
-    "update_scaler_scale": {
-      "dtype": "float64",
-      "shape": [
-        1
       ]
     }
   },

@@ -100,13 +100,13 @@
     "dataset": "DDFMDataset(data=frame, time_idx='date', covariates=covariates, scaler=StandardScaler())",
     "fit_input_sha256": "44752649cf2fac6569614d4bcfac37b2e38db6cf42cd829fc117bc9719552a4c",
     "read": "pd.read_csv(path); date = pd.date_range('1980-01-01', periods=len(df), freq='D'); forward_returns and risk_free_rate dropped",
-    "rows": "last 300 rows; fit on the first 288, update with all 300",
+    "rows": "last 300 rows; fit on the first 288, update with the last 12",
     "source": "data/finance.csv",
     "source_sha256": "79fe84146bb501cd779a1b4152bd5ecb65cf99502c88ce1c35a0fc16362e3dd1",
     "targets": [
       "market_forward_excess_returns"
     ],
-    "update_input_sha256": "a8e737cdbfc339f189c3b03aef566f5d336aea37ca3709be8f0d26ef3883b600"
+    "update_input_sha256": "cdc53ffeb8852cc5407cdf566af5551de1aedf4b070f2949e6dae559a813ec32"
   },
   "fingerprint": {
     "blas": [
@@ -133,7 +133,7 @@
     "python": "3.12",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "d8c432b9e9d68ce21b7022da213c43c87133c59b",
+  "git_commit": "520f55c1cda870454f8bff20f02670d01e5f8403",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "activation": "relu",
@@ -558,7 +558,7 @@
       "dtype": "float32",
       "shape": [
         10,
-        588,
+        300,
         5
       ]
     },

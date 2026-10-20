@@ -4,7 +4,7 @@
     "dataset": "DDFMDataset(data=frame, time_idx='index', scaler=StandardScaler())",
     "fit_input_sha256": "906c0dcde2591d9e1d51512f54d031d1455c73090dfe3d1e5a1810febf1e32d5",
     "read": "pd.read_csv(path, index_col=0, parse_dates=True)",
-    "rows": "last 300 rows; fit on the first 288, update with all 300",
+    "rows": "last 300 rows; fit on the first 288, update with the last 12",
     "source": "data/exchange_rate.csv",
     "source_sha256": "65e429df9d16f78a073085cc3bb088b51a8a3bbdcdde98760117b62ae4a4b218",
     "targets": [
@@ -17,7 +17,7 @@
       "SGD_USD",
       "NZD_USD"
     ],
-    "update_input_sha256": "e111ed959c6549a25692f299e402359e725bb4a992e65add05e2cf03413f9a83"
+    "update_input_sha256": "31732458dec5b257b44cea2778603db2e5ac1a3631ddfaa68cddbd1e20c13d0a"
   },
   "fingerprint": {
     "blas": [
@@ -44,7 +44,7 @@
     "python": "3.12",
     "torch": "2.9.1+cu128"
   },
-  "git_commit": "d8c432b9e9d68ce21b7022da213c43c87133c59b",
+  "git_commit": "520f55c1cda870454f8bff20f02670d01e5f8403",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "activation": "relu",
@@ -331,7 +331,7 @@
       "dtype": "float32",
       "shape": [
         10,
-        588,
+        300,
         4
       ]
     },
