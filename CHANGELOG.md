@@ -1,6 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.8.0
+
+First release with the estimator API. It also replaces the DFM E-step and
+M-step for numerical stability and makes DDFM work under pandas 3.
+
+### DFM numerical stability
 
 DFM numerical-stability rewrite. **DFM numbers change**: fitted parameters,
 factors, forecasts, log-likelihoods, iteration counts and convergence flags
@@ -117,7 +122,7 @@ unchanged.
   and update/predict(data=); statsmodels is in the `dev` group for the
   optional cross-check.
 
-## 0.8.0
+### Estimator API
 
 - **Breaking: estimator API for all four models.** `DFM`, `DDFM`, `iVDFM`
   and `AFM` are estimators with scikit-learn conventions on one data
@@ -139,7 +144,7 @@ unchanged.
   parameters, factors, forecasts and diagnostics as 0.7 (golden fixtures
   captured from the old code enforce this, bitwise on CPU with pinned
   threads). DFM's numbers then changed on purpose with the numerical-stability
-  fixes under Unreleased; DDFM, iVDFM and AFM still match 0.7. The old API is removed, not deprecated; scripts and checkpoints
+  fixes above; DDFM, iVDFM and AFM still match 0.7. The old API is removed, not deprecated; scripts and checkpoints
   written for 0.7 keep working with `pip install "dfm-python==0.7.0"`.
 
   Old calls and their replacements:
@@ -265,12 +270,12 @@ unchanged.
       covariance) take only the rows after the last conditioning date; an
       overlap raises `DataValidationError`. They gave different numbers, as
       before (now both continue the training filter and agree; see
-      Unreleased). `update(data, refit=True)` is the old `retrain=True` (one EM
+      numerical-stability rewrite). `update(data, refit=True)` is the old `retrain=True` (one EM
       iteration on all rows) and refreshes `result_`.
     - The old `DFMConfig` (the engine's config) is private, and its
       never-read `idio_rho0` and `idio_min_var` are gone.
     - Known engine issues, left in place here (the engine was frozen for
-      identical numbers) and fixed under Unreleased, except the one-iteration
+      identical numbers) and fixed by the numerical-stability rewrite, except the one-iteration
       refit, which is kept: mixed-frequency fits
       report `result_.loglik` as exactly `-T/2` (`-57.0` for the README's
       114-row example), which is not a usable log-likelihood; on some
@@ -360,7 +365,7 @@ unchanged.
   **Migration:** to keep the 0.7.0 behaviour, depend on `dfm-python[all]`
   (for example in a `requirements.txt` that pinned bare `dfm-python`).
 - Runtime dependencies reduced to numpy, pandas, scipy, scikit-learn, torch,
-  pykalman and einops (pykalman was then dropped; see Unreleased).
+  pykalman and einops (pykalman was then dropped; see DFM numerical stability above).
   pytorch-lightning and matplotlib were never imported and are dropped; optuna, omegaconf, sktime and polars (with pyarrow) moved
   to the `tune`, `yaml`, `metrics` and `polars` extras (`all` installs every
   extra). hydra-core is no longer a dependency of any extra: the tutorials
