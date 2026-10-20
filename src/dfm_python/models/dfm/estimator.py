@@ -3,7 +3,7 @@
 The estimator is a thin layer over the private engine
 :class:`~dfm_python.models.dfm._engine.DFMEngine`, which runs today's
 initialization, EM (``functional/em.py``) and Kalman filter and smoother
-(pykalman) unchanged. ``fit`` builds the engine's inputs from
+(``ssm/kalman.py``) unchanged. ``fit`` builds the engine's inputs from
 :class:`~dfm_python.PanelData`:
 
 - the per-series frequencies ``freq_`` (``PanelData.freq``; unlisted series
@@ -21,11 +21,11 @@ user's column order, and ``predict_factors(h)`` the forecast of the whole
 state vector. The engine's matrices in ``result_`` (``C``, ``R``, ``x_sm``) are
 in the internal order, ``internal_feature_names_``.
 
-``update(data)`` runs the engine's Kalman update on new rows (strictly after
+``update(data)`` continues the Kalman filter over new rows (strictly after
 the conditioning data; tag ``predict_data="new_rows"``) with fixed
-parameters, and ``update(data, refit=True)`` today's single EM iteration on
-all rows; ``predict(h, data=new_rows)`` filters the new rows on a copy of the
-engine, so the model is unchanged.
+parameters, and ``update(data, refit=True)`` runs a single EM iteration on
+all rows; ``predict(h, data=new_rows)`` runs the same filter continuation on a
+copy of the engine, so the model is unchanged.
 
 ``save(path)`` writes the pickle-free directory of the save layout
 (``state.npz``/``state.json`` with the state-space matrices, the
@@ -62,7 +62,7 @@ from ...dataset.panel import PanelData
 from ...io.layout import index_from_spec, index_to_spec
 from ...logger import get_logger
 from ...logger.progress import fit_verbosity, quiet_engine_loggers
-from ...utils.errors import ConfigurationError, DataValidationError, UnsupportedInputError
+from ...utils.errors import ConfigurationError, DataValidationError, NumericalError, UnsupportedInputError
 from ._engine import DFMEngine
 from .tent import generate_tent_weights
 
@@ -756,13 +756,14 @@ class DFM(BaseFactorModel):
         time stamp (tag ``predict_data="new_rows"``), scaled with ``scaler_``
         (never refitted).
 
-        - ``refit=False``: the Kalman filter and smoother run over the new rows
-          with the fitted parameters, starting from the last smoothed state
-          and the last filtered covariance of the conditioning data (one new
-          row takes a single filter step). The smoothed states of the new rows
-          are appended to the engine's state, so ``predict(h)`` then starts
-          from the last new row. ``result_``, ``factors_`` and the parameters
-          are unchanged.
+        - ``refit=False``: the Kalman filter with the fitted parameters
+          continues over the new rows: the prior of the first new row is
+          ``(A x_T|T, A P_T|T A' + Q)`` from the filter over all conditioning
+          rows, exactly as if the filter had run over the conditioning and the
+          new rows in one pass (one row and many rows take the same path). The
+          filtered states of the new rows are appended to the engine's state,
+          so ``predict(h)`` then starts from the filtered state of the last new
+          row. ``result_``, ``factors_`` and the parameters are unchanged.
         - ``refit=True``: one EM iteration (today's ``retrain=True``, with
           threshold ``tol``) on all rows, starting from the fitted parameters.
           ``result_``, ``n_iter_``, ``converged_``, ``loglik_`` and
@@ -770,11 +771,8 @@ class DFM(BaseFactorModel):
 
         In both cases ``conditioning_index_`` is extended by ``data.index``.
 
-        ``predict(h, data=new)`` is not ``update(new).predict(h)``: it starts
-        its filter from the initial covariance ``V_0`` and forecasts from the
-        last filtered state, while ``update`` starts from the last filtered
-        covariance and forecasts from the last smoothed state. Both are
-        today's engine paths, kept for identical numbers.
+        ``predict(h, data=new)`` forecasts from the same filtered state as
+        ``update(new).predict(h)``, without changing the model.
 
         Parameters
         ----------
@@ -824,8 +822,8 @@ class DFM(BaseFactorModel):
                 X, Z = self.engine_.predict(horizon=h)
             return X, Z, h, self.conditioning_index_
         X_new, extended = self._new_rows(data, method)
-        # Today's predict(data=): filter the new rows from the last smoothed
-        # state with V_0, on a copy of the engine (the model is unchanged).
+        # Continue the training filter over the new rows, on a copy of the
+        # engine (the model is unchanged).
         with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
             X, Z = copy.deepcopy(self.engine_).predict(horizon=h, data=X_new)
         return X, Z, h, extended
@@ -855,12 +853,11 @@ class DFM(BaseFactorModel):
         data : PanelData, DataFrame or 2-D array, optional
             New rows to condition on (tag ``predict_data="new_rows"``: only
             the rows strictly after ``conditioning_index_``, as for
-            :meth:`update`). The Kalman filter runs over them from the last
-            smoothed state with the initial covariance ``V_0``, on a copy of
-            the engine, and the forecast starts from the last filtered state
-            after ``data.index[-1]``. The model is unchanged. This is today's
-            engine path; it differs numerically from ``update(data)`` followed
-            by ``predict(h)`` (see :meth:`update`).
+            :meth:`update`). The Kalman filter continues over them from the
+            filter over the conditioning rows, on a copy of the engine, and
+            the forecast starts from the last filtered state after
+            ``data.index[-1]``. The model is unchanged; the forecast equals
+            ``update(data)`` followed by ``predict(h)``.
 
         Returns
         -------
@@ -942,11 +939,9 @@ class DFM(BaseFactorModel):
         with quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
             # The filter call update() starts from: its last covariance is P_T|T.
             try:
-                with np.errstate(all="ignore"):
-                    _, filtered_cov = engine._create_kalman_filter().filter(
-                        np.ma.masked_invalid(engine.data_processed))
+                _, filtered_cov = engine._create_kalman_filter().filter(engine.data_processed)
                 last_cov = filtered_cov[-1]
-            except (ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
+            except (NumericalError, ValueError, FloatingPointError, np.linalg.LinAlgError) as exc:
                 # The fitted parameters can make this filter non-finite (EM on some
                 # mixed-frequency panels); update() then raises the same error on the
                 # fitted and the loaded model. The covariance is informational (load

@@ -715,8 +715,8 @@ def test_update_filters_the_new_rows_with_fixed_parameters(split_fit):
     assert forecast[_MONTHLY + ["gdp"]].to_numpy().tobytes() == np.asarray(X).tobytes()
     assert model.predict_factors(3).to_numpy().tobytes() == np.asarray(Z).tobytes()
     assert forecast.index[0] == _frame().index[-1] + pd.offsets.MonthEnd(1)
-    # predict(h, data=new) on the fitted model is today's other path (V_0, filtered state): different numbers.
-    assert not np.allclose(fitted.predict(3, data=new).to_numpy(), forecast.to_numpy())
+    # predict(h, data=new) on the fitted model continues the same filter as update(new): the same forecast.
+    np.testing.assert_allclose(fitted.predict(3, data=new).to_numpy(), forecast.to_numpy(), rtol=1e-12, atol=1e-12)
     assert fitted.predict(3, data=new).index.equals(forecast.index)
 
 
@@ -882,13 +882,14 @@ def test_save_load_single_frequency_and_range_index(tmp_path):
 
 def test_save_when_the_training_filter_is_not_finite(split_fit, tmp_path, monkeypatch):
     """Some mixed-frequency fits leave parameters under which the Kalman filter over the training data is not
-    finite (pykalman raises ValueError); save stores the informational last covariance as NaN and warns."""
+    finite (the filter raises NumericalError); save stores the informational last covariance as NaN and warns."""
     from dfm_python.ssm.kalman import DFMKalmanFilter
+    from dfm_python.utils.errors import NumericalError
 
     model, _, _ = split_fit
 
     def not_finite(self, *args, **kwargs):
-        raise ValueError("array must not contain infs or NaNs")
+        raise NumericalError("Kalman filter: the filtered moments or the log-likelihood are not finite.")
 
     monkeypatch.setattr(DFMKalmanFilter, "filter", not_finite)
     with pytest.warns(RuntimeWarning, match="last_smoothed_cov is saved as NaN") as record:

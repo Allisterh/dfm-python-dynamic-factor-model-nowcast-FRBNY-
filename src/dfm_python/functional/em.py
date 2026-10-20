@@ -1,8 +1,9 @@
 """EM algorithm implementation for DFM.
 
 This module provides the Expectation-Maximization algorithm for DFM parameter estimation.
-Uses pykalman for the E-step (Kalman filter/smoother) and implements the M-step
-with block structure preservation.
+The E-step is ``ssm.kalman.DFMKalmanFilter`` (Kalman filter and Durbin-Koopman
+smoother with per-element missing data and the exact log-likelihood); the M-step
+is implemented here with block structure preservation.
 
 Includes numerical stability utilities to ensure convergence safety.
 """
@@ -27,10 +28,6 @@ from ..config.constants import (
     MAX_MSTEP_SECONDS,
     MAX_EM_ITERATION_SECONDS,
     MAX_FIRST_ITERATION_SECONDS,
-    MAX_CONDITION_NUMBER_SMOOTHER,
-    MAX_CONDITION_NUMBER_INIT,
-    MAX_STABILIZATION_AMOUNT,
-    MAX_STABILIZATION_AMOUNT_INIT,
     MAX_STD_UNSCALED,
     MIN_STD_SCALED,
     MAX_FALLBACKS_PER_ITERATION,
@@ -54,7 +51,6 @@ from ..config.constants import (
     DEFAULT_LOG_INTERVAL,
     DEFAULT_PROGRESS_LOG_INTERVAL,
     DEFAULT_TENT_KERNEL_SIZE,
-    MAX_EIGENVALUE,
 )
 from ..numeric.stability import (
     cap_max_eigenval,
@@ -65,7 +61,6 @@ from ..numeric.stability import (
     ensure_symmetric,
     stabilize_em_process_noise,
     stabilize_em_initial_covariance,
-    cap_smoothed_states,
     rescale_ssm_params_for_C_normalization,
 )
 from ..numeric.estimator import (
@@ -1173,7 +1168,8 @@ def em_step(
 ) -> Tuple[DFMModelState, float, Optional[DFMKalmanFilter]]:
     """Perform one EM step: E-step (Kalman filter/smoother) + M-step (parameter updates).
     
-    E-step uses pykalman for filtering/smoothing. M-step uses custom constrained updates
+    E-step: DFMKalmanFilter.filter_and_smooth on X with NaN (exact moments and
+    loglik at ``state``). M-step uses custom constrained updates
     that preserve block structure, mixed-frequency constraints, and idiosyncratic components.
     If block_structure is provided, uses blocked updates; otherwise uses unconstrained updates.
     
@@ -1215,35 +1211,18 @@ def em_step(
             tent_weights_dict=state.tent_weights_dict
         )
     
-    # E-step: Kalman filter and smoother (O(T × m³) complexity)
+    # E-step: Kalman filter and Durbin-Koopman smoother on X with NaN (per-element missing data)
     import time as time_module
     e_step_start = time_module.time()
-    X_masked = np.ma.masked_invalid(X)
-    
-    # Log E-step info (progress indicators will show filter and smooth progress)
+
     verbose_iterations = num_iter < 5
     if verbose_iterations:
-        T, m = X.shape[0], kalman_filter._pykalman.transition_matrices.shape[0] if kalman_filter._pykalman.transition_matrices is not None else 0
-        N = X.shape[1]
-        ops_estimate = T * (m ** 3) / 1e9  # Billion operations estimate
-        _logger.info(f"    E-step: Running Kalman filter + smoother (T={T}, N={N}, m={m}, ~{ops_estimate:.1f}B ops)...")
-        _logger.info("    E-step: Using filter_and_smooth() with automatic stabilization (complexity: O(T × m³))")
-    
-    try:
-        EZ, V_smooth, VVsmooth, loglik = kalman_filter.filter_and_smooth(X_masked)
-        # Cache smoothed factors, but they may become stale after damping
-        # Cache is invalidated after damping to prevent returning stale factors
-        kalman_filter._cached_smoothed_factors = EZ.copy()
-    except Exception as e:
-        raise
+        T, m, N = X.shape[0], A.shape[0], X.shape[1]
+        _logger.info(f"    E-step: Running Kalman filter + smoother (T={T}, N={N}, m={m})...")
 
-    EZ = EZ.astype(np.float64) if EZ.dtype != np.float64 else EZ
-    V_smooth = V_smooth.astype(np.float64) if V_smooth.dtype != np.float64 else V_smooth
-    VVsmooth = VVsmooth.astype(np.float64) if VVsmooth.dtype != np.float64 else VVsmooth
-    
-    # Cap extreme values in smoothed states EZ to prevent overflow in M-step
-    EZ = cap_smoothed_states(EZ, max_eigenval=MAX_EIGENVALUE, warn=True)
-    
+    EZ, V_smooth, VVsmooth, loglik = kalman_filter.filter_and_smooth(X)
+    kalman_filter._cached_smoothed_factors = EZ.copy()
+
     e_step_time = time_module.time() - e_step_start
     
     # GUARDRAIL: Time budget check for E-step
@@ -1284,9 +1263,8 @@ def em_step(
             _logger.info("      → Updating transition matrix A and process noise Q...")
         state = _update_transition_matrix_blocked(EZ, V_smooth, VVsmooth, state, config)
 
-        # Option B: Bound transition matrix A (critical for pykalman numerical stability).
-        # If A becomes large (e.g., |A|~1e3+), pykalman can overflow in A @ P @ A.T during filtering,
-        # which then poisons predicted_observation_covariance and causes pinv(...) to fail.
+        # Option B: Bound transition matrix A.
+        # If A becomes large (e.g., |A|~1e3+), the filter can overflow in A @ P @ A.T.
         A_capped = cap_max_eigenval(state.A, max_eigenval=config.max_eigenval, symmetric=False, warn=True)
         if not np.array_equal(A_capped, state.A):
             state = replace(state, A=A_capped)
@@ -1383,18 +1361,6 @@ def em_step(
                     f"M-step={m_step_time:.2f}s ({m_step_pct:.1f}%), "
                     f"Total={total_time:.2f}s (T={T}, m={m_dim})")
     
-    # GUARDRAIL: Check stabilization amount (if applied, should be logged as warning/error)
-    # Use more lenient threshold during initialization (first iteration)
-    if hasattr(kalman_filter, '_stabilization_applied') and kalman_filter._stabilization_applied:
-        max_stabilization = MAX_STABILIZATION_AMOUNT_INIT if num_iter == 0 else MAX_STABILIZATION_AMOUNT
-        if kalman_filter._stabilization_amount > max_stabilization:
-            raise NumericalError(
-                f"Stabilization amount ({kalman_filter._stabilization_amount:.2e}) exceeds maximum "
-                f"({max_stabilization:.2e}) in iteration {num_iter + 1}. "
-                f"This indicates severe numerical instability. Data likely unscaled.",
-                details=f"Stabilization was applied during E-step. Amount: {kalman_filter._stabilization_amount:.2e}"
-            )
-    
     return state, loglik, kalman_filter
 
 
@@ -1412,8 +1378,11 @@ def run_em_algorithm(
     convergence (relative log-likelihood change < threshold) or max_iter reached.
     Returns final state and training metadata (loglik, num_iter, converged, etc.).
     
-    NOTE: This implements a "stabilized generalized EM" procedure, not strict EM:
-    - Kalman stabilization biases E-step moments (uses P_t + εI instead of P_t)
+    The E-step is exact (no covariance regularization). If it fails after the
+    first iteration (non-finite filter at the latest parameters), EM stops and
+    returns the parameters of the last E-step that succeeded, with its loglik.
+
+    NOTE: The M-step is not yet a strict EM step:
     - C normalization breaks state-space invariance (unless properly rescaled)
     - Damping breaks monotonicity (convergence uses undamped loglik)
     - Block C-update uses sequential objectives (OLS → constraint → normalization)
@@ -1423,7 +1392,7 @@ def run_em_algorithm(
     - Convergence point may depend on stabilization/normalization schedule
     - EM fixed point is not likelihood stationary
     
-    For strict EM, disable stabilization, normalization, and damping.
+    For strict EM, disable normalization and damping.
     """
 
     if config is None:
@@ -1469,6 +1438,9 @@ def run_em_algorithm(
         )
     
     previous_loglik = float('-inf')
+    # Input parameters and loglik of the last iteration whose E-step succeeded.
+    previous_input_state = initial_state
+    previous_input_loglik = float('-inf')
     num_iter = 0
     converged = False
     loglik = float('-inf')
@@ -1482,7 +1454,6 @@ def run_em_algorithm(
     iteration_times = []
     
     _logger.info(f"Starting EM algorithm: max_iter={max_iter}, threshold={threshold:.2e}")
-    _logger.info("NOTE: This implements 'stabilized generalized EM' - see docstring for details.")
     if block_structure is not None:
         total_factors = int(np.sum(state.r)) if state.r is not None else 0
         _logger.info(f"  Block structure: {state.blocks.shape[1] if state.blocks is not None else 0} blocks, {total_factors} factors")
@@ -1498,72 +1469,59 @@ def run_em_algorithm(
         if num_iter < 3:
             _logger.info(f"Starting iteration {num_iter + 1}/{max_iter}...")
         
-        # Parameters from the last iteration that passed the finiteness check.
-        # Returned instead of the non-finite update if this iteration diverges.
+        # Parameters this iteration starts from (and whose E-step it runs).
+        # Returned instead of the update if the M-step output is not usable.
         last_finite_state = state
-        
+
         try:
             state, loglik, kalman_filter_updated = em_step(
                 X, state, kalman_filter=kalman_filter, config=config,
                 block_structure=block_structure, num_iter=num_iter
             )
-            
-            # Track undamped loglik for convergence checks
-            # Damping breaks EM monotonicity, so we need separate tracking
-            loglik_undamped = loglik
-            damping_applied = False
-            
-            if config.damping_factor is not None and 0 < config.damping_factor <= 1:
-                alpha = config.damping_factor
-                A_damped = alpha * state.A + (1 - alpha) * previous_state.A if previous_state.A is not None else state.A
-                C_damped = alpha * state.C + (1 - alpha) * previous_state.C if previous_state.C is not None else state.C
-                Q_damped = alpha * state.Q + (1 - alpha) * previous_state.Q if previous_state.Q is not None else state.Q
-                R_damped = alpha * state.R + (1 - alpha) * previous_state.R if previous_state.R is not None else state.R
-                Z_0_damped = alpha * state.Z_0 + (1 - alpha) * previous_state.Z_0 if previous_state.Z_0 is not None else state.Z_0
-                V_0_damped = alpha * state.V_0 + (1 - alpha) * previous_state.V_0 if previous_state.V_0 is not None else state.V_0
-                state = replace(state, A=A_damped, C=C_damped, Q=Q_damped, R=R_damped, Z_0=Z_0_damped, V_0=V_0_damped)
-                damping_applied = True
-                
-                # Damping breaks EM monotonicity
-                # After damping, loglik is for damped parameters, not M-step optimum
-                # We cannot use damped loglik for convergence - it's not a Lyapunov function
-                # Recompute loglik with damped parameters for tracking, but don't use for convergence
-                try:
-                    kalman_filter_damped = DFMKalmanFilter(
-                        transition_matrices=state.A,
-                        observation_matrices=state.C,
-                        transition_covariance=state.Q,
-                        observation_covariance=state.R,
-                        initial_state_mean=state.Z_0,
-                        initial_state_covariance=state.V_0
-                    )
-                    X_masked = np.ma.masked_invalid(X)
-                    _, _, _, loglik_damped = kalman_filter_damped.filter_and_smooth(X_masked, compute_loglik=True)
-                    loglik = loglik_damped  # Use damped loglik for display, but track undamped separately
-                except Exception as e:
-                    _logger.warning(f"Failed to recompute loglik after damping: {e}. Using undamped loglik.")
-                    loglik = loglik_undamped
-                
-                # Invalidate cached smoothed factors after damping
-                # Damping changes parameters, so cached factors are no longer valid
-                if kalman_filter is not None and hasattr(kalman_filter, '_cached_smoothed_factors'):
-                    kalman_filter._cached_smoothed_factors = None
-                    _logger.debug("Invalidated Kalman filter cached smoothed factors after damping")
-                
-                if num_iter < 3:
-                    _logger.info(f"  Applied damping: {alpha*100:.0f}% new, {(1-alpha)*100:.0f}% old")
-                    _logger.warning(
-                        "Damping breaks EM monotonicity guarantee. "
-                        "Convergence checks use undamped loglik. Damped loglik shown for reference only."
-                    )
-            
-            previous_state = state
+        except NumericalError as e:
+            if num_iter == 0:
+                _logger.error(f"EM step failed at iteration 1: {e}", exc_info=True)
+                raise RuntimeError(f"EM algorithm failed at iteration 1: {e}") from e
+            # The Kalman filter is not finite (or an innovation covariance is not
+            # positive definite) at the parameters of the previous M-step: keep the
+            # parameters of the last E-step that succeeded and its loglik.
+            _logger.error(
+                f"EM: the E-step failed at iteration {num_iter + 1} ({e}); stopping and returning "
+                f"the parameters of iteration {num_iter}."
+            )
+            state = previous_input_state
+            loglik = previous_input_loglik
+            break
         except Exception as e:
             _logger.error(f"EM step failed at iteration {num_iter + 1}: {e}", exc_info=True)
             _logger.error(f"  Current parameters shapes - A: {state.A.shape if state.A is not None else None}, C: {state.C.shape if state.C is not None else None}, Q: {state.Q.shape if state.Q is not None else None}, R: {state.R.shape if state.R is not None else None}")
             _logger.error(f"  Data shape: {X.shape}, Block structure: {block_structure is not None}")
             raise RuntimeError(f"EM algorithm failed at iteration {num_iter + 1}: {e}") from e
-        
+        # The E-step of this iteration succeeded: its input parameters and loglik
+        # are the fallback if a later E-step fails.
+        previous_input_state = last_finite_state
+        previous_input_loglik = loglik
+
+        # Track undamped loglik for convergence checks
+        loglik_undamped = loglik
+        damping_applied = False
+
+        if config.damping_factor is not None and 0 < config.damping_factor <= 1:
+            alpha = config.damping_factor
+            A_damped = alpha * state.A + (1 - alpha) * previous_state.A if previous_state.A is not None else state.A
+            C_damped = alpha * state.C + (1 - alpha) * previous_state.C if previous_state.C is not None else state.C
+            Q_damped = alpha * state.Q + (1 - alpha) * previous_state.Q if previous_state.Q is not None else state.Q
+            R_damped = alpha * state.R + (1 - alpha) * previous_state.R if previous_state.R is not None else state.R
+            Z_0_damped = alpha * state.Z_0 + (1 - alpha) * previous_state.Z_0 if previous_state.Z_0 is not None else state.Z_0
+            V_0_damped = alpha * state.V_0 + (1 - alpha) * previous_state.V_0 if previous_state.V_0 is not None else state.V_0
+            state = replace(state, A=A_damped, C=C_damped, Q=Q_damped, R=R_damped, Z_0=Z_0_damped, V_0=V_0_damped)
+            damping_applied = True
+            if num_iter < 3:
+                _logger.info(f"  Applied damping: {alpha*100:.0f}% new, {(1-alpha)*100:.0f}% old")
+                _logger.warning("Damping breaks the EM monotonicity guarantee.")
+
+        previous_state = state
+
         params_finite = all(np.isfinite(p).all() if isinstance(p, np.ndarray) else np.isfinite(p)
                             for p in [state.A, state.C, state.Q, state.R, state.Z_0, state.V_0])
         if not (params_finite and np.isfinite(loglik)):
@@ -1684,22 +1642,18 @@ def run_em_algorithm(
         model_type="dfm"
     )
     
-    # Only return cached factors if they're still valid (not invalidated by damping)
-    # If cache was invalidated, recompute with final parameters
-    if kalman_filter._cached_smoothed_factors is None:
-        X_masked = np.ma.masked_invalid(X)
-        try:
-            EZ_cached, _, _, _ = kalman_filter.filter_and_smooth(X_masked, compute_loglik=False)
-            kalman_filter._cached_smoothed_factors = EZ_cached
-        except Exception as e:
-            # Option A: Never fail the whole fit just because the *final* cache recomputation is unstable.
-            # We already have a valid model state and may have cached factors from the last successful E-step.
-            _logger.warning(
-                f"Final filter_and_smooth() failed while recomputing smoothed factors ({type(e).__name__}: {e}). "
-                f"Returning last cached factors if available."
-            )
-            # Keep _cached_smoothed_factors as-is (may be None). Downstream code should handle this.
-    
+    # Smoothed states at the returned parameters.
+    try:
+        kalman_filter.update_parameters(state.A, state.C, state.Q, state.R, state.Z_0, state.V_0)
+        EZ_final, _, _, _ = kalman_filter.filter_and_smooth(X)
+        kalman_filter._cached_smoothed_factors = EZ_final
+    except (NumericalError, ValueError) as e:
+        _logger.warning(
+            f"Final filter_and_smooth() failed at the returned parameters ({type(e).__name__}: {e}); "
+            f"no smoothed factors are cached."
+        )
+        kalman_filter._cached_smoothed_factors = None
+
     metadata = {
         'loglik': loglik,
         'num_iter': num_iter,

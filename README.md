@@ -24,7 +24,7 @@ pip install dfm-python        # or: uv add dfm-python
 ```
 
 Python 3.10 or later. The runtime dependencies are numpy, pandas, scipy,
-scikit-learn, torch, pykalman and einops. Optional extras:
+scikit-learn, torch and einops. Optional extras:
 
 | Extra     | Adds              | Needed for                                                  |
 |-----------|-------------------|-------------------------------------------------------------|
@@ -221,12 +221,14 @@ model = DFM.load("runs/dfm")                            # no data needed
   forecasts).
 - **New rows.** `predict(h, data=)` and `update` take only the rows after
   the last conditioning date, with the training series and frequencies; an
-  overlap raises `DataValidationError`. They are the engine's two paths and
-  give different numbers (see [update and predict(data=)](#update-and-predictdata)).
+  overlap raises `DataValidationError`. Both continue the Kalman filter over
+  the conditioning rows and give the same forecast (see
+  [update and predict(data=)](#update-and-predictdata)).
 - **Known engine issues.** The engine is kept as it was, for identical
   numbers, so these remain until a separate fix:
-  - mixed-frequency fits report `result_.loglik` as exactly `-T/2` (`-57.0`
-    for the 114 fitted rows above), which is not a usable log-likelihood;
+  - EM reports the log-likelihood of its last E-step, i.e. of the
+    parameters before the last M-step, not of the returned parameters, and
+    the M-step does not yet guarantee a non-decreasing log-likelihood;
   - on some mixed-frequency panels (for example truncated slices of
     `data/macro.csv`, or the full file with `config/dfm_macro.yaml`) EM
     diverges or leaves parameters under which the Kalman filter is not
@@ -409,16 +411,15 @@ the model: it runs on a copy.
 
 | Model | `update_kind` | `update(data)` | `update(data, refit=True)` | `predict_data` | `data=` / `update` take |
 |-------|---------------|----------------|----------------------------|----------------|-------------------------|
-| DFM   | `filter` | Kalman filter and smoother over the new rows from the last smoothed state and the last filtered covariance; `result_` unchanged | one EM iteration on all rows; refreshes `result_`, `n_iter_`, `converged_`, `loglik_`, `factors_` | `new_rows` | only the rows after the last conditioning date; overlap raises `DataValidationError` |
+| DFM   | `filter` | the Kalman filter continues over the new rows (prior `(A x_T|T, A P_T|T A' + Q)` from the filter over the conditioning rows) and appends their filtered states; `result_` unchanged | one EM iteration on all rows; refreshes `result_`, `n_iter_`, `converged_`, `loglik_`, `factors_` | `new_rows` | only the rows after the last conditioning date; overlap raises `DataValidationError` |
 | DDFM  | `encoder_forward_rescale` | encodes every row with the trained weights and refits the target scaler | `UnsupportedInputError` | `full_panel` | the full panel: training rows plus new ones |
 | iVDFM | `encoder_forward` | encoder forward pass with the fixed weights; appends the factors | `UnsupportedInputError` | `window` | any window: every row is encoded and the last state starts the forecast |
 | AFM   | `reattach` | attaches the data for later `allocate()` | continues training from the current weights | (none) | `update` and `allocate(data=)` take any panel with the training assets and characteristics |
 
-For DDFM and iVDFM, `predict(h, data=d)` equals `update(d)` followed by
-`predict(h)`. For DFM they differ: `predict(h, data=)` filters the new rows
-from the initial covariance `V_0` and forecasts from the last filtered state,
-while `update` starts from the last filtered covariance, as the old engine
-did.
+For DFM, DDFM and iVDFM, `predict(h, data=d)` equals `update(d)` followed by
+`predict(h)`. For DFM both run the Kalman filter over the conditioning rows
+and the new rows in one pass (one new row and many new rows take the same
+path) and forecast from the last filtered state.
 
 ## Saving and loading
 

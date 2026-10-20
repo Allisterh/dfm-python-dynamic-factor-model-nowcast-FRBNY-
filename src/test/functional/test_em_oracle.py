@@ -7,9 +7,8 @@ each iterate is then computed with the independent reference filter
 (``src/test/ssm/_reference_kf.py``). EM must not decrease it (tolerance 1e-6
 relative).
 
-Today's EM (an E-step that drops every row with a NaN and reports ``-T/2``,
-and an M-step that is not an ascent step) fails these; they are
-``xfail(strict=True)`` until the fix lands.
+The E-step is exact, but today's M-step is not an ascent step, so these tests
+are ``xfail(strict=True)`` until the M-step is fixed.
 """
 
 from __future__ import annotations
@@ -23,7 +22,7 @@ import pytest
 
 from ..ssm import _reference_kf as ref
 
-PRE_FIX = "pre-fix E-step: row-dropping + -T/2 loglik"
+PRE_FIX = "pre-fix M-step: not an ascent step (stabilization caps, C normalization, misaligned moments)"
 MONOTONE_RTOL = 1e-6
 PARAMS = ("A", "C", "Q", "R", "Z_0", "V_0")
 

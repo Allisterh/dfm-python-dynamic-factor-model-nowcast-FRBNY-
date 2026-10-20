@@ -1,4 +1,4 @@
-"""Linear Dynamic Factor Model (DFM) engine: EM with NumPy and pykalman.
+"""Linear Dynamic Factor Model (DFM) engine: EM with NumPy and an in-house Kalman filter/smoother.
 
 ``DFMEngine`` is the private engine of the linear DFM. Its code is the
 pre-redesign ``DFM`` class (``models/dfm/dfm.py``) moved here unchanged,
@@ -49,7 +49,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-# NumPy-based Kalman filter (pykalman) - now a required dependency
+# NumPy Kalman filter and Durbin-Koopman smoother (ssm/kalman.py)
 from ...ssm.kalman import DFMKalmanFilter
 
 # Local imports
@@ -107,7 +107,7 @@ def _init_engine_state(engine: Any) -> None:
 
 
 class DFMEngine:
-    """Linear Dynamic Factor Model using EM algorithm with NumPy and pykalman."""
+    """Linear Dynamic Factor Model using the EM algorithm (NumPy E-step and M-step)."""
     
     def __init__(
         self,
@@ -400,9 +400,9 @@ class DFMEngine:
         X: Optional[Union[np.ndarray, Any]] = None,
         checkpoint_callback: Optional[Any] = None
     ) -> DFMModelState:
-        """Fit model using EM algorithm (wrapper around pykalman).
+        """Fit model using the EM algorithm.
         
-        Uses pykalman for E-step (Kalman filter/smoother) and custom M-step
+        Uses DFMKalmanFilter for the E-step (Kalman filter/smoother) and a custom M-step
         that preserves block structure and mixed-frequency constraints.
         
         Parameters
@@ -647,46 +647,25 @@ class DFMEngine:
             _logger.debug("Using cached smoothed factors from last EM iteration (skipping recomputation)")
             return self._cached_smoothed_factors
         
-        # Fallback: compute smoothed factors (should rarely happen if EM completed successfully)
+        # Fallback: compute smoothed factors (should rarely happen if EM completed successfully).
+        # The filter raises NumericalError when the parameters make it non-finite.
         _logger.debug("Computing smoothed factors (cache not available)")
-        try:
-            kalman_final = self._create_kalman_filter()
-            y_masked = np.ma.masked_invalid(self.data_processed)
-            # Use filter_and_smooth() with compute_loglik=False to save time (log-likelihood already known)
-            # This prevents SVD convergence failures with ill-conditioned covariance matrices
-            smoothed_state_means, _, _, _ = kalman_final.filter_and_smooth(y_masked, compute_loglik=False)
-            return smoothed_state_means
-        except (ValueError, FloatingPointError, OverflowError) as e:
-            if "infs or NaNs" in str(e) or "overflow" in str(e).lower() or "not contain infs" in str(e):
-                # Parameters are too unstable to recompute factors
-                # This can happen if EM converged to numerically unstable parameters
-                # Raise a clear error with diagnostic information
-                param_status = {}
-                if self.training_state is not None:
-                    for name, param in [
-                        ('A', self.training_state.A),
-                        ('C', self.training_state.C),
-                        ('Q', self.training_state.Q),
-                        ('R', self.training_state.R),
-                        ('V_0', self.training_state.V_0),
-                    ]:
-                        if param is not None:
-                            n_inf = np.sum(np.isinf(param))
-                            n_nan = np.sum(np.isnan(param))
-                            if n_inf > 0 or n_nan > 0:
-                                param_status[name] = f"{n_inf} Inf, {n_nan} NaN"
-                
-                error_msg = (
-                    f"Cannot compute smoothed factors: final parameters contain non-finite values. "
-                    f"This indicates numerical instability in the fitted model. "
-                    f"Parameter status: {param_status if param_status else 'all finite'}. "
-                    f"Consider: (1) reducing model complexity (fewer factors/blocks), "
-                    f"(2) increasing regularization, (3) checking data scaling."
-                )
-                raise NumericalError(error_msg, details=f"Original error: {type(e).__name__}: {e}") from e
-            else:
-                raise
-    
+        kalman_final = self._create_kalman_filter()
+        smoothed_state_means, _, _, _ = kalman_final.filter_and_smooth(self.data_processed)
+        return smoothed_state_means
+
+    def _filter_new_rows(self, data_new: np.ndarray) -> np.ndarray:
+        """Filtered states of ``data_new``, continuing the training filter.
+
+        Runs the Kalman filter with the fitted parameters over all rows the
+        model conditions on (``data_processed``) followed by ``data_new``, so the
+        prior of the first new row is ``(A x_T|T, A P_T|T A' + Q)``, and returns
+        the filtered means ``x_t|t`` of the new rows (T_new x m).
+        """
+        X_all = np.vstack([self.data_processed, data_new])
+        filtered_means, _ = self._create_kalman_filter().filter(X_all)
+        return np.asarray(filtered_means[-data_new.shape[0]:], dtype=DEFAULT_DTYPE)
+
     def get_result(self) -> DFMResult:
         """Extract DFMResult from trained model.
         
@@ -846,54 +825,11 @@ class DFMEngine:
             self._cached_smoothed_factors = None
             _logger.debug("Invalidated cached smoothed factors due to retrain")
         else:
-            # Only update state via Kalman filter
+            # Only update the state: continue the training filter over the new rows
+            # (one code path for one and for many rows) and append their filtered states.
             result = self._ensure_result()
-            
-            # Get last smoothed state as initial state for new data
-            Z_last = self._get_last_state(result)
-            
-            # Use last filtered covariance, not initial covariance V_0
-            # V_0 is initial state covariance, not the covariance of the last filtered state
-            # We need to run filter once to get the last filtered covariance
-            kalman_temp = self._create_kalman_filter()
-            y_masked_temp = np.ma.masked_invalid(self.data_processed)
-            # Run filter to get filtered covariances
-            filtered_states, filtered_covariances = kalman_temp.filter(y_masked_temp)
-            # Get last filtered covariance (T x m x m) -> (m x m)
-            if filtered_covariances.shape[0] > 0:
-                V_last = filtered_covariances[-1, :, :]
-            else:
-                # Fallback to initial covariance if no filtered states
-                V_last = result.V_0
-                _logger.warning(
-                    "No filtered covariances available, using initial covariance V_0. "
-                    "This may underestimate uncertainty in update()."
-                )
-            
-            # Create Kalman filter
-            kalman_new = self._create_kalman_filter(
-                initial_state_mean=Z_last,
-                initial_state_covariance=V_last
-            )
-            
-            # Run filter and smooth on new data
-            y_masked = np.ma.masked_invalid(data_new)
-            
-            # Handle single timestep case (pykalman quirk)
-            if hasattr(data_new, "shape") and len(data_new.shape) == 2 and int(data_new.shape[0]) == 1:
-                pk = getattr(kalman_new, "_pykalman", None)
-                if pk is None:
-                    raise ModelNotTrainedError("Kalman filter not initialized for update()")
-                obs = np.ma.masked_invalid(data_new[0])
-                next_mean, _ = pk.filter_update(
-                    filtered_state_mean=Z_last,
-                    filtered_state_covariance=V_last,
-                    observation=obs,
-                )
-                Z_new = np.asarray(next_mean, dtype=DEFAULT_DTYPE)[np.newaxis, :]
-            else:
-                Z_new, _, _, _ = kalman_new.filter_and_smooth(y_masked, compute_loglik=False)
-            
+            Z_new = self._filter_new_rows(data_new)
+
             # Update model state
             result.Z = np.vstack([result.Z, Z_new])
             self.data_processed = np.vstack([self.data_processed, data_new])
@@ -966,24 +902,8 @@ class DFMEngine:
             if self.scaler is not None:
                 data_new = self.scaler.transform(data_new)
             
-            # Get last smoothed state from training as initial state
-            Z_initial = self._get_last_state(result)
-            V_initial = result.V_0
-            
-            # Create Kalman filter and run forward pass
-            kalman_filter = self._create_kalman_filter(
-                initial_state_mean=Z_initial,
-                initial_state_covariance=V_initial
-            )
-            
-            y_masked = np.ma.masked_invalid(data_new)
-            filtered_states, _ = kalman_filter.filter(y_masked)
-            
-            # Extract last filtered state
-            if has_shape_with_min_dims(filtered_states, min_dims=1) and filtered_states.shape[0] > 0:
-                Z_last = filtered_states[-1, :]
-            else:
-                Z_last = Z_initial
+            # Continue the training filter over the new rows; forecast from x_T+n|T+n.
+            Z_last = self._filter_new_rows(data_new)[-1]
         else:
             # Use latest training state
             fallback = np.zeros(result.A.shape[0], dtype=DEFAULT_DTYPE) if result.A is not None else None

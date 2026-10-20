@@ -3,9 +3,10 @@
 The engine is the pre-redesign DFM class, moved and renamed, with one import
 fixed: ``update()`` imported ``..numeric.validator`` (the non-existent
 ``dfm_python.models.numeric``) and always raised ``ModuleNotFoundError``.
-These tests cover ``update()`` without any import shim (several rows, through
-the filter-and-smooth branch, and one row, through pykalman's
-``filter_update``), the purity of ``predict(horizon, data=)``, that the public
+These tests cover ``update()`` without any import shim (several rows and one
+row, both continuing the training filter, checked against the independent
+reference filter in ``src/test/ssm/_reference_kf.py``), the purity of
+``predict(horizon, data=)``, that the public
 ``DFM`` names the estimator, not the engine, the engine's surface after the
 removal of its old entry points (``load_config``, the pickle ``save``/``load``,
 ``reset``, ``result``, the default horizon and the old base class), and the
@@ -68,10 +69,13 @@ def _new_rows(n: int) -> np.ndarray:
     return _panel(60 + n, seed=1).iloc[-n:, 1:].to_numpy(np.float64)
 
 
-def _start_state(model: DFMEngine) -> tuple[np.ndarray, np.ndarray]:
-    """The state update() starts from: last smoothed mean, last filtered covariance."""
-    cov = model._create_kalman_filter().filter(np.ma.masked_invalid(model.data_processed))[1]
-    return model.get_result().Z[-1].copy(), cov[-1].copy()
+def _reference_filtered_new_rows(model: DFMEngine, new_std: np.ndarray) -> np.ndarray:
+    """Filtered means of the new rows from the reference filter over the training and the new rows."""
+    from ..ssm import _reference_kf as ref
+
+    p = [getattr(model, k) for k in _PARAMS]
+    X_all = np.vstack([model.data_processed, new_std])
+    return ref.kalman_filter(*p, X_all)["fm"][-new_std.shape[0]:]
 
 
 def _params(model: DFMEngine) -> dict[str, np.ndarray]:
@@ -88,18 +92,16 @@ def test_update_multiple_rows(fitted):
     params = _params(model)
     Z_before = model.get_result().Z.copy()
     data_before = model.data_processed.copy()
-    Z_last, V_last = _start_state(model)
     new = _new_rows(4)
     new_std = model.scaler.transform(new)
-    expected = model._create_kalman_filter(Z_last, V_last).filter_and_smooth(
-        np.ma.masked_invalid(new_std), compute_loglik=False)[0]
+    expected = _reference_filtered_new_rows(model, new_std)
 
     assert model.update(new) is None
 
     result = model.get_result()
     assert result.Z.shape == (Z_before.shape[0] + 4, Z_before.shape[1])
     np.testing.assert_array_equal(result.Z[:-4], Z_before, strict=True)
-    np.testing.assert_array_equal(result.Z[-4:], expected, strict=True)
+    np.testing.assert_allclose(result.Z[-4:], expected, rtol=1e-9, atol=1e-11)
     np.testing.assert_array_equal(result.x_sm, result.Z @ result.C.T, strict=True)
     np.testing.assert_array_equal(model.data_processed, np.vstack([data_before, new_std]), strict=True)
     _assert_params_unchanged(model, params)
@@ -107,25 +109,22 @@ def test_update_multiple_rows(fitted):
     assert "dfm_python.models.numeric" not in sys.modules
 
 
-def test_update_single_row_uses_filter_update(fitted):
+def test_update_single_row_continues_the_training_filter(fitted):
     model = fitted
     params = _params(model)
     Z_before = model.get_result().Z.copy()
-    Z_last, V_last = _start_state(model)
     new = _new_rows(1)
     new_std = model.scaler.transform(new)
-    pk = model._create_kalman_filter(Z_last, V_last)._pykalman
-    expected, _ = pk.filter_update(filtered_state_mean=Z_last, filtered_state_covariance=V_last,
-                                   observation=np.ma.masked_invalid(new_std[0]))
+    expected = _reference_filtered_new_rows(model, new_std)
 
     with mock.patch.object(DFMKalmanFilter, "filter_and_smooth",
-                           side_effect=AssertionError("one row must not use filter_and_smooth")):
+                           side_effect=AssertionError("update must filter, not smooth")):
         model.update(new)
 
     Z = model.get_result().Z
     assert Z.shape == (Z_before.shape[0] + 1, Z_before.shape[1])
     np.testing.assert_array_equal(Z[:-1], Z_before, strict=True)
-    np.testing.assert_array_equal(Z[-1], np.asarray(expected, dtype=np.float64), strict=True)
+    np.testing.assert_allclose(Z[-1], expected[0], rtol=1e-9, atol=1e-11)
     assert model.data_processed.shape[0] == Z.shape[0]
     _assert_params_unchanged(model, params)
 

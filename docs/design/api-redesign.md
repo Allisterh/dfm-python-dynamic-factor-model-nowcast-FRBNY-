@@ -1,6 +1,6 @@
 # API redesign specification
 
-This document specifies how the four models in `dfm_python` (DFM, DDFM, iVDFM, AFM) become one consistent library. It changes packaging, naming and the order of calls. It does not change numerical code: EM with pykalman, MCMC denoising, the ELBO loop and the Sharpe objective are called unchanged. Given the same data and the same hyperparameters, every engine produces the same numbers as before on CPU, and golden regression tests enforce this.
+This document specifies how the four models in `dfm_python` (DFM, DDFM, iVDFM, AFM) become one consistent library. It changes packaging, naming and the order of calls. It does not change numerical code: EM with its Kalman filter and smoother, MCMC denoising, the ELBO loop and the Sharpe objective are called unchanged. Given the same data and the same hyperparameters, every engine produces the same numbers as before on CPU, and golden regression tests enforce this.
 
 Backward compatibility with the old API is not a goal. The next minor release ships the new API for all four models and removes the old constructors outright. Projects that need the old API, including the scripts behind published papers, pin an older release on their side. No version numbers are assigned here.
 

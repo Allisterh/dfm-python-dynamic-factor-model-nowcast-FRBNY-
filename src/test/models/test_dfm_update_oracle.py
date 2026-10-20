@@ -9,9 +9,8 @@ pass, so ``predict_factors(h)[k-1] = A^k x_{T+n|T+n}`` (rel 1e-8). Updating
 with ``n`` rows at once and one row at a time must agree, and
 ``predict_factors(h, data=new)`` must use the same continuation.
 
-Today's update starts the new segment from the last smoothed state without a
-transition step (multi-row) and predict(data=) also restarts from ``V_0``;
-those tests are ``xfail(strict=True)`` until the fix lands.
+``update`` and ``predict(data=)`` continue the filter over the conditioning
+rows: the prior of the first new row is ``(A x_T|T, A P_T|T A' + Q)``.
 """
 
 from __future__ import annotations
@@ -27,11 +26,6 @@ from ..ssm import _reference_kf as ref
 
 RTOL = 1e-8
 H = 4
-PRE_FIX = "pre-fix update/predict(data=): new segment starts one transition early / from V_0"
-
-
-def _xfail():
-    return pytest.mark.xfail(strict=True, reason=PRE_FIX)
 
 
 def _fit(n_new: int):
@@ -82,7 +76,7 @@ def _quiet(fn, *args, **kwargs):
         logging.disable(logging.NOTSET)
 
 
-@pytest.mark.parametrize("n_new", [pytest.param(1, marks=_xfail()), pytest.param(5, marks=_xfail())])
+@pytest.mark.parametrize("n_new", [1, 5])
 def test_update_continues_the_training_filter(n_new):
     """After update(new rows) the forecast starts from the reference x_{T+n|T+n} (rel 1e-8)."""
     model, _, new, X_all = _fit(n_new)
@@ -92,7 +86,6 @@ def test_update_continues_the_training_filter(n_new):
     assert ref.rel_err(got, expected) < RTOL
 
 
-@_xfail()
 def test_update_one_row_at_a_time_matches_all_at_once():
     """update(5 rows) and five update(1 row) calls end in the same state (rel 1e-8)."""
     model, _, new, _ = _fit(5)
@@ -109,7 +102,7 @@ def test_update_one_row_at_a_time_matches_all_at_once():
     assert ref.rel_err(a, b) < RTOL
 
 
-@pytest.mark.parametrize("n_new", [pytest.param(1, marks=_xfail()), pytest.param(5, marks=_xfail())])
+@pytest.mark.parametrize("n_new", [1, 5])
 def test_predict_with_data_continues_the_training_filter(n_new):
     """predict_factors(h, data=new) forecasts from the reference x_{T+n|T+n} (rel 1e-8), model unchanged."""
     model, _, new, X_all = _fit(n_new)

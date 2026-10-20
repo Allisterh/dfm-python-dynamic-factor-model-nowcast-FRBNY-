@@ -1,7 +1,7 @@
 """State-space model (SSM) modules.
 
 This package provides:
-- DFMKalmanFilter: Kalman filtering for DFM using pykalman
+- DFMKalmanFilter: Kalman filter and Durbin-Koopman smoother for the DFM E-step (per-element missing data, exact log-likelihood)
 - BaseSSM: Base class for SSMs in iVDFM (innovations → factors)
 - iVDFMCompanionSSM: Companion form SSM for iVDFM (block-diagonal, supports p=1 and p>1)
 - CompanionSSM: Companion form state-space models (optional, for DDFM)

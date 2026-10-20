@@ -9,7 +9,7 @@ Model::
     x_{t+1} = A x_t + w_t,   w_t ~ N(0, Q)
     y_t     = C x_t + v_t,   v_t ~ N(0, R)
 
-Timing (the convention of pykalman and of statsmodels' ``initialize_known``):
+Timing (the convention of the DFM E-step and of statsmodels' ``initialize_known``):
 ``x_0 ~ N(Z_0, V_0)`` is the state AT data row 0, so the prediction for row 0
 is ``(Z_0, V_0)`` and the first transition is applied before row 1.
 
@@ -19,7 +19,7 @@ and a row with nothing observed contributes nothing (prediction only). The
 log-likelihood is the exact Gaussian log density of the observed entries,
 accumulated from the predictive densities in the same forward pass.
 
-Lag-one covariances use pykalman's ``_smooth_pair`` layout:
+Lag-one covariances use the DFM M-step's layout:
 ``pair[t] = Cov(x_t, x_{t-1} | Y)`` for ``t >= 1`` and ``pair[0] = 0``.
 statsmodels' ``smoothed_state_autocov[:, :, t]`` is ``Cov(x_{t+1}, x_t | Y)``,
 i.e. ``pair[t + 1]``.

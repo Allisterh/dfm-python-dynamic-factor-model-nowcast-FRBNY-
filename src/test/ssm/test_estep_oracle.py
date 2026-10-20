@@ -9,10 +9,10 @@ statsmodels' ``KalmanSmoother``.
 The engine is then compared with the reference at FIXED parameters: the fitted
 parameters of the DFM golden fixtures (on the standardized data the engine fed
 to EM, rebuilt from the case recipes), the synthetic fixture with a few NaN,
-and random models. Today's engine (pykalman with row-dropping on any NaN, a
-``-T/2`` log-likelihood when the data hold NaN, and stabilized covariances)
-fails these comparisons; those tests are ``xfail(strict=True)`` until the
-E-step is replaced.
+and random models. The engine must match the reference loglik to 1e-8 and the
+smoothed moments to 1e-6 (relative). The fitted loglik test stays
+``xfail(strict=True)`` until EM reports the loglik of the parameters it
+returns (today it reports the E-step before the last M-step).
 """
 
 from __future__ import annotations
@@ -26,8 +26,7 @@ import pytest
 from . import _reference_kf as ref
 
 FIXTURES = ("dfm_synthetic", "dfm_macro_monthly_quarterly", "dfm_macro_weekly_monthly")
-PRE_FIX = "pre-fix E-step: row-dropping + -T/2 loglik"
-PRE_FIX_STAB = "pre-fix E-step: stabilized parameters and smoother covariances"
+PRE_FIX = "EM reports the loglik of the E-step before the last M-step, not of the returned parameters"
 
 LOGLIK_RTOL = 1e-8
 MOMENT_RTOL = 1e-6
@@ -182,26 +181,10 @@ def test_reference_matches_statsmodels(name):
 
 # ----------------------------------------------- the engine at fixed parameters
 
-_ENGINE_LOGLIK_CASES = [
-    pytest.param("random_full", id="random_full"),
-    pytest.param("dfm_synthetic", id="dfm_synthetic", marks=_xfail(PRE_FIX_STAB)),
-    pytest.param("dfm_synthetic_nan", id="dfm_synthetic_nan", marks=_xfail()),
-    pytest.param("dfm_macro_monthly_quarterly", id="dfm_macro_monthly_quarterly", marks=_xfail()),
-    pytest.param("dfm_macro_weekly_monthly", id="dfm_macro_weekly_monthly", marks=_xfail()),
-    pytest.param("random_40pct_nan", id="random_40pct_nan", marks=_xfail()),
-]
-
-_ENGINE_MOMENT_CASES = [
-    pytest.param("random_full", id="random_full", marks=_xfail(PRE_FIX_STAB)),
-    pytest.param("dfm_synthetic", id="dfm_synthetic", marks=_xfail(PRE_FIX_STAB)),
-    pytest.param("dfm_synthetic_nan", id="dfm_synthetic_nan", marks=_xfail()),
-    pytest.param("dfm_macro_monthly_quarterly", id="dfm_macro_monthly_quarterly", marks=_xfail()),
-    pytest.param("dfm_macro_weekly_monthly", id="dfm_macro_weekly_monthly", marks=_xfail()),
-    pytest.param("random_40pct_nan", id="random_40pct_nan", marks=_xfail()),
-]
+_ENGINE_CASES = ["random_full", "dfm_synthetic", "dfm_synthetic_nan", *FIXTURES[1:], "random_40pct_nan"]
 
 
-@pytest.mark.parametrize("name", _ENGINE_LOGLIK_CASES)
+@pytest.mark.parametrize("name", _ENGINE_CASES)
 def test_engine_loglik_matches_reference(name):
     """The E-step's loglik is the exact missing-data loglik of the given parameters (rel 1e-8), never -T/2."""
     *params, X = model_and_data(name)
@@ -212,7 +195,7 @@ def test_engine_loglik_matches_reference(name):
     assert _rel_scalar(ll, expected) < LOGLIK_RTOL, (ll, expected)
 
 
-@pytest.mark.parametrize("name", _ENGINE_MOMENT_CASES)
+@pytest.mark.parametrize("name", _ENGINE_CASES)
 def test_engine_moments_match_reference(name):
     """EZ, V_smooth and the lag-one VVsmooth equal the reference smoother's (rel 1e-6)."""
     *params, X = model_and_data(name)
@@ -220,7 +203,7 @@ def test_engine_moments_match_reference(name):
     EZ, V, VV, _ = engine_estep(*params, X)
     assert ref.rel_err(EZ, expected["sm"]) < MOMENT_RTOL
     assert ref.rel_err(V, expected["sP"]) < MOMENT_RTOL
-    # pykalman's _smooth_pair layout: VV[t] = Cov(x_t, x_{t-1} | Y) for t >= 1
+    # The M-step's layout: VV[t] = Cov(x_t, x_{t-1} | Y) for t >= 1
     assert VV.shape == expected["pair"].shape
     assert ref.rel_err(VV[1:], expected["pair"][1:]) < MOMENT_RTOL
 

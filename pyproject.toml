@@ -24,7 +24,6 @@ dependencies = [
     "einops>=0.8.1",
     "numpy>=1.24.0",
     "pandas>=2.0.0",
-    "pykalman>=0.11.0",
     "scikit-learn>=1.7.2",
     "scipy>=1.10.0",
     "torch>=2.0.0",
@@ -150,9 +149,3 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["src/test"]
-filterwarnings = [
-    # pykalman's filter assigns a shape-(1,) array into a scalar slot on every
-    # time step (pykalman/standard.py); NumPy >= 1.25 deprecates this. Nothing
-    # in dfm_python triggers it differently, so silence it until pykalman fixes it.
-    "ignore:Conversion of an array with ndim > 0 to a scalar is deprecated:DeprecationWarning:pykalman.standard",
-]
