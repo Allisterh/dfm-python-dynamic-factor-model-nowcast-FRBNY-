@@ -372,6 +372,13 @@ best = tune_hyperparameters(model, data, n_trials=3, max_epochs_per_trial=2,  # 
 model.set_params(**best).fit(data)
 ```
 
+The search is reproducible: the estimator's `random_state` (or
+`fixed["random_state"]`) also seeds optuna's TPE sampler, so the same seed,
+data and arguments give the same trials and, on CPU, the same `best`;
+`random_state=None` leaves the sampler unseeded. `window` and `stride` step
+by 10, and a range that is not a multiple of 10 is cut to its last step
+(`min_window=10, max_window=25` searches 10 and 20).
+
 `tutorial/tutorial_{macro,finance,exchange}_ivdfm.py` fit the shipped
 configurations.
 
@@ -549,6 +556,9 @@ The same data and hyperparameters give the same numbers. Seeds:
 | DDFM  | `random_state` | 3       | a local `np.random.RandomState` in fit; `torch.manual_seed` when the networks are built |
 | iVDFM | `random_state` | 3       | `torch.manual_seed`, then `np.random.seed`, before the networks are built |
 | AFM   | `random_state` | None    | `torch.manual_seed` before the network is built |
+
+`tune_hyperparameters` seeds optuna's sampler with the iVDFM `random_state`
+(None leaves it unseeded).
 
 `random_state` is always recorded in `config.json`, and saving a run with
 `random_state=None` warns. Results are bitwise reproducible on CPU with one

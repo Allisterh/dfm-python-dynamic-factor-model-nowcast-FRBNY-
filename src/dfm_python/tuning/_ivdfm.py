@@ -190,6 +190,12 @@ def compute_forecast_metric(
 
 # Structural / causal parameters that MUST NOT be tuned (model selection, not hyperparameters).
 # Fix to ground truth in synthetic experiments; change only via ablation elsewhere.
+def _aligned_high(low: int, high: int, step: int) -> int:
+    """The largest ``low + k * step`` <= ``high``: the upper bound optuna falls back to, with a warning,
+    when ``high - low`` is not a multiple of ``step``. Passing it keeps the same search space, silently."""
+    return low + (high - low) // step * step
+
+
 _STRUCTURAL_PARAMS = frozenset({
     "n_factors",
     "factor_order",
@@ -294,14 +300,15 @@ def suggest_ivdfm_hyperparameters(
     if "window" in fixed:
         params["window"] = fixed["window"]
     else:
-        params["window"] = trial.suggest_int("window", min_window, window_high, step=10)
+        # window and stride step by 10; their upper bounds are aligned down to the step (see _aligned_high).
+        params["window"] = trial.suggest_int("window", min_window, _aligned_high(min_window, window_high, 10), step=10)
     if "stride" in fixed:
         params["stride"] = fixed["stride"]
     else:
         # Min stride at least 10; when window fixed, at least half window
         stride_low = max(min_stride, (fixed.get("window") or 0) // 2) if fixed.get("window") else min_stride
         stride_low = max(10, stride_low)
-        params["stride"] = trial.suggest_int("stride", stride_low, 1000, step=10)
+        params["stride"] = trial.suggest_int("stride", stride_low, _aligned_high(stride_low, 1000, 10), step=10)
     if "n_regimes" in fixed:
         params["n_regimes"] = fixed["n_regimes"]
     else:
@@ -548,6 +555,21 @@ def tune_hyperparameters(
     not suggested or fixed, including ``batch_size``, ``random_state`` and
     ``device``; ``verbose`` is 0.
 
+    The search is reproducible: the trials' ``random_state``
+    (``fixed["random_state"]`` if given, else ``estimator.random_state``)
+    also seeds optuna's default sampler, ``TPESampler(seed=random_state)``,
+    so two calls with the same seed, data and arguments draw the same
+    trials and, on CPU, return the same ``best``; different seeds draw
+    different trials. ``random_state=None`` leaves the sampler unseeded, as
+    before. A ``timeout`` can stop runs after different numbers of trials.
+
+    ``window`` and ``stride`` are suggested in steps of 10. When the range
+    is not a multiple of 10 (``max_window - min_window``, or ``1000`` minus
+    the lowest stride), its upper bound is lowered to the last step (e.g.
+    ``min_window=10, max_window=25`` searches 10 and 20), the range optuna
+    itself fell back to with a warning; ranges that are multiples of 10 are
+    unchanged.
+
     Parameters
     ----------
     estimator : iVDFM
@@ -562,7 +584,8 @@ def tune_hyperparameters(
         Upper bound on the window (and used to size the subset). None or <= 0
         uses the series length.
     min_window : int, default 500
-        Lower bound on the suggested window.
+        Lower bound on the suggested window (step 10; the upper bound is
+        lowered to ``min_window`` plus a multiple of 10).
     max_regimes : int, default 7
         Upper bound on the suggested ``n_regimes``.
     train_window_ratio : float, default 1.0
@@ -691,11 +714,15 @@ def tune_hyperparameters(
         search_scope=search_scope,
     )
 
+    # The trials' random_state (fixed["random_state"], else the estimator's) also seeds optuna's
+    # default TPE sampler, so a search is reproducible; None leaves it unseeded.
+    seed = fixed.get("random_state", estimator.random_state)
     study = optuna.create_study(
         direction="minimize",
         study_name=study_name or "ivdfm_optuna",
         storage=storage,
         load_if_exists=load_if_exists,
+        sampler=None if seed is None else optuna.samplers.TPESampler(seed=int(seed)),
         pruner=pruner,
     )
     if initial_params:

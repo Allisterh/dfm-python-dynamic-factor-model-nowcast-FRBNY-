@@ -229,6 +229,28 @@ class TestSuggestIvdfmHyperparameters:
         assert params["n_factors"] == 4 and params["n_regimes"] == 2
         assert "n_factors" not in names and "n_regimes" not in names
 
+    @pytest.mark.parametrize(
+        "max_window, min_window, fixed, name, expected",
+        [
+            (25, 10, None, "window", (10, 20)),  # the range optuna used to fall back to, with a warning
+            (20, 10, None, "window", (10, 20)),  # an aligned range is unchanged
+            (200, 10, {"window": 25}, "stride", (12, 992)),
+            (200, 10, None, "stride", (10, 1000)),
+        ],
+    )
+    def test_step_ranges_are_aligned_without_warning(self, max_window, min_window, fixed, name, expected):
+        """window and stride (step 10) get ranges divisible by the step: optuna's own fallback, but no warning."""
+        import warnings
+
+        import optuna
+
+        trial = optuna.create_study().ask()
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            suggest_ivdfm_hyperparameters(trial, max_window=max_window, min_window=min_window, fixed=fixed)
+        dist = trial.distributions[name]
+        assert (dist.low, dist.high, dist.step) == (*expected, 10)
+
     def test_suggest_causal_skips_structural_params(self):
         """The causal space suggests no structural parameter and passes fixed non-structural keys through."""
         trial = _make_mock_trial()
@@ -353,6 +375,67 @@ class TestTuneHyperparameters:
                 fixed={**_TINY_FIXED, "n_factors": 0}, **_TINY_SEARCH,
             )
         assert best == {}
+
+    @staticmethod
+    def _trial_params(random_state, fixed=None):
+        best, study = tune_hyperparameters(
+            iVDFM(random_state=random_state, device="cpu"), _panel(), n_trials=3,
+            fixed={**_TINY_FIXED, **(fixed or {})}, return_study=True, **_TINY_SEARCH,
+        )
+        return best, [t.params for t in study.trials]
+
+    def test_sampler_is_seeded_from_random_state(self):
+        import optuna
+
+        best_a, trials_a = self._trial_params(0)
+        best_b, trials_b = self._trial_params(0)
+        assert best_a and best_a == best_b
+        assert trials_a == trials_b
+        # Another seed draws other trials.
+        best_c, trials_c = self._trial_params(1)
+        assert trials_c != trials_a
+        # fixed["random_state"] (what the trials train with) seeds the sampler in place of the estimator's.
+        best_d, trials_d = self._trial_params(None, fixed={"random_state": 0})
+        assert trials_d == trials_a and best_d == {**best_a, "random_state": 0}
+        # The sampler is optuna's default TPESampler, seeded.
+        _, study = tune_hyperparameters(
+            iVDFM(random_state=5, device="cpu"), _panel(), n_trials=1, fixed=dict(_TINY_FIXED),
+            return_study=True, **_TINY_SEARCH,
+        )
+        assert type(study.sampler) is optuna.samplers.TPESampler
+
+    def test_random_state_none_keeps_the_sampler_unseeded(self, monkeypatch):
+        import optuna
+
+        seeds = []
+        init = optuna.samplers.TPESampler.__init__
+
+        def spy(self, *args, **kwargs):
+            seeds.append(kwargs.get("seed"))
+            init(self, *args, **kwargs)
+
+        monkeypatch.setattr(optuna.samplers.TPESampler, "__init__", spy)
+        tune_hyperparameters(
+            iVDFM(random_state=None, device="cpu"), _panel(), n_trials=1, fixed=dict(_TINY_FIXED), **_TINY_SEARCH,
+        )
+        assert seeds and all(seed is None for seed in seeds)
+        seeds.clear()
+        tune_hyperparameters(
+            iVDFM(random_state=7, device="cpu"), _panel(), n_trials=1, fixed=dict(_TINY_FIXED), **_TINY_SEARCH,
+        )
+        assert seeds == [7]
+
+    def test_window_and_stride_ranges_not_divisible_by_the_step_raise_no_warning(self):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            best = tune_hyperparameters(
+                iVDFM(random_state=0, device="cpu"), _panel(), n_trials=2, fixed=dict(_TINY_FIXED),
+                **{**_TINY_SEARCH, "max_window": 25},
+            )
+        assert best
+        assert not [w for w in caught if "divisible" in str(w.message)]
 
     def test_rejects_unknown_fixed_key_and_metric(self):
         est = iVDFM(device="cpu")

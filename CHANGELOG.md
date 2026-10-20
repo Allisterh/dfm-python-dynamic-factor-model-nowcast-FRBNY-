@@ -472,6 +472,20 @@ unchanged.
   bitwise identical (`ivdfm_macro` has 5 factors on 3 targets but
   `factor_order` 1; `ivdfm_regimes` and `ivdfm_exog_context` have no more
   factors than targets).
+- **iVDFM tuning is reproducible.** `tune_hyperparameters` created its optuna
+  study with the default, unseeded TPE sampler, so two searches with the same
+  `random_state` drew different trials and could return different `best`
+  values. The sampler is now `TPESampler(seed=random_state)`, seeded from the
+  trials' `random_state` (`fixed["random_state"]` if given, else
+  `estimator.random_state`); `random_state=None` keeps the unseeded sampler.
+  The function signature is unchanged (it has no seed argument).
+- **No optuna step warning for `window` and `stride`.** Both are suggested in
+  steps of 10; when `max_window - min_window` (or `1000` minus the lowest
+  stride, e.g. 12 for `fixed={"window": 25}`) was not a multiple of 10,
+  optuna warned and lowered the upper bound to the last step. The bound is
+  now lowered before the call, to the same value, so the search space and
+  the draws are unchanged and nothing warns; ranges that are multiples of 10
+  are untouched. No golden fixture covers tuning; none changed.
 
 ## 0.7.0
 
