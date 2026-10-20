@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.8.1
+
+Security and documentation release.
 
 ### Security
 
@@ -17,6 +19,20 @@
   from `main`, no persisted checkout credentials, no uv cache in the release
   build, bounded build backend (`hatchling>=1.27,<2`). Added `SECURITY.md`
   and a Dependabot configuration.
+
+### Documentation
+
+- README rewritten as the package README (also the PyPI description):
+  badges, installation and extras, a quick start, one section per model with
+  its method reference, saving and loading, YAML configurations, migration
+  from 0.7, known limitations, development, security and citing sections,
+  and a star history chart.
+- `CITATION.cff` added for GitHub's "Cite this repository". It also lists
+  the papers that use the package: Chang and Kim (2026), arXiv:2603.22886,
+  which introduces iVDFM, and Chang (2026), arXiv:2610.25802 (ICAIF '26),
+  which uses AFM as a baseline.
+
+No estimator API, default or number changes in this release.
 
 ## 0.8.0
 
