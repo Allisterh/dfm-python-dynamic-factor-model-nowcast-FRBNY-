@@ -738,49 +738,9 @@ class DFM(BaseFactorModel):
                 )
         if panel.n_timesteps < 1:
             raise DataValidationError(f"{name}: data has no time steps.")
-        index, last = panel.index, self.conditioning_index_
-        if type(index) is not type(last):
-            raise DataValidationError(
-                f"{name}: data has a {type(index).__name__}, but the model's time index is a "
-                f"{type(last).__name__}. Pass the new rows on the same kind of index."
-            )
-        if not index[0] > last[-1]:
-            raise DataValidationError(
-                f"{name}: data starts at {index[0]!r}, which overlaps the conditioning data (it ends at "
-                f"{last[-1]!r}). Pass only the rows after {last[-1]!r} (tag predict_data='new_rows')."
-            )
-        extended = self._extend_index(last, index, name)
+        extended = self._extend_conditioning_index(panel.index, name)
         X_new = panel.y[list(self.internal_feature_names_)].to_numpy(dtype=np.float64)
         return X_new, extended
-
-    @staticmethod
-    def _extend_index(index: pd.Index, new: pd.Index, name: str) -> pd.Index:
-        """``index`` followed by ``new`` (later stamps), keeping the training index's type, name and frequency.
-
-        A ``RangeIndex`` stays a ``RangeIndex``: the new rows must continue it
-        (start at its stop, same step), since positions count clock periods.
-        A ``DatetimeIndex`` keeps its ``freq`` when the new stamps continue it
-        at that frequency (otherwise the forecast index infers the step).
-
-        Raises
-        ------
-        DataValidationError
-            For a ``RangeIndex`` that the new rows do not continue.
-        """
-        if isinstance(index, pd.RangeIndex):
-            if new.start != index.stop or (len(new) > 1 and new.step != index.step):
-                raise DataValidationError(
-                    f"{name}: the new rows are at positions {new.start}..{new[-1]} (step {new.step}), but a RangeIndex "
-                    f"must continue the model's index at {index.stop} with step {index.step}: each row is one clock "
-                    "period."
-                )
-            return pd.RangeIndex(index.start, new.start + index.step * len(new), index.step, name=index.name)
-        out = index.append(new).rename(index.name)
-        if isinstance(index, pd.DatetimeIndex) and index.freq is not None:
-            expected = pd.date_range(index[0], periods=len(out), freq=index.freq, tz=index.tz)
-            if out.equals(expected):
-                out = pd.DatetimeIndex(out, freq=index.freq, name=index.name)
-        return out
 
     def update(self, data: Any, *, refit: bool = False) -> DFM:
         """Condition later forecasts on new rows ``data`` and return ``self``.

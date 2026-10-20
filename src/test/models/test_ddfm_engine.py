@@ -41,6 +41,7 @@ from dfm_python.models.ddfm._engine import DDFMEngine
 from dfm_python.numeric.statistic import diagnose_variance_collapse
 from dfm_python.utils.errors import (
     ConfigurationError,
+    DataValidationError,
     ModelNotInitializedError,
     ModelNotTrainedError,
 )
@@ -195,7 +196,6 @@ class TestEngineSurface:
 def test_update_on_a_loaded_engine_needs_no_dataset(tmp_path):
     """A loaded engine has no _dataset; _update runs on it and matches the fitted engine's update."""
     frame = _frame(T=72)
-    panel = PanelData(y=frame[["a", "b", "c"]], exog=frame[["cov"]])
     fit_panel = PanelData(y=frame[["a", "b", "c"]].iloc[:60], exog=frame[["cov"]].iloc[:60])
     est = DDFM(n_factors=2, encoder_layers=(4,), n_mc_samples=2, max_iter=2, scaler="standard",
                random_state=0, device="cpu").fit(fit_panel)
@@ -204,15 +204,16 @@ def test_update_on_a_loaded_engine_needs_no_dataset(tmp_path):
     engine = loaded.network_
     assert engine._dataset is None
 
+    new_rows = frame.iloc[60:].reset_index(drop=True)
     reference = copy.deepcopy(est.network_)
-    reference._update(est._adapter(panel, fitted=True))
-    engine._update(loaded._adapter(panel, fitted=True))
+    reference._update(new_rows)
+    engine._update(new_rows)
 
     assert engine._dataset is None
-    assert engine.factors.shape[-2] == 60 + 72
+    assert engine.factors.shape[-2] == 60 + 12
     assert engine.factors.tobytes() == reference.factors.tobytes()
-    assert engine.scaler.mean_.tobytes() == reference.scaler.mean_.tobytes()
-    assert engine.scaler.scale_.tobytes() == reference.scaler.scale_.tobytes()
+    assert engine.data.equals(reference.data)
+    assert engine.scaler.mean_.tobytes() == est.scaler_.mean_.tobytes()
 
 
 def test_update_needs_no_dataset():
@@ -220,14 +221,36 @@ def test_update_needs_no_dataset():
     engine = _fitted(_dataset(frame.iloc[:60]))
     detached = copy.deepcopy(engine)
     detached._dataset = None
+    mean = engine.scaler.mean_.copy()
 
-    engine._update(_dataset(frame))
-    detached._update(_dataset(frame))
+    new_rows = frame.iloc[60:].reset_index(drop=True)
+    engine._update(new_rows)
+    detached._update(new_rows)
 
-    assert engine.factors.shape[-2] == 60 + 72
+    assert engine.factors.shape[-2] == 60 + 12
     assert detached.factors.tobytes() == engine.factors.tobytes()
-    assert detached.scaler.mean_.tobytes() == engine.scaler.mean_.tobytes()
-    assert detached.scaler.scale_.tobytes() == engine.scaler.scale_.tobytes()
+    assert engine.scaler.mean_.tobytes() == mean.tobytes()
+
+
+def test_update_takes_the_training_columns_in_order():
+    frame = _frame(T=72)
+    engine = _fitted(_dataset(frame.iloc[:60]))
+    new_rows = frame.iloc[60:].reset_index(drop=True)
+    for bad in (new_rows[["a", "cov", "b", "c"]], new_rows[["cov", "a", "b"]], new_rows.iloc[:0]):
+        with pytest.raises(DataValidationError):
+            engine._update(bad)
+    assert engine.factors.shape[-2] == 60 and len(engine.data) == 60
+
+
+def test_dataset_keeps_the_fitted_covariate_scaler():
+    frame = _frame()
+    dataset = _dataset(frame)
+    assert type(dataset.covariate_scaler) is StandardScaler and dataset.covariate_scaler is not dataset.scaler
+    np.testing.assert_array_equal(dataset.covariate_scaler.mean_, frame[["cov"]].mean().to_numpy())
+    np.testing.assert_array_equal(dataset.X, dataset.covariate_scaler.transform(frame[["cov"]].to_numpy()))
+    assert _engine(dataset).covariate_scaler is dataset.covariate_scaler
+    assert _dataset(frame, scaler=None).covariate_scaler is None
+    assert DDFMDataset(data=frame[["a", "b"]], time_idx="index", scaler=StandardScaler()).covariate_scaler is None
 
 
 # -- engine internals (ported from the old test_ddfm.py) ----------------------------

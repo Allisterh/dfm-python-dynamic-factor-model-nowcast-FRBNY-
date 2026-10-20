@@ -13,16 +13,24 @@ recorded hyperparameters when training starts and reproduce every golden
 output of the fit (bitwise on the capture platform, within the ``_golden``
 tolerances elsewhere); the estimator's ``predict``, ``predict_factors``,
 ``result_.C`` and ``factors_`` must equal that engine's forecasts, loadings and
-factors bitwise. The fixture's update path (today's mutating
-``predict(data=...)`` on the full panel) is reproduced twice: by the pure
-``predict(h, data=full_panel)``, which leaves the model unchanged, and by
-``update(full_panel)`` followed by ``predict(h)``, which must also give the
-fixture's appended factors and refitted scaler.
+factors bitwise. For the cases with update rows (``ddfm_exchange`` and
+``ddfm_finance``: the last 12 rows of the panel, after the fitted ones), the
+fixture's update path (the engine's ``_update`` on those rows) is reproduced
+twice: by the pure ``predict(h, data=new_rows)``, which leaves the model
+unchanged, and by ``update(new_rows)`` followed by ``predict(h)``, which must
+also give the fixture's appended factors and the unchanged target scaler.
+``ddfm_macro`` has no rows after the fitted ones; there an update with the
+fitted rows must raise ``DataValidationError``.
 ``test_golden_ddfm_save_load`` fits the estimator, saves it, loads it back
 (``DDFM.load`` and ``dfm_python.load``) and requires the loaded model to report
 the same numbers: ``predict`` and ``predict(data=...)`` bitwise equal to the
 fitted model's, every golden output of the fit reproduced from the loaded
 engine alone, and the golden update outputs from an update of the loaded model.
+
+The update outputs (``DDFM_UPDATE_KEYS``) were recaptured before the 0.8.0
+release, when the update stopped refitting the target scaler and started
+taking only the rows after the conditioning data; the fit outputs are
+unchanged.
 """
 
 from __future__ import annotations
@@ -37,6 +45,7 @@ from dfm_python import DDFM, PanelData
 from dfm_python.config import DDFMConfig
 from dfm_python.models.ddfm._engine import DDFMEngine
 from dfm_python.testing import _state_hash
+from dfm_python.utils.errors import DataValidationError
 
 from ._cases import (
     _DDFM_ATTRS,
@@ -91,37 +100,36 @@ def _estimator_params(hyper: dict) -> dict:
     }
 
 
-def _panels(case: str, manifest: dict) -> tuple[PanelData, PanelData]:
-    """The data the case fitted and the full panel of its update, as PanelData.
+def _panels(case: str, manifest: dict) -> tuple[PanelData, PanelData | None]:
+    """The data the case fitted and the new rows of its update (None without), as PanelData.
 
-    The targets are in ``y`` and the covariates in ``exog``. ddfm_macro updates
-    with the 400 rows it fitted; the other cases fit on all but the last rows
-    of their panel and update with the whole panel.
+    The targets are in ``y`` and the covariates in ``exog``. ddfm_macro has no
+    rows after the 400 it fitted; the other cases fit on all but the last rows
+    of their panel and update with those rows.
     """
     recipe = manifest["data"]
     if case == "ddfm_macro":
         df = _macro_tail(_DDFM_ROWS)
         assert _digest(df) == recipe["input_sha256"]
         frame = df.set_index("date")
-        data = PanelData(y=frame[[recipe["target"]]], exog=frame[recipe["covariates"]])
-        return data, data
+        return PanelData(y=frame[[recipe["target"]]], exog=frame[recipe["covariates"]]), None
     if case == "ddfm_exchange":
         panel = ddfm_exchange_panel()
-        fit_df = panel.iloc[:-_DDFM_HOLDOUT]
-        assert _digest(fit_df) == recipe["fit_input_sha256"] and _digest(panel) == recipe["update_input_sha256"]
+        fit_df, new_df = panel.iloc[:-_DDFM_HOLDOUT], panel.iloc[-_DDFM_HOLDOUT:]
+        assert _digest(fit_df) == recipe["fit_input_sha256"] and _digest(new_df) == recipe["update_input_sha256"]
         assert recipe["covariates"] == [] and recipe["targets"] == list(fit_df.columns)
-        return PanelData(y=fit_df), PanelData(y=panel)
+        return PanelData(y=fit_df), PanelData(y=new_df)
     if case == "ddfm_finance":
         panel, covariates = ddfm_finance_panel()
-        fit_df = panel.iloc[:-_DDFM_HOLDOUT]
-        assert _digest(fit_df) == recipe["fit_input_sha256"] and _digest(panel) == recipe["update_input_sha256"]
+        fit_df, new_df = panel.iloc[:-_DDFM_HOLDOUT], panel.iloc[-_DDFM_HOLDOUT:]
+        assert _digest(fit_df) == recipe["fit_input_sha256"] and _digest(new_df) == recipe["update_input_sha256"]
         assert recipe["targets"] == [_FINANCE_TARGET] and recipe["covariates"] == covariates
 
         def as_panel(df):
             frame = df.set_index("date")
             return PanelData(y=frame[[_FINANCE_TARGET]], exog=frame[covariates])
 
-        return as_panel(fit_df), as_panel(panel)
+        return as_panel(fit_df), as_panel(new_df)
     raise AssertionError(f"no PanelData recipe for {case}")
 
 
@@ -154,7 +162,7 @@ def _as_float64_bytes(values: np.ndarray) -> bytes:
 
 
 def _update_outputs(model: DDFM) -> dict:
-    """The fixture's update outputs, read from a model after ``update(full_panel)``."""
+    """The fixture's update outputs, read from a model after ``update(new_rows)``."""
     engine = model.network_
     X, Z = engine._forecast(_DDFM_HORIZON)
     return {
@@ -170,13 +178,18 @@ def _fit_keys(fixture) -> list:
     return [key for key in fixture if key not in DDFM_UPDATE_KEYS]
 
 
+def _update_keys(fixture) -> list:
+    return [key for key in DDFM_UPDATE_KEYS if key in fixture]
+
+
 @pytest.mark.parametrize("build", ["constructor", "yaml"])
 @pytest.mark.parametrize("case", cases_for("ddfm"), ids=repr)
 def test_golden_ddfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     manifest, fixture = load_golden(case.name)
     hyper = manifest["hyperparameters"]
     params = _estimator_params(hyper)
-    data, full = _panels(case.name, manifest)
+    data, new = _panels(case.name, manifest)
+    assert (new is None) == (not _update_keys(fixture))
 
     model = _build(build, params, tmp_path)
     assert model.get_params() == {**DDFM().get_params(), **params}
@@ -190,7 +203,7 @@ def test_golden_ddfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     # The engine reproduces every pinned output of the fit; the update outputs
     # (an engine _update, which mutates it) are left out here.
     outputs = ddfm_engine_outputs(model.network_)
-    assert_golden(outputs, case.name, exclude=DDFM_UPDATE_KEYS)
+    assert_golden(outputs, case.name, exclude=_update_keys(fixture))
 
     # The estimator's forecasts are the engine's (compared with the fixture above), in data units.
     forecast = model.predict(_DDFM_HORIZON)
@@ -216,18 +229,28 @@ def test_golden_ddfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     np.testing.assert_array_equal(model.scaler_.mean_, outputs["scaler_mean"], strict=True)
     np.testing.assert_array_equal(model.scaler_.scale_, outputs["scaler_scale"], strict=True)
 
-    # The fixture's update path, without mutating the model: predict(h, data=full panel).
+    if new is None:
+        # No rows after the fitted ones: an update with the fitted rows overlaps them.
+        before = _state_hash(model)
+        with pytest.raises(DataValidationError, match="overlaps"):
+            model.update(data)
+        with pytest.raises(DataValidationError, match="overlaps"):
+            model.predict(_DDFM_HORIZON, data=data)
+        assert _state_hash(model) == before
+        return
+
+    # The fixture's update path, without mutating the model: predict(h, data=new rows).
     before = _state_hash(model)
-    conditioned = model.predict(_DDFM_HORIZON, data=full)
-    conditioned_factors = model.predict_factors(_DDFM_HORIZON, data=full)
+    conditioned = model.predict(_DDFM_HORIZON, data=new)
+    conditioned_factors = model.predict_factors(_DDFM_HORIZON, data=new)
     assert _state_hash(model) == before
-    assert conditioned.index[0] > full.index[-1] and conditioned.index.equals(conditioned_factors.index)
+    assert conditioned.index[0] > new.index[-1] and conditioned.index.equals(conditioned_factors.index)
     np.testing.assert_array_equal(model.scaler_.mean_, outputs["scaler_mean"], strict=True)
 
-    # ... and with it: update(full panel), then predict(h). The pure predict(data=)
+    # ... and with it: update(new rows), then predict(h). The pure predict(data=)
     # above gave the same numbers, bitwise, as the update compared with the fixture.
     result, factors = model.result_, model.factors_.copy()
-    assert model.update(full) is model
+    assert model.update(new) is model
     updated = _update_outputs(model)
     assert_golden(updated, case.name, exclude=_fit_keys(fixture))
     assert conditioned.to_numpy().tobytes() == _as_float64_bytes(updated["update_predict_X"])
@@ -235,38 +258,41 @@ def test_golden_ddfm_estimator(case, build, pinned, engine_at_fit, tmp_path):
     assert model.predict(_DDFM_HORIZON).equals(conditioned)
     assert model.predict_factors(_DDFM_HORIZON).equals(conditioned_factors)
     assert model.result_ is result and model.result_.target_scaler is model.scaler_
-    assert model.factors_.equals(factors) and model.conditioning_index_.equals(full.index)
+    assert model.factors_.equals(factors) and model.conditioning_index_.equals(data.index.append(new.index))
 
 
 @pytest.mark.parametrize("loader", ["DDFM.load", "dfm_python.load"])
 @pytest.mark.parametrize("case", cases_for("ddfm"), ids=repr)
 def test_golden_ddfm_save_load(case, loader, pinned, tmp_path):
-    manifest, _ = load_golden(case.name)
+    manifest, fixture = load_golden(case.name)
     hyper = manifest["hyperparameters"]
-    data, full = _panels(case.name, manifest)
+    data, new = _panels(case.name, manifest)
 
     _reset_global_rngs()
     model = DDFM(**_estimator_params(hyper)).fit(data)
     forecast = model.predict(_DDFM_HORIZON)
-    conditioned = model.predict(_DDFM_HORIZON, data=full)
+    pairs = [(lambda m: m.predict(_DDFM_HORIZON), forecast)]
+    if new is not None:
+        pairs.append((lambda m: m.predict(_DDFM_HORIZON, data=new), model.predict(_DDFM_HORIZON, data=new)))
     model.save(tmp_path / "run")
     del model
 
     loaded = (DDFM.load if loader == "DDFM.load" else dfm_python.load)(tmp_path / "run", device="cpu")
     assert type(loaded) is DDFM
-    for got, expected in ((loaded.predict(_DDFM_HORIZON), forecast),
-                          (loaded.predict(_DDFM_HORIZON, data=full), conditioned)):
+    for got, expected in ((call(loaded), expected) for call, expected in pairs):
         assert got.index.equals(expected.index) and list(got.columns) == list(expected.columns)
         assert got.to_numpy().tobytes() == expected.to_numpy().tobytes()
         assert got.attrs == expected.attrs
 
     # The loaded engine alone reproduces the golden numbers of the fit and holds the recorded hyperparameters.
     engine = loaded.network_
-    assert_golden(ddfm_engine_outputs(engine), case.name, exclude=DDFM_UPDATE_KEYS)
+    assert_golden(ddfm_engine_outputs(engine), case.name, exclude=_update_keys(fixture))
     assert normalized({**_attrs(engine, _DDFM_ATTRS), "scaler": type(engine.scaler).__name__}) == hyper
-    # An update of the loaded model reproduces the golden update (it refits the scaler on the saved frame).
-    loaded.update(full)
-    assert_golden(_update_outputs(loaded), case.name, exclude=_fit_keys(load_golden(case.name)[1]))
+    # An update of the loaded model reproduces the golden update (it interpolates against the saved frame
+    # and scales with the saved scalers).
+    if new is not None:
+        loaded.update(new)
+        assert_golden(_update_outputs(loaded), case.name, exclude=_fit_keys(fixture))
 
 
 @pytest.mark.skipif(not _YAML, reason="YAML needs omegaconf or PyYAML")

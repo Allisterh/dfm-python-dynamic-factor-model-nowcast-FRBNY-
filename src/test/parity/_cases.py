@@ -558,8 +558,7 @@ def _ddfm_fit_outputs(model: Any, X: Any, Z: Any) -> dict[str, np.ndarray]:
         # when the fixtures were captured; the estimator uses the DFM orientation.
         "result_Z": _np(result.Z),
         "result_x_sm": _np(result.x_sm),
-        # The training dataset's target scaler; the engine's update refits
-        # this same object in place, so it is copied here, before any update.
+        # The training dataset's target scaler (copied: an update must not change it).
         "scaler_mean": np.array(model.scaler.mean_, copy=True),
         "scaler_scale": np.array(model.scaler.scale_, copy=True),
     }
@@ -573,17 +572,19 @@ DDFM_UPDATE_KEYS = ("update_predict_X", "update_predict_Z", "update_factors", "u
                     "update_scaler_scale")
 
 
-def _ddfm_update_outputs(model: Any, upd: Any) -> dict[str, np.ndarray]:
-    """``_update(upd)`` then ``predict(horizon=6)``: mutates the model.
+def _ddfm_update_outputs(model: Any, new_rows: pd.DataFrame) -> dict[str, np.ndarray]:
+    """``_update(new_rows)`` then ``predict(horizon=6)``: mutates the model.
 
-    The update refits the model's target scaler on the training plus new
-    targets, encodes the new rows and appends their factors; the forecast then
-    conditions on the last appended factor row. The fixtures were captured
-    through the old ``predict(horizon=6, data=upd)`` (``update=True``), which
-    ran the same calls in the same order: its checks, ``_update(upd)``, then
-    the forecast.
+    ``new_rows`` are the rows after the fitted ones, in data units, with the
+    engine's columns ``[covariates | targets]``. The update scales them with
+    the scalers fitted at fit time (``update_scaler_*`` pin that the target
+    scaler is unchanged), interpolates them against the training rows,
+    encodes them and appends their factors; the forecast then conditions on
+    the last appended factor row. (Before the 0.8.0 release fix, the update
+    took the whole panel, training rows included, and refitted the target
+    scaler on it; the update outputs were recaptured then.)
     """
-    model._update(upd)
+    model._update(new_rows)
     X_u, Z_u = model.predict(horizon=_DDFM_HORIZON)
     return {
         "update_predict_X": _np(X_u),
@@ -643,11 +644,10 @@ def _ddfm_macro() -> CaseRun:
         model.fit()
         model.build_state_space()
         outputs = ddfm_engine_outputs(model)
-        # No rows newer than the fitted ones: the update panel is the same 400
-        # rows, in a dataset with a fresh scaler (DDFMDataset fits the scaler it
-        # is given, so passing the training scaler would refit that one).
-        upd = DDFMDataset(data=df, time_idx="date", covariates=covariates, scaler=StandardScaler())
-        outputs.update(_ddfm_update_outputs(model, upd))
+        # No update path: data/macro.csv has no rows after the 400 fitted ones,
+        # and an update takes only rows after the conditioning data. (The
+        # update outputs captured before the 0.8.0 release fix re-encoded the
+        # same 400 rows, which update now rejects.)
     return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
 
 
@@ -659,12 +659,12 @@ FINANCE_CSV = REPO_ROOT / "data" / "finance.csv"
 
 def _ddfm_rows_recipe() -> str:
     return (f"last {_DDFM_TRUNC_ROWS} rows; fit on the first {_DDFM_TRUNC_ROWS - _DDFM_HOLDOUT}, "
-            f"update with all {_DDFM_TRUNC_ROWS}")
+            f"update with the last {_DDFM_HOLDOUT}")
 
 
 def _ddfm_fit_and_update(panel: pd.DataFrame, time_idx: str, covariates: list[str] | None,
                          **model_kwargs: Any) -> tuple[dict[str, np.ndarray], dict[str, Any]]:
-    """Fit DDFM on ``panel`` minus the last rows, then update with the whole panel."""
+    """Fit DDFM on ``panel`` minus the last rows, then update with those rows."""
     from sklearn.preprocessing import StandardScaler
 
     from dfm_python.models.ddfm._engine import DDFMEngine as DDFM
@@ -680,8 +680,8 @@ def _ddfm_fit_and_update(panel: pd.DataFrame, time_idx: str, covariates: list[st
         model.fit()
         model.build_state_space()
         outputs = ddfm_engine_outputs(model)
-        upd = DDFMDataset(data=panel, time_idx=time_idx, covariates=covariates, scaler=StandardScaler())
-        outputs.update(_ddfm_update_outputs(model, upd))
+        new_rows = panel.iloc[-_DDFM_HOLDOUT:].reset_index(drop=True)[list(model.data.columns)]
+        outputs.update(_ddfm_update_outputs(model, new_rows))
     return outputs, hyper
 
 
@@ -703,7 +703,7 @@ def _ddfm_exchange() -> CaseRun:
         "dataset": "DDFMDataset(data=frame, time_idx='index', scaler=StandardScaler())",
         "targets": list(panel.columns), "covariates": [],
         "fit_input_sha256": _digest(panel.iloc[:-_DDFM_HOLDOUT]),
-        "update_input_sha256": _digest(panel),
+        "update_input_sha256": _digest(panel.iloc[-_DDFM_HOLDOUT:]),
     }
     outputs, hyper = _ddfm_fit_and_update(
         panel, "index", None,
@@ -747,7 +747,7 @@ def _ddfm_finance() -> CaseRun:
         "dataset": "DDFMDataset(data=frame, time_idx='date', covariates=covariates, scaler=StandardScaler())",
         "targets": [_FINANCE_TARGET], "covariates": covariates,
         "fit_input_sha256": _digest(panel.iloc[:-_DDFM_HOLDOUT]),
-        "update_input_sha256": _digest(panel),
+        "update_input_sha256": _digest(panel.iloc[-_DDFM_HOLDOUT:]),
     }
     outputs, hyper = _ddfm_fit_and_update(
         panel, "date", covariates,

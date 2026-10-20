@@ -31,7 +31,13 @@ from dfm_python.models.ddfm._engine import DDFMEngine
 from dfm_python.models.ddfm.estimator import _TIME_COLUMN, _TRAINING_BUFFERS, DDFM
 from dfm_python.registry import all_estimators
 from dfm_python.testing import _state_hash
-from dfm_python.utils.errors import ConfigurationError, DataValidationError, NotFittedError, UnsupportedInputError
+from dfm_python.utils.errors import (
+    ConfigurationError,
+    DataValidationError,
+    ModelNotInitializedError,
+    NotFittedError,
+    UnsupportedInputError,
+)
 
 _YAML = importlib.util.find_spec("omegaconf") is not None or importlib.util.find_spec("yaml") is not None
 
@@ -103,7 +109,7 @@ def test_tags():
     for cap in ("exog", "missing_values", "update", "factor_forecast", "device"):
         assert tags[f"capability:{cap}"] is True
     assert not tags["capability:series_exog"] and not tags["capability:mixed_frequency"]
-    assert tags["update_kind"] == "encoder_forward_rescale" and tags["predict_data"] == "full_panel"
+    assert tags["update_kind"] == "encoder_forward" and tags["predict_data"] == "new_rows"
     assert tags["non_deterministic"] is False
     assert DDFM().get_tags()["non_deterministic"] is False
     assert DDFM(random_state=None).get_tags()["non_deterministic"] is True
@@ -321,7 +327,7 @@ def test_engine_keeps_no_training_data(fitted):
     assert engine._dataset is None
     for name in _TRAINING_BUFFERS:
         assert name not in vars(engine), name
-    # The scaled training frame stays: the engine's update refits the scaler on it.
+    # The scaled training frame stays: update interpolates the new rows against it.
     assert list(engine.data.columns) == ["x0", "s0", "s1", "s2"]
     assert engine.target_series == ["s0", "s1", "s2"] and engine.covariates == ["x0"]
 
@@ -440,80 +446,209 @@ def _same_weights(a: dict, b: dict) -> bool:
 
 
 def _full(T: int = 60, K: int = 1) -> PanelData:
-    """A full panel: 60 rows, the training rows' dates followed by 12 new ones."""
+    """A panel of 60 rows on the training rows' dates followed by 12 new ones (other values than _panel)."""
     return _panel(T=T, K=K, seed=1)
 
 
-def test_update_appends_the_encoded_panel_and_refits_the_scaler(fitted):
+def _new(T: int = 60, K: int = 1, start: int = 48) -> PanelData:
+    """The rows of :func:`_full` after the training data (the 12 months after 2013-12-31 by default)."""
+    full = _full(T=T, K=K)
+    index = full.index[start:]
+    return PanelData(y=full.y.loc[index], exog=None if full.exog is None else full.exog.loc[index])
+
+
+def test_update_appends_only_the_new_rows_and_keeps_the_scalers(fitted):
     est = copy.deepcopy(fitted)
     weights, result, factors = _weights(est), est.result_, est.factors_.copy()
     engine = est.network_
-    old_scaler = copy.deepcopy(est.scaler_)
-    training_targets = engine.data[engine.target_series].to_numpy() * old_scaler.scale_ + old_scaler.mean_
-    full = _full()
-    assert est.update(full) is est
-    # Every row of the panel is encoded and appended to each MC sample's factors.
-    assert engine.factors.shape == (2, 48 + 60, 2)
+    scaler = copy.deepcopy(est.scaler_)
+    new = _new()
+    assert est.update(new) is est
+    # Only the 12 new rows are encoded and appended to each MC sample's factors.
+    assert engine.factors.shape == (2, 48 + 12, 2)
     np.testing.assert_array_equal(engine.factors[:, :48], fitted.network_.factors)
-    # The target scaler is refitted in place on the training targets (data units) and the panel's.
-    expected = StandardScaler().fit(np.vstack([training_targets, full.y.to_numpy()]))
-    np.testing.assert_array_equal(est.scaler_.mean_, expected.mean_)
-    np.testing.assert_array_equal(est.scaler_.scale_, expected.scale_)
+    # The scalers fitted at fit time are not refitted.
     assert est.scaler_ is engine.scaler and est.result_.target_scaler is est.scaler_
-    # The fit is unchanged; the forecasts now start after the panel.
+    for attr in ("mean_", "scale_", "var_", "n_samples_seen_"):
+        np.testing.assert_array_equal(getattr(est.scaler_, attr), getattr(scaler, attr))
+    # The fit is unchanged; the forecasts now start after the new rows.
     assert _same_weights(weights, _weights(est))
     assert est.result_ is result and est.factors_.equals(factors) and est.index_.equals(_panel().index)
-    assert est.conditioning_index_.equals(full.index)
+    assert est.conditioning_index_.equals(_full().index)
+    assert est.conditioning_index_.freq == "ME"
     forecast = est.predict(3)
-    assert forecast.index.equals(pd.date_range(full.index[-1], periods=4, freq="ME", name="date")[1:])
-    assert forecast.attrs["origin"] == full.index[-1] and np.isfinite(forecast.to_numpy()).all()
+    assert forecast.index.equals(pd.date_range(new.index[-1], periods=4, freq="ME", name="date")[1:])
+    assert forecast.attrs["origin"] == new.index[-1] and np.isfinite(forecast.to_numpy()).all()
     assert est.get_params() == fitted.get_params()
 
 
-def test_update_is_the_engine_update_on_the_adapter_dataset(fitted):
+def test_update_scales_the_new_rows_with_the_training_statistics(fitted):
+    """Targets with scaler_ and covariates with the covariate scaler fitted on the training exog; no refit."""
     est = copy.deepcopy(fitted)
-    reference = copy.deepcopy(fitted.network_)
+    engine = est.network_
+    train = _panel()
+    covariate_scaler = engine.covariate_scaler
+    assert type(covariate_scaler) is StandardScaler and covariate_scaler is not est.scaler_
+    np.testing.assert_array_equal(covariate_scaler.mean_, StandardScaler().fit(train.exog.to_numpy()).mean_)
+    np.testing.assert_array_equal(est.scaler_.mean_, StandardScaler().fit(train.y.to_numpy()).mean_)
+    new = _new()
+    est.update(new)
+    appended = engine.data.iloc[48:]
+    assert len(engine.data) == 60 and list(engine.data.columns) == ["x0", "s0", "s1", "s2"]
+    np.testing.assert_array_equal(appended[["s0", "s1", "s2"]].to_numpy(), est.scaler_.transform(new.y.to_numpy()))
+    np.testing.assert_array_equal(appended[["x0"]].to_numpy(), covariate_scaler.transform(new.exog.to_numpy()))
+    # The encoder sees exactly those rows (no missing values in them).
+    with torch.no_grad():
+        expected = engine.encoder(torch.as_tensor(appended.to_numpy(), dtype=torch.float32)).numpy()
+    np.testing.assert_array_equal(engine.factors[0, 48:], expected)
+    np.testing.assert_array_equal(engine.factors[1, 48:], expected)
+
+
+@pytest.mark.parametrize("data", ["full_panel", "training_panel", "partial_overlap", "last_row"])
+def test_update_and_predict_data_with_overlapping_rows_raise(fitted, data):
     full = _full()
-    dataset = est._adapter(full, fitted=True)
-    # The dataset scales with an unfitted clone of scaler_; scaler_ itself is not touched by building it.
-    assert type(dataset.scaler) is StandardScaler and dataset.scaler is not est.scaler_
-    np.testing.assert_array_equal(est.scaler_.mean_, fitted.scaler_.mean_)
-    assert list(dataset.data.columns) == ["x0", "s0", "s1", "s2"] and isinstance(dataset.data.index, pd.RangeIndex)
-    est.update(full)
-    reference._update(dataset)
-    np.testing.assert_array_equal(est.network_.factors, reference.factors, strict=True)
-    np.testing.assert_array_equal(est.scaler_.mean_, reference.scaler.mean_, strict=True)
-    y_forecast, z_forecast = reference._forecast(3)
-    assert est.predict(3).to_numpy().tobytes() == y_forecast.tobytes()
-    assert est.predict_factors(3).to_numpy().tobytes() == z_forecast.tobytes()
+    panels = {
+        "full_panel": full,
+        "training_panel": _panel(),
+        "partial_overlap": _new(start=40),
+        "last_row": PanelData(y=full.y.iloc[47:48], exog=full.exog.iloc[47:48]),
+    }
+    est = copy.deepcopy(fitted)
+    before = _state_hash(est)
+    for call in (lambda: est.update(panels[data]), lambda: est.predict(3, data=panels[data]),
+                 lambda: est.predict_factors(3, data=panels[data])):
+        with pytest.raises(DataValidationError, match="overlaps the conditioning data"):
+            call()
+    assert _state_hash(est) == before
+    # After an update, the rows it appended are conditioning data too.
+    est.update(_new(T=54))
+    with pytest.raises(DataValidationError, match="overlaps"):
+        est.update(_new(T=60, start=50))
+
+
+def test_update_rejects_another_index_type_and_a_gap_in_a_range_index():
+    est = DDFM(**TINY).fit(_panel(index="range"))
+    full = _panel(T=60, index="range", seed=1)
+    with pytest.raises(DataValidationError, match="RangeIndex must continue"):
+        est.update(PanelData(y=full.y.iloc[50:], exog=full.exog.iloc[50:]))
+    with pytest.raises(DataValidationError, match="kind of index"):
+        est.update(_new())
+    est.update(PanelData(y=full.y.iloc[48:], exog=full.exog.iloc[48:]))
+    assert est.conditioning_index_.equals(pd.RangeIndex(60)) and est.network_.factors.shape == (2, 60, 2)
+    assert est.predict(2).index.equals(pd.RangeIndex(60, 62, name="time"))
+
+
+@pytest.mark.parametrize("scaler", ["minmax", "robust", "quantile", "standard"])
+def test_update_forecasts_are_in_the_data_range(scaler):
+    """Positive-level series: the old update refitted minmax/robust/... scalers on mixed units (e.g. 11.5 here).
+
+    ("maxabs" leaves level data uncentred in [0.7, 1], and this tiny network
+    then fits a degenerate model whose forecasts are off even without update.)
+    """
+    rng = np.random.default_rng(3)
+    idx = pd.date_range("2000-01-31", periods=96, freq="ME", name="date")
+    common = np.cumsum(rng.standard_normal(96)) * 0.3
+    y = pd.DataFrame({f"s{i}": 50 + 5 * i + common + rng.standard_normal(96) for i in range(3)}, index=idx)
+    x = pd.DataFrame({"x0": 100 + 10 * rng.standard_normal(96)}, index=idx)
+    params = {**TINY, "encoder_layers": (8,), "max_iter": 3, "scaler": scaler}
+    est = DDFM(**params).fit(PanelData(y=y.iloc[:84], exog=x.iloc[:84]))
+    new = PanelData(y=y.iloc[84:], exog=x.iloc[84:])
+    lo, hi = y.to_numpy().min(), y.to_numpy().max()
+    margin = 0.5 * (hi - lo)
+    forecast = est.predict(3, data=new).to_numpy()
+    assert np.isfinite(forecast).all()
+    assert ((forecast > lo - margin) & (forecast < hi + margin)).all(), (scaler, forecast, lo, hi)
+    # Each target's forecast is near its own level, not another unit's.
+    assert (np.abs(forecast[0] - y.iloc[84:].mean().to_numpy()) < margin).all(), (scaler, forecast[0])
+    assert copy.deepcopy(est).update(new).predict(3).equals(est.predict(3, data=new))
+
+
+def test_missing_targets_and_long_covariate_gaps_in_new_rows_are_filled():
+    """Missing targets in the new rows never reach the encoder as NaN, so no NaN factors and no zero-state forecast."""
+    est = DDFM(**{**TINY, "interpolation_limit": 2}, scaler="standard").fit(_panel())
+    full = _full()
+    y, x = full.y.iloc[48:].copy(), full.exog.iloc[48:].copy()
+    y.iloc[-1, :] = np.nan  # every target missing in the last new row (a ragged edge)
+    y.iloc[3:6, 1] = np.nan  # an interior target gap
+    x.iloc[2:11, 0] = np.nan  # a covariate gap longer than interpolation_limit
+    updated = copy.deepcopy(est).update(PanelData(y=y, exog=x))
+    factors = updated.network_.factors
+    assert np.isfinite(factors).all()
+    # The last new row is encoded from filled inputs: the last observed targets carried forward.
+    filled = updated.network_.data.iloc[48:].copy()
+    assert filled.iloc[-1].isna().sum() == 3 and filled.isna().to_numpy().sum() == 3 + 3 + 9
+    carried = y.copy()
+    carried.iloc[-1, :] = carried.iloc[-2, :]
+    reference = copy.deepcopy(est).update(PanelData(y=carried, exog=x)).network_.factors
+    np.testing.assert_array_equal(factors[:, -1], reference[:, -1])
+    # The forecast starts from the last new row's factors, not from a zero state.
+    z_last = factors.mean(axis=0)[-1]
+    assert np.abs(z_last).sum() > 0
+    np.testing.assert_allclose(
+        updated.predict_factors(1).to_numpy()[0], z_last @ updated.network_.training_state.F.T, rtol=1e-5, atol=1e-7
+    )
+    forecast = updated.predict(3)
+    assert np.isfinite(forecast.to_numpy()).all()
+    assert not np.allclose(forecast.to_numpy(), est.scaler_.inverse_transform(np.zeros((3, 3))))
+    assert est.predict(3, data=PanelData(y=y, exog=x)).equals(forecast)
+
+
+def test_new_rows_are_interpolated_across_the_boundary_with_the_conditioning_rows(fitted):
+    """A gap at the start of the new rows is interpolated from the last conditioning row, as fit would."""
+    new = _new()
+    y = new.y.copy()
+    y.iloc[0, 0] = np.nan
+    est = copy.deepcopy(fitted).update(PanelData(y=y, exog=new.exog))
+    data = est.network_.data
+    assert np.isnan(data.iloc[48]["s0"])  # the conditioning frame keeps the missing value
+    expected = 0.5 * (data.iloc[47]["s0"] + data.iloc[49]["s0"])
+    row = data.iloc[48].copy()
+    row["s0"] = expected
+    with torch.no_grad():
+        z = est.network_.encoder(torch.as_tensor(row.to_numpy(dtype=np.float64)[None], dtype=torch.float32)).numpy()
+    np.testing.assert_allclose(est.network_.factors[0, 48], z[0], rtol=1e-6, atol=1e-7)
+
+
+def test_successive_updates_equal_one_update_with_all_rows(fitted):
+    new = _new()
+    first = PanelData(y=new.y.iloc[:6], exog=new.exog.iloc[:6])
+    second = PanelData(y=new.y.iloc[6:], exog=new.exog.iloc[6:])
+    one = copy.deepcopy(fitted).update(new)
+    two = copy.deepcopy(fitted).update(first).update(second)
+    np.testing.assert_array_equal(one.network_.factors, two.network_.factors)
+    assert one.network_.data.equals(two.network_.data)
+    assert one.conditioning_index_.equals(two.conditioning_index_)
+    assert one.predict(3).equals(two.predict(3))
 
 
 def test_update_without_a_scaler_and_without_exog():
     est = DDFM(**TINY).fit(_panel(K=0, index="range"))
-    assert est._adapter(_full(K=0), fitted=True).scaler is None
-    full = PanelData(y=_full(K=0).y.reset_index(drop=True))
-    est.update(full)
-    assert est.scaler_ is None and est.network_.factors.shape == (2, 48 + 60, 2)
+    assert est.network_.covariate_scaler is None
+    new = _panel(T=60, K=0, index="range", seed=1)
+    new = PanelData(y=new.y.iloc[48:])
+    est.update(new)
+    assert est.scaler_ is None and est.network_.factors.shape == (2, 48 + 12, 2)
+    np.testing.assert_array_equal(est.network_.data.iloc[48:].to_numpy(), new.y.to_numpy())
     assert est.predict(2).index.equals(pd.RangeIndex(60, 62, name="time"))
 
 
 def test_update_refit_raises(fitted):
     est = copy.deepcopy(fitted)
     with pytest.raises(UnsupportedInputError, match="refit"):
-        est.update(_full(), refit=True)
+        est.update(_new(), refit=True)
     assert est.conditioning_index_.equals(fitted.conditioning_index_)
     np.testing.assert_array_equal(est.network_.factors, fitted.network_.factors)
 
 
 @pytest.mark.parametrize("change", ["series", "order", "exog", "no_exog"])
 def test_update_and_predict_data_check_the_names(fitted, change):
-    panel = _full()
+    panel = _new()
     if change == "series":
         panel = PanelData(y=panel.y.rename(columns={"s0": "other"}), exog=panel.exog)
     elif change == "order":
         panel = PanelData(y=panel.y[["s1", "s0", "s2"]], exog=panel.exog)
     elif change == "exog":
-        panel = _full(K=2)
+        panel = _new(K=2)
     else:
         panel = PanelData(y=panel.y)
     est = copy.deepcopy(fitted)
@@ -533,7 +668,7 @@ def test_update_rejects_excluded_inputs(fitted):
 def test_update_before_fit_raises():
     """Ported from the old engine test: update before fit raises (now NotFittedError)."""
     with pytest.raises(NotFittedError):
-        DDFM(**TINY).update(_full())
+        DDFM(**TINY).update(_new())
 
 
 # -- predict(data=...) ----------------------------------------------------------
@@ -541,30 +676,25 @@ def test_update_before_fit_raises():
 
 def test_predict_data_is_update_on_a_copy(fitted):
     est = fitted
-    full = _full()
+    new = _new()
     before = _state_hash(est)
     weights, factors, mean = _weights(est), est.network_.factors.copy(), est.scaler_.mean_.copy()
     state = torch.get_rng_state()
-    forecast = est.predict(4, data=full)
-    factor_forecast = est.predict_factors(4, data=full)
+    forecast = est.predict(4, data=new)
+    factor_forecast = est.predict_factors(4, data=new)
     assert torch.equal(state, torch.get_rng_state())
-    assert est.predict(4, data=full).equals(forecast)
+    assert est.predict(4, data=new).equals(forecast)
     assert _state_hash(est) == before
     assert _same_weights(weights, _weights(est)) and np.array_equal(est.network_.factors, factors)
     np.testing.assert_array_equal(est.scaler_.mean_, mean)
-    assert est.conditioning_index_.equals(_panel().index)
+    assert est.conditioning_index_.equals(_panel().index) and len(est.network_.data) == 48
 
-    reference = copy.deepcopy(est).update(full)
+    reference = copy.deepcopy(est).update(new)
     assert forecast.to_numpy().tobytes() == reference.predict(4).to_numpy().tobytes()
     assert forecast.index.equals(reference.predict(4).index) and forecast.attrs == reference.predict(4).attrs
-    assert forecast.index[0] > full.index[-1]
+    assert forecast.index[0] > new.index[-1] and forecast.attrs["origin"] == new.index[-1]
     assert factor_forecast.equals(reference.predict_factors(4))
-
-
-def test_predict_data_with_the_training_panel_starts_after_it(fitted):
-    forecast = fitted.predict(3, data=_panel())
-    assert forecast.index.equals(fitted.predict(3).index)
-    assert np.isfinite(forecast.to_numpy()).all()
+    assert not forecast.equals(est.predict(4))
 
 
 # -- save / load ----------------------------------------------------------------
@@ -633,27 +763,67 @@ def test_save_load_round_trip(fitted, tmp_path):
     assert "target_scaler" in json.loads((tmp_path / "run" / "result.json").read_text())["excluded"]
     config = json.loads((tmp_path / "run" / "config.json").read_text())
     assert config["model_type"] == "DDFM" and config["params"]["random_state"] == 0
-    full = _full()
+    assert state["covariate_scaler"]["class"] == "sklearn.preprocessing.StandardScaler"
+    assert {"covariate_scaler/mean_", "covariate_scaler/scale_"} <= keys
+    new = _new()
     for loader in (DDFM.load, dfm_python.load):
         loaded = loader(tmp_path / "run", device="cpu")
         _assert_same_model(loaded, fitted)
         assert loaded.predict(3).equals(fitted.predict(3))
         assert loaded.predict_factors(3).equals(fitted.predict_factors(3))
-        assert loaded.predict(3, data=full).equals(fitted.predict(3, data=full))
+        assert loaded.predict(3, data=new).equals(fitted.predict(3, data=new))
         assert isinstance(loaded.scaler_, StandardScaler)
 
 
 def test_save_load_after_update(fitted, tmp_path):
-    est = copy.deepcopy(fitted).update(_full())
+    est = copy.deepcopy(fitted).update(_new())
     est.save(tmp_path / "run")
     loaded = DDFM.load(tmp_path / "run")
     _assert_same_model(loaded, est)
-    assert loaded.network_.factors.shape == (2, 108, 2)
+    assert loaded.network_.factors.shape == (2, 60, 2) and len(loaded.network_.data) == 60
     assert loaded.predict(3).equals(est.predict(3))
     np.testing.assert_array_equal(loaded.scaler_.mean_, est.scaler_.mean_)
     # Updating the loaded model further works like updating the original.
-    more = _full(T=72)
+    more = _new(T=72, start=60)
+    y = more.y.copy()
+    y.iloc[0, 1] = np.nan  # interpolated against the saved conditioning frame
+    more = PanelData(y=y, exog=more.exog)
     assert loaded.update(more).predict(3).equals(copy.deepcopy(est).update(more).predict(3))
+
+
+class _HalfScaler(StandardScaler):
+    """A transformer outside the five known scalers (saved with pickle)."""
+
+
+@pytest.mark.parametrize("scaler", ["minmax", "robust", "quantile", _HalfScaler()])
+def test_save_load_keeps_the_covariate_scaler(scaler, tmp_path):
+    est = DDFM(**{**TINY, "scaler": scaler}).fit(_panel(K=2))
+    assert type(est.network_.covariate_scaler) is type(est.scaler_)
+    est.save(tmp_path / "run")
+    pickled = isinstance(scaler, _HalfScaler)
+    if pickled:
+        with pytest.raises(ConfigurationError, match="allow_pickle"):
+            DDFM.load(tmp_path / "run")
+    loaded = DDFM.load(tmp_path / "run", allow_pickle=pickled)
+    covariate_scaler = loaded.network_.covariate_scaler
+    assert type(covariate_scaler) is type(est.network_.covariate_scaler)
+    new = _new(K=2)
+    expected = est.network_.covariate_scaler.transform(new.exog.to_numpy())
+    np.testing.assert_array_equal(covariate_scaler.transform(new.exog.to_numpy()), expected)
+    assert loaded.predict(3, data=new).equals(est.predict(3, data=new))
+
+
+def test_a_run_saved_without_the_covariate_scaler_cannot_update(fitted, tmp_path):
+    fitted.save(tmp_path / "run")
+    path = tmp_path / "run" / "state.json"
+    state = json.loads(path.read_text())
+    del state["covariate_scaler"]
+    path.write_text(json.dumps(state))
+    loaded = DDFM.load(tmp_path / "run")
+    assert loaded.network_.covariate_scaler is None
+    assert loaded.predict(3).equals(fitted.predict(3))
+    with pytest.raises(ModelNotInitializedError, match="covariate scaler"):
+        loaded.update(_new())
 
 
 def test_save_load_mlp_without_scaler_or_exog(tmp_path):
@@ -667,8 +837,8 @@ def test_save_load_mlp_without_scaler_or_exog(tmp_path):
     _assert_same_model(loaded, est)
     assert loaded.scaler_ is None and loaded.network_.last_neurons.shape == (2, 48, 6)
     assert loaded.predict(3).equals(est.predict(3))
-    full = PanelData(y=_full(K=0).y.reset_index(drop=True))
-    assert loaded.predict(3, data=full).equals(est.predict(3, data=full))
+    new = PanelData(y=_panel(T=60, K=0, index="range", seed=1).y.iloc[48:])
+    assert loaded.predict(3, data=new).equals(est.predict(3, data=new))
 
 
 def test_load_does_not_touch_the_global_rngs(fitted, tmp_path):

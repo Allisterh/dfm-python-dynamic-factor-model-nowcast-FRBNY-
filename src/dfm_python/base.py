@@ -336,6 +336,60 @@ class BaseFactorModel(BaseEstimator):
             )
         return out.rename(name)
 
+    @staticmethod
+    def _extend_index(index: pd.Index, new: pd.Index, name: str) -> pd.Index:
+        """``index`` followed by ``new`` (later stamps), keeping the training index's type, name and frequency.
+
+        A ``RangeIndex`` stays a ``RangeIndex``: the new rows must continue it
+        (start at its stop, same step), since positions count clock periods.
+        A ``DatetimeIndex`` keeps its ``freq`` when the new stamps continue it
+        at that frequency (otherwise the forecast index infers the step).
+
+        Raises
+        ------
+        DataValidationError
+            For a ``RangeIndex`` that the new rows do not continue.
+        """
+        if isinstance(index, pd.RangeIndex):
+            if new.start != index.stop or (len(new) > 1 and new.step != index.step):
+                raise DataValidationError(
+                    f"{name}: the new rows are at positions {new.start}..{new[-1]} (step {new.step}), but a RangeIndex "
+                    f"must continue the model's index at {index.stop} with step {index.step}: each row is one clock "
+                    "period."
+                )
+            return pd.RangeIndex(index.start, new.start + index.step * len(new), index.step, name=index.name)
+        out = index.append(new).rename(index.name)
+        if isinstance(index, pd.DatetimeIndex) and index.freq is not None:
+            expected = pd.date_range(index[0], periods=len(out), freq=index.freq, tz=index.tz)
+            if out.equals(expected):
+                out = pd.DatetimeIndex(out, freq=index.freq, name=index.name)
+        return out
+
+    def _extend_conditioning_index(self, index: pd.Index, name: str) -> pd.Index:
+        """``conditioning_index_`` followed by ``index``, the index of new rows (tag ``predict_data="new_rows"``).
+
+        ``index`` must be of the conditioning index's type and start strictly
+        after its last stamp; see :meth:`_extend_index` for how the two join.
+
+        Raises
+        ------
+        DataValidationError
+            For an index of another type, rows that overlap the conditioning
+            data, or a ``RangeIndex`` that does not continue the model's.
+        """
+        last = self.conditioning_index_
+        if type(index) is not type(last):
+            raise DataValidationError(
+                f"{name}: data has a {type(index).__name__}, but the model's time index is a "
+                f"{type(last).__name__}. Pass the new rows on the same kind of index."
+            )
+        if not index[0] > last[-1]:
+            raise DataValidationError(
+                f"{name}: data starts at {index[0]!r}, which overlaps the conditioning data (it ends at "
+                f"{last[-1]!r}). Pass only the rows after {last[-1]!r} (tag predict_data='new_rows')."
+            )
+        return self._extend_index(last, index, name)
+
     # -- fit ---------------------------------------------------------------
 
     def fit(self, data: Any, **fit_kwargs: Any) -> BaseFactorModel:

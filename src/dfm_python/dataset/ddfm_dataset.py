@@ -69,9 +69,12 @@ class DDFMDataset(Dataset):
         y = data_for_split[self.target_series]
         X = data_for_split.drop(columns=self.target_series) if self.target_series else pd.DataFrame()
         
-        # Scale covariates separately (temporary scaler, not stored)
+        # Scale covariates separately, with a fresh instance of the scaler's
+        # class; it is kept so that new rows are scaled with the same statistics.
+        self.covariate_scaler = None
         if scaler is not None and not X.empty:
-            X = pd.DataFrame(type(scaler)().fit_transform(X.values), index=X.index, columns=X.columns)
+            self.covariate_scaler = type(scaler)()
+            X = pd.DataFrame(self.covariate_scaler.fit_transform(X.values), index=X.index, columns=X.columns)
         
         # Scale targets and store scaler for prediction
         if scaler is not None:

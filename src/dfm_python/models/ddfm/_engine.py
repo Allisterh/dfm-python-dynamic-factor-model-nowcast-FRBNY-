@@ -6,8 +6,8 @@ and sequential MC sample processing.
 ``DDFMEngine`` is the private engine behind the public estimator
 :class:`dfm_python.models.ddfm.estimator.DDFM`, which builds the engine's
 dataset from ``PanelData`` and passes every hyperparameter explicitly. Its
-code is the pre-redesign ``DDFM`` class unchanged, apart from three edits that
-change no math and no RNG order:
+training code is the pre-redesign ``DDFM`` class unchanged, apart from three
+edits that change no math and no RNG order:
 
 (a) a ``device`` keyword: ``None`` keeps the automatic choice (CUDA when
     available, else CPU) and anything else becomes ``torch.device(device)``;
@@ -16,9 +16,16 @@ change no math and no RNG order:
     AR(1) factor forecast and maps it to the targets, inverse-transforming with
     ``self.scaler`` when it is set (identity otherwise); ``predict(horizon)``
     keeps its checks and returns ``_forecast``'s ``(y, Z)``;
-(c) ``target_series`` and ``covariates`` are copied from the dataset in
-    ``__init__``, and ``_update`` and ``_refit_scalers_with_new_data`` read
-    them instead of ``self._dataset``, so an engine needs no dataset to update.
+(c) ``target_series``, ``covariates`` and the fitted ``covariate_scaler``
+    are copied from the dataset in ``__init__``, so an engine needs no
+    dataset to update.
+
+``_update`` was rewritten before the 0.8.0 release (it changes the update
+numbers, not the fit's): it takes only the rows after the conditioning data,
+in data units, scales them with the scalers fitted at fit time (the old
+update refitted the target scaler on the training rows plus the whole update
+panel and scaled the covariates with a scaler fitted on that panel),
+interpolates them as fit interpolates its data and appends only their factors.
 
 ``get_result`` reports ``C = H`` (series x factors, the ``DFMResult.C``
 orientation) instead of ``H.T``; nothing else reads it.
@@ -100,7 +107,7 @@ from ...config.constants import (
 )
 from ...utils.errors import ModelNotTrainedError, ModelNotInitializedError, ConfigurationError
 from ...utils.validation import check_condition
-from ...numeric.validator import validate_no_nan_inf, validate_update_data_shape
+from ...numeric.validator import validate_no_nan_inf
 from ...utils.helper import interpolate_array, interpolate_dataframe
 from ...config.types import to_tensor, to_numpy
 
@@ -176,6 +183,7 @@ class DDFMEngine(nn.Module):
         self.disp = disp
         
         self.scaler = getattr(dataset, 'scaler', None)
+        self.covariate_scaler = getattr(dataset, 'covariate_scaler', None)
         self.min_target_interporate_ratio = min_target_interporate_ratio
 
         # Interpolation parameters
@@ -218,8 +226,8 @@ class DDFMEngine(nn.Module):
         ``dims`` holds what ``__init__`` reads from the dataset: ``input_dim``,
         ``output_dim``, ``num_series``, ``target_series`` and ``covariates``.
         Every attribute ``__init__`` sets is set the same way, except
-        ``scaler``, which is None (the caller sets the fitted one), and the
-        device, which is ``device``.
+        ``scaler`` and ``covariate_scaler``, which are None (the caller sets
+        the fitted ones), and the device, which is ``device``.
 
         The autoencoder is built as ``fit`` builds it, without its seed and
         inside ``torch.random.fork_rng`` (its initialization draws from the
@@ -269,6 +277,7 @@ class DDFMEngine(nn.Module):
         self.disp = values["disp"]
 
         self.scaler = None
+        self.covariate_scaler = None
         self.min_target_interporate_ratio = values["min_target_interporate_ratio"]
         self.interpolation_method = values["interpolation_method"]
         self.interpolation_limit = values["interpolation_limit"]
@@ -703,7 +712,7 @@ class DDFMEngine(nn.Module):
         Requires ``fit`` and ``build_state_space``. Returns ``(y_forecast,
         Z_forecast)`` from :meth:`_forecast` after checking that the model is
         trained, the state space is built, the horizon is valid and a scaler is
-        set. To condition on new rows, call ``_update(dataset)`` first.
+        set. To condition on new rows, call ``_update(new_rows)`` first.
         """
         
         # Validate model is trained
@@ -847,192 +856,100 @@ class DDFMEngine(nn.Module):
             loglik=-float('inf')  # DDFM doesn't compute log-likelihood
         )
 
-    def _refit_scalers_with_new_data(
-        self,
-        dataset: DDFMDataset,
-        new_data_df: pd.DataFrame
-    ) -> pd.DataFrame:
-        """Re-fit target scaler with combined training and new data.
-        
-        Parameters
-        ----------
-        dataset : DDFMDataset
-            New dataset with data to update
-        new_data_df : pd.DataFrame
-            New data DataFrame (may be interpolated)
-            
-        Returns
-        -------
-        pd.DataFrame
-            Updated new_data_df with re-scaled target values
+    def _scale_new_rows(self, new_rows: pd.DataFrame) -> pd.DataFrame:
+        """``new_rows`` (data units, columns ``[covariates | targets]``) scaled with the fitted scalers.
+
+        The targets go through ``self.scaler`` and the covariates through
+        ``self.covariate_scaler``, the instances fitted on the training data;
+        neither is refitted. Without a scaler the values pass through. Missing
+        values stay missing.
         """
-        target_cols = list(self.target_series)
-        
-        # Get unstandardized new data from dataset for scaler re-fitting
-        # Dataset stores original (unstandardized) data in data_original before scaling
-        if hasattr(dataset, 'data_original') and dataset.data_original is not None:
-            new_data_unstd_df = dataset.data_original.copy()
-            new_targets_unstd = new_data_unstd_df[target_cols].values if target_cols else np.array([]).reshape(new_data_unstd_df.shape[0], 0)
-            _logger.debug(f"DDFM._refit_scalers_with_new_data(): Using data_original for scaler re-fitting ({new_data_unstd_df.shape[0]} observations)")
-        else:
-            # Fallback: inverse-standardize the already-scaled data
-            _logger.warning("DDFM._refit_scalers_with_new_data(): dataset.data_original not available, inverse-standardizing scaled data (may have precision loss)")
-            new_targets_unstd = new_data_df[target_cols].values if target_cols else np.array([]).reshape(new_data_df.shape[0], 0)
-            # Inverse-standardize targets
-            if self.scaler is not None and target_cols and hasattr(self.scaler, 'mean_') and hasattr(self.scaler, 'scale_'):
-                new_targets_unstd = new_targets_unstd * self.scaler.scale_[np.newaxis, :] + self.scaler.mean_[np.newaxis, :]
-        
-        # Get training data (already scaled, need to inverse-standardize for re-fitting)
-        training_data_df = self.data.copy()
-        
-        # Re-fit target scaler on combined data (training + new)
-        if self.scaler is not None and target_cols and len(new_targets_unstd) > 0:
-            # Inverse-standardize training target data
-            if hasattr(self.scaler, 'mean_') and hasattr(self.scaler, 'scale_'):
-                training_targets_scaled = training_data_df[target_cols].values
-                training_targets_unstd = training_targets_scaled * self.scaler.scale_[np.newaxis, :] + self.scaler.mean_[np.newaxis, :]
-            else:
-                training_targets_unstd = training_data_df[target_cols].values
-            
-            # Combine training + new target data for re-fitting
-            combined_targets = np.vstack([training_targets_unstd, new_targets_unstd])
-            
-            # Re-fit scaler on combined data
-            self.scaler.fit(combined_targets)
-            _logger.debug(f"DDFM._refit_scalers_with_new_data(): Re-fitted target scaler on {combined_targets.shape[0]} observations (training + new data)")
-            
-            # Transform new data with updated scaler
-            target_vals = self.scaler.transform(new_targets_unstd)
-            new_data_df[target_cols] = target_vals
-            # Update dataset's data and y with newly transformed values (keep in sync)
-            dataset.data[target_cols] = target_vals
-            if hasattr(dataset, 'y') and dataset.y is not None:
-                dataset.y = new_data_df[target_cols].values
-                _logger.debug("DDFM._refit_scalers_with_new_data(): Updated dataset.y with re-scaled target values")
-        
-        return new_data_df
-    
-    def _update(self, dataset: DDFMDataset) -> None:
-        """Update model factors with new data using neural network forward pass."""
+        values = new_rows.to_numpy(dtype=np.float64, copy=True)
+        scaled = pd.DataFrame(values, columns=list(new_rows.columns))
+        if self.scaler is not None:
+            if self.covariates and self.covariate_scaler is None:
+                raise ModelNotInitializedError(
+                    f"{self.__class__.__name__} update failed: the covariate scaler fitted at fit time is missing",
+                    details="Refit the model; runs saved before the covariate scaler was kept cannot be updated",
+                )
+            targets = list(self.target_series)
+            scaled[targets] = self.scaler.transform(scaled[targets].to_numpy())
+            if self.covariates:
+                covariates = list(self.covariates)
+                scaled[covariates] = self.covariate_scaler.transform(scaled[covariates].to_numpy())
+        return scaled
+
+    def _update(self, new_rows: pd.DataFrame) -> None:
+        """Condition the factors on ``new_rows``, the rows after the conditioning data, in data units.
+
+        ``new_rows`` has the columns of ``self.data`` (``[covariates |
+        targets]``) in that order. The rows are scaled with the scalers fitted
+        at fit time (:meth:`_scale_new_rows`, never refitted) and appended to
+        ``self.data``, the scaled conditioning frame (the training rows and
+        the rows earlier updates appended). Missing values are filled as fit
+        fills its data: ``interpolate_dataframe`` with the interpolation
+        settings, run over the whole conditioning frame so that the new rows
+        are interpolated across the boundary with the earlier ones (gaps the
+        interpolation leaves are carried forward, then backward). The encoder
+        maps the filled new rows to factors, which are appended to
+        ``self.factors`` (repeated over the MC samples when the factors are
+        3-D); the forecast then starts from the last new row. The network,
+        the scalers and the state space are unchanged.
+        """
         from ...utils.errors import DataValidationError
-        
-        # Validate model is trained
+
         check_condition(
             self._has_factors,
             ModelNotTrainedError,
             f"{self.__class__.__name__} update failed: model has not been trained yet",
             details="Please call fit() or train() first"
         )
-        
-        # Validate autoencoder is built
         check_condition(
-            self.autoencoder is not None,
+            getattr(self, 'autoencoder', None) is not None,
             ModelNotInitializedError,
             f"{self.__class__.__name__} update failed: model has not been built",
-            details="Please call build_model() first"
+            details="Please call fit() first"
         )
-        
-        # Validate dataset has same number of features and column order
-        # DDFMDataset has self.data (DataFrame), not data_processed attribute
-        # Column order must match training data exactly for correct scaling
-        new_data_df = dataset.data.copy()
-        training_data_df = self.data.copy()
-        
-        # Validate column count matches
-        if len(new_data_df.columns) != len(training_data_df.columns):
+
+        columns = list(self.data.columns)
+        if list(new_rows.columns) != columns:
             raise DataValidationError(
-                f"DDFM._update(): Column count mismatch!\n"
-                f"Training data has {len(training_data_df.columns)} columns, "
-                f"but update data has {len(new_data_df.columns)} columns.\n"
-                f"Update data must have exactly the same columns as training data.\n"
-                f"Training columns (first 5): {list(training_data_df.columns[:5])}\n"
-                f"Update columns (first 5): {list(new_data_df.columns[:5])}"
+                f"{self.__class__.__name__}._update(): the new rows have columns {list(new_rows.columns)[:5]}..., "
+                f"expected {columns[:5]}... (the training columns [covariates | targets], in that order)."
             )
-        
-        # Validate column order matches exactly
-        if list(new_data_df.columns) != list(training_data_df.columns):
-            # Find first mismatch
-            first_mismatch = next((i for i, (expected, actual) in enumerate(zip(training_data_df.columns, new_data_df.columns)) if expected != actual), None)
-            if first_mismatch is not None:
-                raise DataValidationError(
-                    f"DDFM._update(): Column order mismatch at index {first_mismatch}!\n"
-                    f"Expected '{training_data_df.columns[first_mismatch]}', got '{new_data_df.columns[first_mismatch]}'.\n"
-                    f"Update data columns must be in the EXACT same order as training data.\n"
-                    f"Expected order (first 5): {list(training_data_df.columns[:5])}\n"
-                    f"Got order (first 5): {list(new_data_df.columns[:5])}\n"
-                    f"Reorder columns to match training order before creating DDFMDataset."
-                )
-        
-        # Validate all columns are numeric (same format as training)
-        non_numeric_cols = [col for col in new_data_df.columns if not pd.api.types.is_numeric_dtype(new_data_df[col])]
-        if non_numeric_cols:
+        non_numeric = [col for col in columns if not pd.api.types.is_numeric_dtype(new_rows[col])]
+        if non_numeric:
             raise DataValidationError(
-                f"DDFM._update(): Non-numeric columns found: {non_numeric_cols[:5]}{'...' if len(non_numeric_cols) > 5 else ''}.\n"
-                f"All columns must be numeric to match training data format."
+                f"{self.__class__.__name__}._update(): non-numeric columns {non_numeric[:5]}; all columns must be numeric."
             )
-        
-        # Ensure no NaNs/Infs are fed into the encoder during update.
-        # Mixed-frequency data updates often include missing values; without interpolation,
-        # encoder outputs NaNs and forecasting fails.
-        if new_data_df.isna().sum().sum() > 0:
-            new_data_df = interpolate_dataframe(
-                new_data_df,
+        n_new = len(new_rows)
+        if n_new < 1:
+            raise DataValidationError(f"{self.__class__.__name__}._update(): no new rows.")
+
+        scaled = self._scale_new_rows(new_rows)
+        conditioning = pd.concat([self.data.reset_index(drop=True), scaled], axis=0, ignore_index=True)
+        filled = conditioning
+        if conditioning.isna().to_numpy().any():
+            filled = interpolate_dataframe(
+                conditioning,
                 method=self.interpolation_method,
                 limit=self.interpolation_limit,
                 limit_direction=self.interpolation_limit_direction
             )
-        
-        # Re-fit scalers with combined data (training + new) to update statistics
-        new_data_df = self._refit_scalers_with_new_data(dataset, new_data_df)
-        new_data = np.asarray(new_data_df.values)
-        training_data = np.asarray(self.data.values)
-        
-        # Validate data shape matches training format
-        validate_update_data_shape(
-            data=new_data,
-            training_data=training_data,
-            model_name=self.__class__.__name__
-        )
-        
-        # Additional validation: ensure 2D array format
-        if new_data.ndim != 2:
+        new_input = filled.to_numpy(dtype=np.float64)[-n_new:]
+        if not np.isfinite(new_input).all():
             raise DataValidationError(
-                f"DDFM._update(): Data must be 2D array (time_steps × features), got shape {new_data.shape}.\n"
-                f"Expected format: (T, {training_data.shape[1]}) where T is number of time steps."
+                f"{self.__class__.__name__}._update(): the new rows hold infinite values (after scaling)."
             )
-        
-        # Validate target_series match (or covariates match, which determines target_series)
-        # Check if target_series match, or if covariates match (which would result in same target_series)
-        new_targets = getattr(dataset, 'target_series', None)
-        new_covariates = getattr(dataset, 'covariates', None) or []
-        train_targets = self.target_series
-        train_covariates = self.covariates or []
-        
-        # If target_series don't match, check if it's due to covariates difference
-        if new_targets != train_targets:
-            # If covariates match, target_series should also match (unless data columns changed)
-            if new_covariates != train_covariates:
-                raise DataValidationError(
-                    f"target_series mismatch: new dataset has {new_targets}, "
-                    f"but training dataset has {train_targets}. "
-                    f"This may be due to covariates difference: new={new_covariates}, train={train_covariates}"
-                )
-        
-        # Convert new data to tensor and move to GPU
-        new_data_tensor = to_tensor(new_data, dtype=DEFAULT_TORCH_DTYPE, device=self.device)
-        
-        # Extract factors from new data using encoder
+
+        new_input_tensor = to_tensor(new_input, dtype=DEFAULT_TORCH_DTYPE, device=self.device)
         self.autoencoder.eval()
         with torch.no_grad():
-            new_factors = self.encoder(new_data_tensor)  # (T_new, num_factors)
-        
-        # Convert to numpy
-        new_factors_np = to_numpy(new_factors)
-        
+            new_factors_np = to_numpy(self.encoder(new_input_tensor))  # (T_new, num_factors)
+
         if self.factors.ndim == 3:
-            n_mc_samples = self.factors.shape[0]
-            new_factors_expanded = np.expand_dims(new_factors_np, axis=0)
-            new_factors_expanded = np.repeat(new_factors_expanded, n_mc_samples, axis=0)
+            new_factors_expanded = np.repeat(np.expand_dims(new_factors_np, axis=0), self.factors.shape[0], axis=0)
             self.factors = np.concatenate([self.factors, new_factors_expanded], axis=1)
         else:
             self.factors = np.vstack([self.factors, new_factors_np])
+        self.data = conditioning

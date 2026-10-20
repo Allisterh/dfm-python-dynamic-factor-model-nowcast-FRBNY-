@@ -127,10 +127,13 @@ def test_impute_missing_targets_keeps_the_covariate_no_op():
 def test_ddfm_fit_and_predict_under_copy_on_write(exog):
     panel = _panel(exog=exog)
     longer = _panel(exog=exog, T=54)
+    y = longer.y.iloc[48:].copy()
+    y.iloc[2, 1] = np.nan  # update scales and interpolates the new rows in frames
+    new = PanelData(y=y, exog=None if longer.exog is None else longer.exog.iloc[48:])
     with _copy_on_write():
         model = DDFM(**TINY, scaler="standard").fit(panel)
-        outputs = [model.predict(3), model.predict_factors(3), model.predict(3, data=longer)]
-        model.update(longer)
+        outputs = [model.predict(3), model.predict_factors(3), model.predict(3, data=new)]
+        model.update(new)
         outputs += [model.predict(3), model.factors_]
     for out in outputs:
         assert np.isfinite(out.to_numpy()).all()

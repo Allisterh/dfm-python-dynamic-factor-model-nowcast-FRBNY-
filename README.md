@@ -288,22 +288,26 @@ model.factors_                              # DataFrame 120 x 2 (factor_0, facto
 fc = model.predict(6)                       # DataFrame 6 x 3 (s0, s1, s2), data units
 zf = model.predict_factors(6)               # DataFrame 6 x 2
 
-full = PanelData.from_wide(raw, time_col="date", exog_cols=["oil", "fx"])   # all 132 rows
-fc_new = model.predict(6, data=full)        # conditions on the full panel on a copy
-model.update(full)                          # encodes every row, refits the target scaler
+new = PanelData.from_wide(raw.iloc[120:], time_col="date", exog_cols=["oil", "fx"])  # the 12 new rows
+fc_new = model.predict(6, data=new)         # conditions on the new rows on a copy
+model.update(new)                           # encodes the new rows; the scalers are not refitted
 pd.testing.assert_frame_equal(model.predict(6), fc_new)
 
 model.save("runs/ddfm", overwrite=True)     # config.json, weights.pt, state.npz, ...
 model = DDFM.load("runs/ddfm", device="cpu")
 ```
 
-`data=` and `update` take the full panel, the training rows plus any new
-ones, with the same series and exog columns. The target scaler is refitted
-on the training targets and the panel's, so `scaler_` changes. This is only
-meaningful with `scaler="standard"` or `None`: for the other scalers the
-engine refits on scaled training targets stacked with raw new ones (a known
-engine limitation, kept for identical numbers). `result_.C` is N x r (series
-by factors), as in DFM. `tutorial/tutorial_{macro,finance,exchange}_ddfm.py`
+`data=` and `update` take only the rows after the last conditioning date
+(as for DFM; rows that overlap it raise `DataValidationError`), with the same
+series and exog columns. The scalers fitted in `fit` (`scaler_` for the
+targets and a fresh instance of its class for the covariates) scale the new
+rows and are never refitted, so every scaler works with `update`. Missing
+values in the new rows are filled as `fit` fills its data: interpolated
+(`interpolation_method`, `interpolation_limit`,
+`interpolation_limit_direction`) together with the conditioning rows, and
+gaps the interpolation leaves carry the last value forward. Only the new
+rows' factors are appended. `result_.C` is N x r (series by factors), as in
+DFM. `tutorial/tutorial_{macro,finance,exchange}_ddfm.py`
 fit the shipped configurations.
 
 ## iVDFM
@@ -426,7 +430,7 @@ the model: it runs on a copy.
 | Model | `update_kind` | `update(data)` | `update(data, refit=True)` | `predict_data` | `data=` / `update` take |
 |-------|---------------|----------------|----------------------------|----------------|-------------------------|
 | DFM   | `filter` | the Kalman filter continues over the new rows (prior `(A x_T|T, A P_T|T A' + Q)` from the filter over the conditioning rows) and appends their filtered states; `result_` unchanged | one EM iteration on all rows; refreshes `result_`, `n_iter_`, `converged_`, `loglik_`, `factors_` | `new_rows` | only the rows after the last conditioning date; overlap raises `DataValidationError` |
-| DDFM  | `encoder_forward_rescale` | encodes every row with the trained weights and refits the target scaler | `UnsupportedInputError` | `full_panel` | the full panel: training rows plus new ones |
+| DDFM  | `encoder_forward` | scales the new rows with the fitted scalers, interpolates them with the conditioning rows, encodes them with the trained weights and appends their factors | `UnsupportedInputError` | `new_rows` | only the rows after the last conditioning date; overlap raises `DataValidationError` |
 | iVDFM | `encoder_forward` | encoder forward pass with the fixed weights; appends the factors | `UnsupportedInputError` | `window` | any window: every row is encoded and the last state starts the forecast |
 | AFM   | `reattach` | attaches the data for later `allocate()` | continues training from the current weights | (none) | `update` and `allocate(data=)` take any panel with the training assets and characteristics |
 

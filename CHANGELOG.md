@@ -144,7 +144,9 @@ unchanged.
   parameters, factors, forecasts and diagnostics as 0.7 (golden fixtures
   captured from the old code enforce this, bitwise on CPU with pinned
   threads). DFM's numbers then changed on purpose with the numerical-stability
-  fixes above; DDFM, iVDFM and AFM still match 0.7. The old API is removed, not deprecated; scripts and checkpoints
+  fixes above; DDFM's `update` and `predict(h, data=)` changed with the
+  bug fixes below (its fit and `predict(h)` still match 0.7), and iVDFM and
+  AFM still match 0.7. The old API is removed, not deprecated; scripts and checkpoints
   written for 0.7 keep working with `pip install "dfm-python==0.7.0"`.
 
   Old calls and their replacements:
@@ -289,14 +291,10 @@ unchanged.
   - **DDFM:**
     - `result_.C` is the loading matrix H, N x r (series x factors), the DFM
       orientation; it was H transposed (factors x N).
-    - `update(data)` and `predict(h, data=)` take the full panel (training
-      rows plus new ones). Known limitation, kept for identical numbers:
-      refitting the target scaler inverse-transforms the training targets
-      only for a scaler with `mean_` and `scale_`; with `"minmax"`,
-      `"robust"`, `"maxabs"`, `"quantile"` or another transformer it refits
-      on scaled training targets stacked with raw new ones, so `update` and
-      `predict(h, data=)` are only meaningful with `scaler="standard"` or
-      `None`. `update(data, refit=True)` raises `UnsupportedInputError`.
+    - `update(data)` and `predict(h, data=)` take only the rows after the
+      last conditioning date and never refit the scalers (see "Bug fixes
+      before release" below). `update(data, refit=True)` raises
+      `UnsupportedInputError`.
     - With `scaler=None` the forecasts are in model space (the engine's
       forecast, untransformed); the old `predict` raised without a scaler.
     - Dropped as dead (stored but never read): `max_epoch_pre_train`
@@ -415,6 +413,45 @@ unchanged.
   log-likelihood change test and is unchanged. A test now checks that the
   documented defaults (docstring, `DFMConfig`, this changelog) equal
   `DFM().get_params()`.
+- **DDFM `update` and `predict(h, data=)` fixed.** **DDFM update numbers
+  change; its fit and `predict(h)` do not** (the fit outputs of every DDFM
+  golden fixture are bitwise identical). One semantics now, the DFM one
+  (tags `update_kind="encoder_forward"`, `predict_data="new_rows"`, before
+  `"encoder_forward_rescale"` and `"full_panel"`):
+  - `data` holds only the rows after the last conditioning date; rows that
+    overlap it raise `DataValidationError` (a `RangeIndex` must continue the
+    model's), and `conditioning_index_` is extended by `data.index`. Before,
+    `data` was the full panel and the factors of every row were appended
+    after the training factors, so the training rows were appended twice.
+  - The scalers fitted in `fit` scale the new rows and are never refitted:
+    `scaler_` for the targets, and for the covariates the `type(scaler)()`
+    instance fitted on the training covariates, which the engine now keeps
+    (and `save` writes to `state.npz`/`state.json` under
+    `covariate_scaler`). Before, the target scaler was refitted on the
+    training rows plus the whole panel (repeating the training rows), and
+    the training targets were inverse-transformed only for a scaler with
+    `mean_` and `scale_`, so `"minmax"`, `"robust"`, `"maxabs"`,
+    `"quantile"` and custom scalers were refitted on mixed units (with
+    `"minmax"`, forecasts of -3.0, 11.2 and -14.0 for series between 46 and
+    64; now 46.2, 52.1 and 54.8); the covariates were scaled with a scaler
+    fitted on the update panel.
+  - Missing values in the new rows are filled as `fit` fills its data:
+    interpolated with the interpolation settings together with the
+    conditioning rows (so a gap at the boundary is interpolated from the
+    earlier rows), gaps left over carried forward. Before, the un-interpolated
+    targets overwrote the interpolated ones, so a missing target reached the
+    encoder as NaN, that row's factors were NaN and the forecast started from
+    a zero state.
+  - `predict(h, data=new)` equals `update(new).predict(h)`, bitwise, and
+    leaves the model unchanged; successive updates give the same factors as
+    one update with all their rows.
+  - Golden fixtures: only the update outputs (`update_predict_X`,
+    `update_predict_Z`, `update_factors`, `update_scaler_mean`,
+    `update_scaler_scale`) were recaptured. `ddfm_exchange` and
+    `ddfm_finance` now update with their 12 held-out rows instead of the
+    whole panel; `ddfm_macro` has no rows after the 400 it fits, so it no
+    longer has update outputs (its test checks that an update with the
+    fitted rows raises).
 
 ## 0.7.0
 

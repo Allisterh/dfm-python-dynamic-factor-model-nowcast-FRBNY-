@@ -12,8 +12,9 @@ same weights, factors, state-space matrices and forecasts.
 ``predict(h)`` returns the target forecasts in data units (the engine's
 forecast, inverse-transformed with ``scaler_``; the identity with
 ``scaler=None``), and ``predict_factors(h)`` the AR(1) factor forecast.
-``update(data)`` runs the engine's update on the full panel (encoder forward
-pass of every row, factors appended, target scaler refitted);
+``update(data)`` takes the rows after the conditioning data (overlap raises),
+scales them with the scalers fitted at fit time, interpolates them as fit
+interpolates its data and appends their encoded factors;
 ``predict(h, data=...)`` does the same on a copy, so the model is unchanged.
 
 ``save(path)`` writes the pickle-free directory of the save layout
@@ -28,6 +29,7 @@ from __future__ import annotations
 import copy
 import logging
 import math
+import pickle
 import warnings
 from pathlib import Path
 from typing import Any, Optional
@@ -47,6 +49,7 @@ from ...config.schema.results import DDFMResult
 from ...dataset.ddfm_dataset import DDFMDataset
 from ...dataset.panel import PanelData
 from ...io.layout import index_from_spec, index_to_spec
+from ...io.scaler import SCALER_PREFIX, decode_scaler, encode_scaler, is_known_scaler
 from ...logger import get_logger
 from ...logger.progress import fit_verbosity, quiet_engine_loggers
 from ...utils.errors import ConfigurationError, DataValidationError, UnsupportedInputError
@@ -99,6 +102,47 @@ _RESULT_REBUILT = ("target_scaler",)
 _SSM_FIELDS = ("F", "H", "Q", "R", "mu_0", "Sigma_0")
 # Engine values __init__ reads from the dataset, saved in state.json and passed to DDFMEngine._from_saved.
 _ENGINE_DIMS = ("input_dim", "output_dim", "num_series", "target_series", "covariates")
+# state.npz prefix of the fitted covariate scaler's arrays (its JSON part is state.json's "covariate_scaler").
+_COVARIATE_SCALER_PREFIX = "covariate_scaler/"
+# The covariate scaler's "class" in state.json when it is pickled (a class outside the five known scalers).
+_PICKLED = "pickle"
+
+
+def _encode_covariate_scaler(scaler: Any) -> tuple[dict, dict]:
+    """``(json_dict, arrays)`` for the engine's fitted covariate scaler.
+
+    The five known scalers (and None) are encoded like ``scaler_``
+    (:func:`~dfm_python.io.scaler.encode_scaler`), their arrays under
+    ``covariate_scaler/``. Any other class (the covariate scaler is a fresh
+    instance of ``scaler``'s class, so it is custom exactly when ``scaler_``
+    is, and ``scaler_`` is then pickled too) is pickled into the uint8 array
+    ``covariate_scaler/pickle``; load reads it only with ``allow_pickle=True``.
+    """
+    if is_known_scaler(scaler):
+        try:
+            json_dict, arrays = encode_scaler(scaler)
+        except TypeError:  # a parameter JSON cannot hold: pickle, as write_scaler does
+            pass
+        else:
+            return json_dict, {_COVARIATE_SCALER_PREFIX + k[len(SCALER_PREFIX):]: v for k, v in arrays.items()}
+    blob = pickle.dumps(scaler, protocol=pickle.HIGHEST_PROTOCOL)
+    return {"class": _PICKLED}, {_COVARIATE_SCALER_PREFIX + "pickle": np.frombuffer(blob, dtype=np.uint8)}
+
+
+def _decode_covariate_scaler(json_dict: Any, arrays: dict, allow_pickle: bool, path: Path) -> Any:
+    """Inverse of :func:`_encode_covariate_scaler`; None for a run saved without one."""
+    if json_dict is None:
+        return None
+    if json_dict.get("class") == _PICKLED:
+        if not allow_pickle:
+            raise ConfigurationError(
+                f"{str(path)!r} stores its fitted covariate scaler pickled, because its class is not one of the "
+                "known scalers. Unpickling can run arbitrary code, so it is off by default: pass allow_pickle=True "
+                "to load(...) only if you trust the directory."
+            )
+        return pickle.loads(arrays[_COVARIATE_SCALER_PREFIX + "pickle"].tobytes())  # noqa: S301 - gated by allow_pickle
+    prefix = _COVARIATE_SCALER_PREFIX
+    return decode_scaler(json_dict, {SCALER_PREFIX + k[len(prefix):]: v for k, v in arrays.items() if k.startswith(prefix)})
 
 
 def _is_int(value: Any) -> bool:
@@ -160,13 +204,11 @@ class DDFM(BaseFactorModel):
     scaler : str or sklearn transformer, optional
         Scaler of the targets: "standard", "robust", "minmax", "maxabs",
         "quantile", or an unfitted transformer, which is cloned. The
-        covariates are scaled with a fresh instance of the same class. None
-        trains on the data as given. Forecasts are always in data units.
-        ``update`` and ``predict(h, data=)`` are only meaningful with
-        "standard" or None: the engine's scaler refit inverse-transforms the
-        training targets only for a scaler with ``mean_`` and ``scale_``, so
-        other scalers are refitted on scaled training targets stacked with raw
-        new ones (a known engine bug, kept for identical numbers).
+        covariates are scaled with a fresh instance of the same class, fitted
+        on the training covariates. None trains on the data as given.
+        Forecasts are always in data units. Both scalers are fitted once, in
+        ``fit``: ``update`` and ``predict(h, data=)`` scale the new rows with
+        them and never refit them.
     random_state : int, optional, default 3
         Seed of the autoencoder's initialization (global torch RNG) and of the
         local generator of the MCMC noise. None does not seed, so runs differ.
@@ -190,7 +232,8 @@ class DDFM(BaseFactorModel):
     device_ : torch.device
         The resolved device.
     scaler_ : sklearn transformer or None
-        The target scaler fitted on the training data.
+        The target scaler fitted on the training data (``update`` does not
+        change it).
     n_features_in_, feature_names_in_, exog_names_in_, index_
         Number and names of the targets, the exog names and the training index.
     n_iter_ : int
@@ -202,8 +245,9 @@ class DDFM(BaseFactorModel):
     random_state_ : int or None
         The seed the run used.
     conditioning_index_ : pandas.Index
-        Time index of the data the forecasts start from; ``predict(h)``
-        returns the ``h`` stamps after its last entry.
+        Time index of the data the forecasts start from: ``index_``, extended
+        by the rows of each ``update``; ``predict(h)`` returns the ``h``
+        stamps after its last entry.
 
     Examples
     --------
@@ -212,8 +256,8 @@ class DDFM(BaseFactorModel):
     >>> model = DDFM(n_factors=4, encoder_layers=(16,), max_iter=200, scaler="standard").fit(data)  # doctest: +SKIP
     >>> model.predict(6)  # doctest: +SKIP
     >>> model.predict_factors(6)  # doctest: +SKIP
-    >>> model.predict(6, data=full_panel)  # the same model conditioned on the full panel  # doctest: +SKIP
-    >>> model.update(full_panel).save("ddfm_run")  # doctest: +SKIP
+    >>> model.predict(6, data=new_rows)  # conditions on the rows after index_[-1]; model unchanged  # doctest: +SKIP
+    >>> model.update(new_rows).save("ddfm_run")  # doctest: +SKIP
     >>> DDFM.load("ddfm_run").predict(6)  # doctest: +SKIP
     """
 
@@ -225,8 +269,8 @@ class DDFM(BaseFactorModel):
         "capability:update": True,
         "capability:factor_forecast": True,
         "capability:device": True,
-        "update_kind": "encoder_forward_rescale",
-        "predict_data": "full_panel",
+        "update_kind": "encoder_forward",
+        "predict_data": "new_rows",
         # The class default (random_state=3); an instance reports random_state is None.
         "non_deterministic": False,
     }
@@ -384,31 +428,31 @@ class DDFM(BaseFactorModel):
             )
         return clone(scaler)
 
-    def _adapter(self, panel: PanelData, *, fitted: bool = False) -> DDFMDataset:
+    @staticmethod
+    def _engine_frame(panel: PanelData) -> pd.DataFrame:
+        """``panel`` as the engine's frame ``[exog | y]`` on a RangeIndex, in data units."""
+        y = panel.y.reset_index(drop=True)
+        if panel.exog is None:
+            return y
+        return pd.concat([panel.exog.reset_index(drop=True), y], axis=1)
+
+    def _adapter(self, panel: PanelData) -> DDFMDataset:
         """The engine's dataset built from ``panel``: the frame ``[exog | y]`` on a RangeIndex.
 
         The exog columns are the dataset's covariates and the ``y`` columns its
         targets, in that order (the column order of the engine's input). The
         time column name is absent from the frame, so the dataset keeps the
         RangeIndex. The dataset fits the target scaler and scales the
-        covariates with a fresh instance of the same class.
-
-        With ``fitted=True`` (the data of ``update`` and ``predict(data=...)``)
-        the scaler is an unfitted clone of ``scaler_`` (None without one).
+        covariates with a fresh instance of the same class, which it keeps
+        (the engine's ``covariate_scaler``).
         """
-        y = panel.y.reset_index(drop=True)
-        if panel.exog is None:
-            frame = y
-        else:
-            frame = pd.concat([panel.exog.reset_index(drop=True), y], axis=1)
+        frame = self._engine_frame(panel)
         time_col = _TIME_COLUMN
         while time_col in set(frame.columns):
             time_col += "_"
-        if fitted:
-            scaler = None if self.scaler_ is None else clone(self.scaler_)
-        else:
-            scaler = self._fresh_scaler()
-        return DDFMDataset(data=frame, time_idx=time_col, covariates=list(panel.exog_names), scaler=scaler)
+        return DDFMDataset(
+            data=frame, time_idx=time_col, covariates=list(panel.exog_names), scaler=self._fresh_scaler()
+        )
 
     def _engine_params(self) -> dict:
         """Every engine hyperparameter, passed explicitly under the engine's names."""
@@ -504,8 +548,22 @@ class DDFM(BaseFactorModel):
 
     # -- conditioning on new data -------------------------------------------
 
-    def _panel(self, data: Any, method: str) -> PanelData:
-        """Validate ``data`` for a fitted model: same targets and exog as in training, at least one row."""
+    def _new_rows(self, data: Any, method: str) -> tuple[pd.DataFrame, pd.Index]:
+        """Validate new rows for a fitted model; return them as the engine's frame and the extended index.
+
+        ``data`` must hold the training targets and exog (same names, same
+        order), an index of the training index's type and at least one row,
+        all strictly after the last conditioning time stamp (a ``RangeIndex``
+        must continue the model's).
+
+        Returns
+        -------
+        frame : pandas.DataFrame
+            The new rows as ``[exog | y]`` on a RangeIndex, in data units (the
+            engine scales them with the fitted scalers).
+        extended : pandas.Index
+            ``conditioning_index_`` followed by ``data.index``.
+        """
         panel = self._validate_data(data)  # inputs the tags exclude raise UnsupportedInputError first
         expected = list(self.feature_names_in_)
         if list(panel.series_names) != expected:
@@ -521,19 +579,14 @@ class DDFM(BaseFactorModel):
             )
         if panel.n_timesteps < 1:
             raise DataValidationError(f"DDFM.{method}: data has no time steps.")
-        return panel
+        extended = self._extend_conditioning_index(panel.index, f"DDFM.{method}")
+        return self._engine_frame(panel), extended
 
-    def _condition(self, engine: DDFMEngine, panel: PanelData) -> None:
-        """Run the engine's ``_update`` on ``panel`` (today's update; see :meth:`update`).
-
-        The dataset is built like the training dataset, with an unfitted clone
-        of ``scaler_`` (the dataset fits it on the panel's targets; the engine
-        then rescales the targets with its own scaler, refitted).
-        """
-        dataset = self._adapter(panel, fitted=True)
+    def _condition(self, engine: DDFMEngine, frame: pd.DataFrame) -> None:
+        """Run the engine's ``_update`` on the new rows ``frame`` (see :meth:`update`)."""
         with fit_verbosity(self.verbose), quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS), \
                 quiet_engine_loggers(self.verbose, _DIAGNOSTIC_LOGGERS, logging.ERROR):
-            engine._update(dataset)
+            engine._update(frame)
 
     def _rng_devices(self) -> list:
         """The CUDA devices whose generators ``predict(data=...)`` forks besides the CPU one."""
@@ -543,23 +596,40 @@ class DDFM(BaseFactorModel):
         return [device.index if device.index is not None else torch.cuda.current_device()]
 
     def update(self, data: Any, *, refit: bool = False) -> DDFM:
-        """Condition later forecasts on ``data`` and return ``self``.
+        """Condition later forecasts on new rows ``data`` and return ``self``.
 
-        This is the engine's update, unchanged (tag ``update_kind`` is
-        ``"encoder_forward_rescale"``): ``data`` is the full panel, training
-        rows included (tag ``predict_data="full_panel"``). The target scaler is
-        refitted in place on the training targets (in data units) followed by
-        the targets of ``data``, and rescales them; missing values are
-        interpolated; the encoder output of every row of ``data`` is appended
-        to the factors, so ``predict(h)`` then starts from the last row of
-        ``data``. ``scaler_`` and ``result_.target_scaler`` are that same
-        refitted scaler. The network parameters, ``result_`` and ``factors_``
-        are unchanged; ``conditioning_index_`` becomes ``data.index``.
+        Tag ``update_kind`` is ``"encoder_forward"``: an encoder forward pass
+        with the trained weights. ``data`` holds only the rows after the last
+        conditioning time stamp (tag ``predict_data="new_rows"``, as for DFM);
+        rows that overlap the conditioning data raise.
+
+        - Scaling: the targets are scaled with ``scaler_`` and the covariates
+          with the covariate scaler, both fitted in ``fit`` on the training
+          data and never refitted (any scaler works, "minmax", "robust",
+          "maxabs", "quantile" and custom transformers included).
+        - Missing values: filled as ``fit`` fills its data, by interpolation
+          with ``interpolation_method``, ``interpolation_limit`` and
+          ``interpolation_limit_direction`` over the conditioning rows and the
+          new rows together (so a gap at the boundary is interpolated from
+          the earlier rows); gaps the interpolation leaves (longer than the
+          limit, or at the end) carry the last value forward. Missing targets
+          therefore never reach the encoder as NaN.
+        - Factors: the encoder maps each new row to its factors, which are
+          appended to the engine's factors, so ``predict(h)`` then starts from
+          the last new row.
+
+        The network parameters, ``scaler_``, ``result_`` and ``factors_`` are
+        unchanged; ``conditioning_index_`` is extended by ``data.index``.
+        ``predict(h, data=new)`` forecasts from the same factors as
+        ``update(new).predict(h)``, without changing the model.
 
         Parameters
         ----------
         data : PanelData, DataFrame or 2-D array
-            The same targets (and exog) as in training, in the same order.
+            The new rows of the training targets (and exog), same names and
+            order, on an index of the training index's type, strictly after
+            ``conditioning_index_``. A ``RangeIndex`` must continue the
+            model's index. Missing values are allowed.
         refit : bool, default False
             Not supported: DDFM cannot continue training from new data.
 
@@ -568,7 +638,8 @@ class DDFM(BaseFactorModel):
         UnsupportedInputError
             For ``refit=True``, ``series_exog`` or a mixed-frequency panel.
         DataValidationError
-            If the series or exog names differ from the training data, or
+            If the series or exog names differ from the training data, the
+            index type differs, the rows overlap the conditioning data or
             ``data`` is empty.
         """
         self._check_is_fitted("update")
@@ -577,9 +648,9 @@ class DDFM(BaseFactorModel):
                 "DDFM.update(refit=True) is not supported: DDFM cannot continue training on new data. Use "
                 "update(data) (refit=False) to condition the forecasts on it, or fit(data) to retrain from scratch."
             )
-        panel = self._panel(data, "update")
-        self._condition(self.network_, panel)
-        self.conditioning_index_ = panel.index
+        frame, extended = self._new_rows(data, "update")
+        self._condition(self.network_, frame)
+        self.conditioning_index_ = extended
         return self
 
     # -- forecasting ---------------------------------------------------------
@@ -590,14 +661,13 @@ class DDFM(BaseFactorModel):
         if data is None:
             y_forecast, z_forecast = self.network_._forecast(h)
             return y_forecast, z_forecast, h, self.conditioning_index_
-        panel = self._panel(data, method)
-        # update(data) on a copy of the engine (the copy's scaler is refitted, not
-        # scaler_); the global torch RNG is restored afterwards.
+        frame, extended = self._new_rows(data, method)
+        # update(data) on a copy of the engine; the global torch RNG is restored afterwards.
         with torch.random.fork_rng(devices=self._rng_devices()):
             engine = copy.deepcopy(self.network_)
-            self._condition(engine, panel)
+            self._condition(engine, frame)
             y_forecast, z_forecast = engine._forecast(h)
-        return y_forecast, z_forecast, h, panel.index
+        return y_forecast, z_forecast, h, extended
 
     def _frame(self, values: np.ndarray, h: int, columns: list, kind: str, origin_index: pd.Index) -> pd.DataFrame:
         frame = pd.DataFrame(
@@ -622,12 +692,13 @@ class DDFM(BaseFactorModel):
             Forecast horizon (a positive integer; anything else raises
             ``TypeError``).
         data : PanelData, DataFrame or 2-D array, optional
-            The full panel to condition on (tag ``predict_data="full_panel"``:
-            the training rows and the new ones). This is :meth:`update` on a
-            deep copy of the model, followed by the forecast, which starts
-            after the last row of ``data`` and is inverse-transformed with the
-            copy's refitted scaler. The model and the global torch RNG are
-            unchanged. Same series and exog as in training.
+            New rows to condition on (tag ``predict_data="new_rows"``: only
+            the rows strictly after ``conditioning_index_``, as for
+            :meth:`update`). This is :meth:`update` on a deep copy of the
+            model, followed by the forecast, which starts after
+            ``data.index[-1]``; the forecast equals ``update(data)`` followed
+            by ``predict(h)``. The model and the global torch RNG are
+            unchanged.
 
         Returns
         -------
@@ -635,6 +706,12 @@ class DDFM(BaseFactorModel):
             float64, ``h`` rows after the last conditioning time stamp, one
             column per target in the user's order; ``attrs`` holds ``model``,
             ``kind="forecast"`` and ``origin``.
+
+        Raises
+        ------
+        DataValidationError
+            For ``data`` that does not hold the training series and exog,
+            overlaps the conditioning data or is empty (see :meth:`update`).
         """
         y_forecast, _, h, origin = self._run_forecast("predict", h, data)
         return self._frame(y_forecast, h, list(self.feature_names_in_), "forecast", origin)
@@ -660,14 +737,17 @@ class DDFM(BaseFactorModel):
           ``update`` they include the appended rows), ``eps``,
           ``last_neurons``, the state-space matrices ``ssm/F``, ``ssm/H``,
           ``ssm/Q``, ``ssm/R``, ``ssm/mu_0``, ``ssm/Sigma_0``, and
-          ``data/frame``: the engine's scaled training frame ``[exog | y]``
-          (NaN kept), which ``update`` reads to refit the target scaler on the
-          training targets; plus the ``scaler/`` entries;
+          ``data/frame``: the engine's scaled conditioning frame ``[exog |
+          y]`` (the training rows and the rows ``update`` appended, NaN kept),
+          which ``update`` interpolates the new rows against; the fitted
+          covariate scaler's arrays under ``covariate_scaler/``; plus the
+          ``scaler/`` entries;
         - ``state.json``: the training diagnostics (``num_iter``, ``loss_now``,
           null when training stopped before computing it, ``converged``), the
           engine's ``input_dim``, ``output_dim``, ``num_series``,
           ``encoder_size``, ``decoder_size``, ``target_series`` and
-          ``covariates``, the frame's ``data_columns`` and
+          ``covariates``, the frame's ``data_columns``, the covariate scaler
+          (``covariate_scaler``, encoded like ``scaler.json``) and
           ``conditioning_index``;
         - ``result.npz`` / ``result.json``: ``result_`` without
           ``target_scaler``, which load sets to ``scaler_``;
@@ -688,6 +768,8 @@ class DDFM(BaseFactorModel):
         # fortran_order and read back column-major, so a loaded model forecasts
         # bitwise like the fitted one.
         arrays = {key: np.array(value, order="K", copy=True) for key, value in arrays.items()}
+        covariate_scaler, covariate_arrays = _encode_covariate_scaler(engine.covariate_scaler)
+        arrays.update(covariate_arrays)
         loss_now = getattr(engine, "loss_now", None)
         meta = {
             "num_iter": int(engine._num_iter),
@@ -697,6 +779,7 @@ class DDFM(BaseFactorModel):
             "encoder_size": list(engine.encoder_size),
             "decoder_size": None if engine.decoder_size is None else list(engine.decoder_size),
             "data_columns": list(engine.data.columns),
+            "covariate_scaler": covariate_scaler,
             "conditioning_index": index_to_spec(self.conditioning_index_),
         }
         self._write_state(path, arrays, meta)
@@ -732,6 +815,7 @@ class DDFM(BaseFactorModel):
         if engine.covariates:
             engine._target_col_tensor = torch.tensor(engine.target_indices, device=engine.device, dtype=torch.long)
         engine.scaler = est.scaler_
+        engine.covariate_scaler = _decode_covariate_scaler(meta.get("covariate_scaler"), arrays, allow_pickle, path)
 
         est.network_ = engine
         est.device_ = device
