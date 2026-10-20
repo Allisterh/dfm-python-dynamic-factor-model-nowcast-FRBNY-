@@ -720,16 +720,20 @@ def validate_dfm_initialization(
             )
     
     # Check covariance matrices are positive definite
+    # Q is singular by construction (zero process noise on the companion lag states
+    # and the idiosyncratic chain shift states), so only a negative eigenvalue is
+    # reported for it.
     for name, cov in [('Q', Q), ('R', R), ('V_0', V_0)]:
         try:
-            eigenvals = np.linalg.eigvals(cov)
+            eigenvals = np.linalg.eigvalsh(0.5 * (cov + cov.T))
             min_eigenval = np.min(eigenvals)
-            if min_eigenval < 0:
+            scale = max(1.0, float(np.max(np.abs(eigenvals))))
+            if min_eigenval < -1e-12 * scale:
                 _logger.warning(
                     f"{name} has negative eigenvalues (min={min_eigenval:.2e}). "
                     f"Matrix may not be positive definite."
                 )
-            if min_eigenval < 1e-8:
+            if name != 'Q' and min_eigenval < 1e-8:
                 _logger.warning(
                     f"{name} has very small eigenvalues (min={min_eigenval:.2e}). "
                     f"This may cause numerical instability."

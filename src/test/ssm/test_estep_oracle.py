@@ -10,9 +10,8 @@ The engine is then compared with the reference at FIXED parameters: the fitted
 parameters of the DFM golden fixtures (on the standardized data the engine fed
 to EM, rebuilt from the case recipes), the synthetic fixture with a few NaN,
 and random models. The engine must match the reference loglik to 1e-8 and the
-smoothed moments to 1e-6 (relative). The fitted loglik test stays
-``xfail(strict=True)`` until EM reports the loglik of the parameters it
-returns (today it reports the E-step before the last M-step).
+smoothed moments to 1e-6 (relative). ``DFM.fit`` must report the exact
+loglik of the parameters it returns.
 """
 
 from __future__ import annotations
@@ -26,14 +25,9 @@ import pytest
 from . import _reference_kf as ref
 
 FIXTURES = ("dfm_synthetic", "dfm_macro_monthly_quarterly", "dfm_macro_weekly_monthly")
-PRE_FIX = "EM reports the loglik of the E-step before the last M-step, not of the returned parameters"
 
 LOGLIK_RTOL = 1e-8
 MOMENT_RTOL = 1e-6
-
-
-def _xfail(reason: str = PRE_FIX):
-    return pytest.mark.xfail(strict=True, reason=reason)
 
 
 # --------------------------------------------------------------------- data
@@ -211,7 +205,6 @@ def test_engine_moments_match_reference(name):
 # ----------------------------------------------------- the fitted loglik
 
 
-@_xfail()
 def test_fit_loglik_is_exact_on_mixed_frequency():
     """DFM.fit on the monthly/quarterly case reports the exact loglik of its returned parameters."""
     from dfm_python import DFM, PanelData

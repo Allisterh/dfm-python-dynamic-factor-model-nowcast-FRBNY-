@@ -7,6 +7,7 @@ and handles mixed-frequency data with tent kernel aggregation.
 
 import numpy as np
 from typing import Tuple, Optional, Dict, Any, Callable
+from scipy import linalg as sla
 from scipy.linalg import block_diag
 
 from ...config.constants import (
@@ -19,13 +20,14 @@ from ...config.constants import (
     DEFAULT_REGULARIZATION,
     DEFAULT_TRANSITION_COEF,
     DEFAULT_PROCESS_NOISE,
+    MIN_OBSERVATION_NOISE,
 )
 from ...functional.em import _DEFAULT_EM_CONFIG
+from ...functional.state_layout import DFMStateLayout, bm14_idio_indicator
 from ...numeric.builder import build_dfm_slower_freq_observation_matrix, build_lag_matrix
 from ...models.dfm.mixed_freq import build_slower_freq_idiosyncratic_chain, find_slower_frequency
 from .tent import get_slower_freq_tent_weights
 from ...numeric.stability import (
-    ensure_covariance_stable,
     ensure_process_noise_stable,
     create_scaled_identity,
 )
@@ -33,15 +35,104 @@ from ...numeric.estimator import (
     estimate_ar1,
     estimate_variance,
     estimate_var,
-    compute_initial_covariance_from_transition,
 )
 from ...utils.helper import handle_linear_algebra_error
-from ...utils.validation import has_shape_with_min_dims
 from ...utils.errors import NumericalError
 from ...logger import get_logger
 from ...config.constants import DEFAULT_NAN_K, DEFAULT_NAN_METHOD
 
 _logger = get_logger(__name__)
+
+
+#: Variance of the diffuse part of V_0 on the (near) unit-root subspace of A.
+DIFFUSE_INITIAL_VARIANCE = 1e4
+#: Eigenvalues of A with modulus >= 1 - this are treated as unit roots for V_0.
+UNIT_ROOT_TOLERANCE = 1e-3
+
+
+def _sym(M: np.ndarray) -> np.ndarray:
+    return 0.5 * (M + M.T)
+
+
+def _psd(M: np.ndarray) -> np.ndarray:
+    """Symmetric part of ``M``, with negative eigenvalues (round-off) set to 0 only if there are any."""
+    M = _sym(np.asarray(M, dtype=np.float64))
+    if M.size == 0:
+        return M
+    w, U = np.linalg.eigh(M)
+    if w[0] < 0.0:
+        M = _sym((U * np.maximum(w, 0.0)) @ U.T)
+    return M
+
+
+def initial_state_covariance(
+    A: np.ndarray,
+    Q: np.ndarray,
+    kappa: float = DIFFUSE_INITIAL_VARIANCE,
+    unit_root_tol: float = UNIT_ROOT_TOLERANCE,
+) -> np.ndarray:
+    """Initial state covariance ``V_0`` for the transition ``(A, Q)``.
+
+    If every eigenvalue of ``A`` has modulus below ``1 - unit_root_tol``, ``V_0``
+    is the stationary covariance, the exact solution of the discrete Lyapunov
+    equation ``V = A V A' + Q`` (no regularization). Otherwise, or if that
+    solve fails or is not finite, ``V_0`` is the stationary covariance on the
+    stable invariant subspace of ``A`` plus a finite diffuse ``kappa * I`` on
+    the (near) unit-root subspace: with the ordered real Schur form
+    ``A = U T U'`` (unit roots first), ``V_0 = U diag(kappa I, P_22) U'`` where
+    ``P_22`` solves the Lyapunov equation of the stable block ``T_22``. Both
+    branches are deterministic. The result is symmetric and PSD (negative
+    round-off eigenvalues are set to 0).
+    """
+    A = np.asarray(A, dtype=np.float64)
+    Q = _sym(np.asarray(Q, dtype=np.float64))
+    m = A.shape[0]
+    if m == 0:
+        return np.zeros((0, 0))
+    rho = float(np.max(np.abs(np.linalg.eigvals(A))))
+    if rho < 1.0 - unit_root_tol:
+        try:
+            V = sla.solve_discrete_lyapunov(A, Q)
+            if np.all(np.isfinite(V)):
+                return _psd(V)
+        except (np.linalg.LinAlgError, ValueError):
+            pass
+    tol = 1.0 - unit_root_tol
+    T_s, U, k = sla.schur(A, output="real", sort=lambda re, im: abs(complex(re, im)) >= tol)
+    P = np.zeros((m, m))
+    if k < m:
+        Qs = U.T @ Q @ U
+        P[k:, k:] = sla.solve_discrete_lyapunov(T_s[k:, k:], _sym(Qs[k:, k:]))
+    if k > 0:
+        P[:k, :k] = kappa * np.eye(k)
+    _logger.info(
+        f"Initial state covariance: spectral radius of A is {rho:.4f}; {k} of {m} directions "
+        f"get the diffuse variance {kappa:g}, the rest the stationary covariance."
+    )
+    return _psd(U @ P @ U.T)
+
+
+def tent_restricted_least_squares(
+    y: np.ndarray,
+    X: np.ndarray,
+    R_con: np.ndarray,
+    q_con: np.ndarray,
+) -> np.ndarray:
+    """``argmin ||y - X c||`` subject to ``R_con c = q_con``, with the restriction exact.
+
+    ``c = c_p + N z`` with ``c_p`` the minimum-norm solution of the restriction
+    and ``N`` an orthonormal basis of the null space of ``R_con``; ``z`` is the
+    least-squares fit of ``y - X c_p`` on ``X N``. ``R_con c - q_con`` is then
+    zero up to rounding, whatever the conditioning of ``X'X``.
+    """
+    X = np.asarray(X, dtype=np.float64)
+    y = np.asarray(y, dtype=np.float64).ravel()
+    R_con = np.asarray(R_con, dtype=np.float64)
+    q_con = np.asarray(q_con, dtype=np.float64).ravel()
+    c_p = np.linalg.lstsq(R_con, q_con, rcond=None)[0]
+    basis = sla.null_space(R_con)
+    z = np.linalg.lstsq(X @ basis, y - X @ c_p, rcond=None)[0]
+    return c_p + basis @ z
 
 
 def remNaNs_spline(x: np.ndarray, optNaN: Dict[str, Any]) -> Tuple[np.ndarray, np.ndarray]:
@@ -358,21 +449,21 @@ def initialize_block_loadings(
         Total number of series
     max_lag_size : int
         Maximum lag size for loading matrix
-    matrix_regularization : float, default DEFAULT_REGULARIZATION
-        Regularization for matrix operations
+    matrix_regularization : float, optional
+        Unused (kept for compatibility): the slower-frequency loadings are the
+        exact tent-restricted least-squares fit (``tent_restricted_least_squares``).
     dtype : type, default np.float32
         Data type
         
     Returns
     -------
     C_i : np.ndarray
-        Loading matrix for this block (N x (num_factors * max_lag_size))
+        Loading matrix for this block (N x (num_factors * max_lag_size)). The
+        rows of slower-frequency series satisfy ``kron(R_mat, I) c = 0``.
     factors : np.ndarray
         Extracted factors (T x num_factors)
     """
     from ...layer.pca import compute_principal_components
-    from ...numeric.estimator import estimate_constrained_ols
-    from ...config.constants import DEFAULT_REGULARIZATION, DEFAULT_TENT_KERNEL_REGULARIZATION_MULTIPLIER
     
     
     
@@ -493,39 +584,26 @@ def initialize_block_loadings(
                 continue
             
             try:
-                # Use unified constrained OLS estimation
-                # Increase regularization for slower-frequency series to handle ill-conditioning
-                # Tent kernel factors are highly correlated, requiring much higher regularization
-                base_reg = matrix_regularization or DEFAULT_REGULARIZATION
-                # Use significantly higher regularization for slower-frequency (tent kernel) series
-                # Increased multiplier handles extreme ill-conditioning (rcond ~1e-11)
-                reg = base_reg * DEFAULT_TENT_KERNEL_REGULARIZATION_MULTIPLIER
-                loadings_constrained = estimate_constrained_ols(
-                    y=series_data_clean,
-                    X=slower_freq_factors_clean,
-                    R=constraint_matrix_block,
-                    q=constraint_vector_block,
-                    V_smooth=None,  # Raw data mode
-                    regularization=reg,
-                    dtype=dtype
+                # Restricted least squares with the tent restriction imposed exactly
+                # (null-space parameterization, no ridge term): the initial loadings
+                # satisfy R_con c = q_con, as every later M-step does.
+                loadings_constrained = tent_restricted_least_squares(
+                    series_data_clean, slower_freq_factors_clean,
+                    constraint_matrix_block, constraint_vector_block,
                 )
-                # Validate loadings are finite - raise error if not (no fallback)
                 if np.any(~np.isfinite(loadings_constrained)):
                     raise NumericalError(
-                        f"Constrained OLS returned non-finite values for series {series_idx_int}. "
-                        f"This indicates numerical instability. Check data quality and tent kernel configuration.",
+                        f"Restricted least squares returned non-finite values for series {series_idx_int}. "
+                        f"Check data quality and tent kernel configuration.",
                         details=f"Series index: {series_idx_int}, tent_kernel_size: {tent_kernel_size}, "
-                                f"num_factors: {num_factors}, regularization: {reg}"
+                                f"num_factors: {num_factors}"
                     )
                 C_i[series_idx_int, :num_factors * tent_kernel_size] = loadings_constrained
             except (np.linalg.LinAlgError, ValueError) as e:
-                # No fallback - raise error to surface the problem
                 raise NumericalError(
-                    f"Constrained OLS failed for series {series_idx_int}: {e}. "
-                    f"This indicates the matrix is too ill-conditioned even with splined data. "
-                    f"Check data quality, tent kernel configuration, or increase regularization.",
+                    f"Restricted least squares failed for series {series_idx_int}: {e}.",
                     details=f"Series index: {series_idx_int}, tent_kernel_size: {tent_kernel_size}, "
-                            f"num_factors: {num_factors}, regularization: {reg}, error: {str(e)}"
+                            f"num_factors: {num_factors}, error: {str(e)}"
                 ) from e
     
     return C_i, factors
@@ -662,11 +740,8 @@ def initialize_block_transition(
         # Reset to default if A_i is all zeros or invalid
         A_i[:num_factors, :num_factors] = default_A_block
     
-    # Initial covariance: solve (I - A ⊗ A) vec(V_0) = vec(Q)
-    A_i_block = A_i[:block_size, :block_size]
-    Q_i_block = Q_i[:block_size, :block_size]
-    reg = matrix_regularization or DEFAULT_REGULARIZATION
-    V_0_i = compute_initial_covariance_from_transition(A_i_block, Q_i_block, regularization=reg, dtype=dtype)
+    # Initial covariance: the stationary covariance V = A V A' + Q (initial_state_covariance)
+    V_0_i = initial_state_covariance(A_i, Q_i).astype(dtype)
     
     return A_i, Q_i, V_0_i
 
@@ -686,8 +761,9 @@ def initialize_block_factors(
         T: int,
         indNaN: np.ndarray,
         max_lag_size: int,
-        dtype: type = DEFAULT_DTYPE
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+        dtype: type = DEFAULT_DTYPE,
+        return_residuals: bool = False,
+    ) -> Tuple[np.ndarray, ...]:
         """Initialize factors and transition matrices block-by-block using sequential PCA.
         
         **Estimation Graph Differences:**
@@ -749,6 +825,10 @@ def initialize_block_factors(
             Block-diagonal initial state covariance for factors
         C : np.ndarray
             Observation/loading matrix (N x total_factor_dim)
+        residuals, residuals_with_nans : np.ndarray
+            Only with ``return_residuals=True``: the data minus every block's
+            factor contribution (T x N), splined and with the missing entries
+            restored to NaN (FRBNY's ``res`` and ``resNaN``).
         """
 
         C_list = []
@@ -867,6 +947,8 @@ def initialize_block_factors(
             empty_matrix = np.zeros((0, 0), dtype=dtype)
             A_factors = Q_factors = V_0_factors = empty_matrix
         
+        if return_residuals:
+            return A_factors, Q_factors, V_0_factors, C, data_for_extraction, data_with_nans
         return A_factors, Q_factors, V_0_factors, C
 
 
@@ -938,8 +1020,10 @@ def initialize_observation_noise(
     ) -> np.ndarray:
         """Initialize observation noise covariance R from residuals.
         
-        Missing values (NaN) are handled via nan-aware statistics - only valid observations
-        are used for variance estimation. NaN will be handled by Kalman filter during EM.
+        ``R_ii`` is the nan-aware variance of ``data_with_nans`` (the residuals
+        after the factors) for series without an idiosyncratic state, and
+        ``MIN_OBSERVATION_NOISE`` (1e-4, BM14) for series with one (clock series
+        with an AR(1) state and all slower-frequency series).
         
         Returns
         -------
@@ -971,10 +1055,12 @@ def initialize_observation_noise(
                 dtype=dtype
             )
         
-        # Set variances for idiosyncratic series to default
+        # Series with an idiosyncratic state (an AR(1) state or, for slower-frequency
+        # series, a tent chain) get R_ii = MIN_OBSERVATION_NOISE (BM14), the floor the
+        # EM M-step keeps R_ii at for these series.
         idio_indices = np.where(idio_indicator > 0)[0] if idio_indicator is not None else np.arange(n_clock_freq, dtype=np.int32)
         all_indices = np.unique(np.concatenate([idio_indices, np.arange(n_clock_freq, N, dtype=np.int32)]))
-        R[np.ix_(all_indices, all_indices)] = np.diag(np.full(len(all_indices), default_obs_noise, dtype=dtype))
+        R[np.ix_(all_indices, all_indices)] = np.diag(np.full(len(all_indices), MIN_OBSERVATION_NOISE, dtype=dtype))
         
         return R
 
@@ -1004,19 +1090,28 @@ def initialize_parameters(
         - Slower frequency series: Tent kernel aggregation with user-specified weights
           (e.g., monthly data aggregated to weekly clock using tent weights [1,2,3,2,1])
         
-        Process:
+        Process (Banbura-Modugno 2014 / FRBNY ``InitCond``, state layout of
+        ``functional.state_layout.DFMStateLayout``):
         1. Build factor matrices from clock frequency data (block-by-block PCA)
-           - Clock freq: Direct factor extraction
-           - Slower freq: Uses tent kernel aggregation with user-specified weights
+           - Clock freq: Direct factor extraction; VAR(p) of the factors on
+             their true lags (``build_lag_matrix``)
+           - Slower freq: tent-restricted least squares, exact
+             (``kron(R_mat, I) c = 0`` to rounding)
         2. Add idiosyncratic components to observation matrix C
-           - Clock freq: Identity matrix (one idio component per series)
-           - Slower freq: Tent kernel chain observation matrix
-        3. Build observation noise R
-        4. Build idiosyncratic transition matrices
+           - Clock freq: Identity matrix (one AR(1) idio state per series)
+           - Slower freq: Tent chain loaded with the unnormalized tent weights
+             (no AR(1) state). C is not column-normalized.
+        3. Build observation noise R: ``MIN_OBSERVATION_NOISE`` on every series
+           with an idiosyncratic state (the R floor of the M-step)
+        4. Build idiosyncratic transition matrices from the residuals after the
+           factors (FRBNY ``res``/``resNaN``)
            - Clock freq: AR(1) for each series (BM, SM, initViM)
-           - Slower freq: Tent kernel chain (BQ, SQ, initViQ) using user-specified weights
-        5. Assemble block-diagonal matrices (A, Q, V_0)
-        6. Initialize Z_0 and apply stability checks
+           - Slower freq: Tent chain (BQ, SQ): head AR(1) with stationary
+             variance residual variance / 19, shift states with zero Q
+        5. Assemble block-diagonal matrices (A, Q); Q is exactly zero on the
+           companion lag states and the chain shift states
+        6. Z_0 = 0 and V_0 = ``initial_state_covariance(A, Q)`` (stationary
+           covariance, with a finite diffuse part on unit-root directions)
     """
     T, N = x.shape
     dtype = DEFAULT_DTYPE
@@ -1088,68 +1183,83 @@ def initialize_parameters(
     # - Slower frequency: Tent kernel aggregation using user-specified weights (e.g., [1,2,3,2,1])
     #   Tent weights come from tent_weights_dict in config (user-specified, not auto-computed)
     
+    # BM14 state layout (functional.state_layout): an AR(1) idiosyncratic state for
+    # every clock-frequency series, a tent chain (and no AR(1) state) for every
+    # slower-frequency series.
+    if idio_indicator is None:
+        idio_indicator = bm14_idio_indicator(n_clock_freq, n_slower_freq)
+    idio_indicator = np.asarray(idio_indicator)
+
     # 1. Build factor matrices (A_factors, Q_factors, V_0_factors, C)
     #    - Clock freq series: Direct factor extraction via PCA
-    #    - Slower freq series: Factor extraction with tent kernel aggregation (uses user-specified tent_weights_dict)
-    A_factors, Q_factors, V_0_factors, C = initialize_block_factors(
+    #    - Slower freq series: tent-restricted loadings (exact: R_con c = q_con)
+    #    Also returns the residuals after all blocks (FRBNY res / resNaN).
+    A_factors, Q_factors, V_0_factors, C, res, res_nan = initialize_block_factors(
         data_for_extraction, data_with_nans, blocks, r, n_blocks, n_clock_freq, tent_kernel_size,
-        p, R_mat, q, N, T, indNaN, max_lag_size, dtype
+        p, R_mat, q, N, T, indNaN, max_lag_size, dtype, return_residuals=True
     )
     
     # 2. Add idiosyncratic components to observation matrix C
-    #    - Clock freq: Identity matrix (one idio component per series, direct observation)
-    #    - Slower freq: Tent kernel chain observation matrix (uses user-specified tent_weights_dict)
+    #    - Clock freq: identity columns (one AR(1) idio state per clock series)
+    #    - Slower freq: tent chain columns loaded with the UNNORMALIZED tent weights
+    #    C is not column-normalized: the factor loadings stay in the units of the
+    #    PCA factors that A, Q and V_0 are estimated in, the slower loadings keep the
+    #    tent restriction, and the chain loadings keep the tent weights. EM rescales
+    #    the factors once, after it converges (EMConfig.normalize_C).
     C = add_idiosyncratic_observation_matrix(
         C, N, n_clock_freq, n_slower_freq, idio_indicator, clock, tent_kernel_size, tent_weights_dict, dtype
     )
     
-    # Normalize C columns (vectorized for efficiency)
-    # NOTE: This normalization happens BEFORE Q, V_0, Z_0 are built,
-    # so invariance rescaling is not needed here. The normalized C will be used
-    # to build Q, V_0, Z_0, ensuring consistency from the start.
-    # In EM updates, normalization happens AFTER Q, V_0, Z_0 exist, so rescaling is required.
-    norms = np.linalg.norm(C, axis=0)
-    valid_mask = norms > MIN_EIGENVALUE
-    if np.any(valid_mask):
-        # Broadcasting: C[:, valid_mask] is (N, n_valid), norms[valid_mask] is (n_valid,)
-        # Divide each column by its norm
-        C[:, valid_mask] = C[:, valid_mask] / norms[valid_mask]
-        n_normalized = np.sum(valid_mask)
-        _logger.debug(
-            f"Initialization: Normalized {n_normalized}/{C.shape[1]} C columns "
-            f"(before Q, V_0, Z_0 construction - no rescaling needed)"
-        )
-    
-    # 3. Build observation noise R
-    R = initialize_observation_noise(data_with_nans, N, idio_indicator, n_clock_freq, dtype)
+    # 3. Observation noise R: residual variances (FRBNY), then MIN_OBSERVATION_NOISE
+    #    on the series with an idiosyncratic state (all series in the BM14 layout).
+    with np.errstate(invalid="ignore", divide="ignore"):
+        n_obs = np.sum(np.isfinite(res_nan), axis=0)
+        res_var = np.where(n_obs > 1, np.nanvar(np.where(n_obs > 1, res_nan, 0.0), axis=0, ddof=1), np.nan)
+    R = initialize_observation_noise(res_nan, N, idio_indicator, n_clock_freq, dtype)
     
     # 4. Build idiosyncratic transition matrices
-    #    - Clock frequency: AR(1) for each series (standard time series model)
-    #    - Slower frequency: Tent kernel chain (uses user-specified tent_weights_dict for aggregation)
+    #    - Clock frequency: AR(1) of each series' residual over its observed span
+    #    - Slower frequency: tent chain whose head has stationary variance
+    #      sig_e = residual variance / 19 (FRBNY), from the residual variances
+    #      computed above (before R is set to the floor).
+    res_span = res.copy()
+    for j in range(N):
+        obs = np.flatnonzero(~indNaN[:, j])
+        if obs.size:
+            res_span[:obs[0], j] = np.nan
+            res_span[obs[-1] + 1:, j] = np.nan
     BM, SM, initViM = initialize_clock_freq_idio(
-        data_for_extraction, data_with_nans, n_clock_freq, idio_indicator, T, dtype=dtype
+        res_span, res_nan, n_clock_freq, idio_indicator, T, dtype=dtype
     )
     
-    # Slower frequency: tent kernel chain (user-specified weights from tent_weights_dict)
     if n_slower_freq == 0:
         BQ = SQ = initViQ = np.zeros((0, 0), dtype=dtype)
     else:
         rho0 = _DEFAULT_EM_CONFIG.slower_freq_ar_coef
-        sig_e = np.diag(R[n_clock_freq:, n_clock_freq:]) / _DEFAULT_EM_CONFIG.slower_freq_variance_denominator
-        sig_e = np.where(np.isfinite(sig_e), sig_e, _DEFAULT_EM_CONFIG.default_observation_noise)
+        sig_e = res_var[n_clock_freq:] / _DEFAULT_EM_CONFIG.slower_freq_variance_denominator
+        sig_e = np.where(np.isfinite(sig_e) & (sig_e > 0), sig_e, MIN_OBSERVATION_NOISE)
         BQ, SQ, initViQ = build_slower_freq_idiosyncratic_chain(n_slower_freq, tent_kernel_size, rho0, sig_e, dtype)
     
-    # 5. Assemble block-diagonal matrices: A = [A_factors, BM, BQ], Q = [Q_factors, SM, SQ], V_0 = [V_0_factors, initViM, initViQ]
+    # 5. Assemble block-diagonal matrices: A = [A_factors, BM, BQ], Q = [Q_factors, SM, SQ].
+    #    Q is exactly zero on the companion lag states and on the chain shift states.
     A = block_diag(A_factors, BM, BQ)
-    Q = block_diag(Q_factors, SM, SQ)
-    V_0 = block_diag(V_0_factors, initViM, initViQ)
+    Q = _sym(block_diag(Q_factors, SM, SQ))
+    layout = DFMStateLayout(
+        r=tuple(int(x) for x in np.asarray(r).ravel()), p=int(p), L=int(max_lag_size), n_series=N,
+        n_clock=n_clock_freq, idio_series=tuple(int(i) for i in np.flatnonzero(idio_indicator > 0)),
+        chain_length=tent_kernel_size if n_slower_freq > 0 else 0,
+    )
+    if A.shape[0] != layout.m or C.shape != (N, layout.m):
+        raise NumericalError(
+            f"Initialization built a state of dimension {A.shape[0]} (C {C.shape}), "
+            f"but the DFM state layout has {layout.m}.",
+            details=f"layout: {layout}"
+        )
     
-    # 6. Initial state: Z_0 = zeros
-    m = int(A.shape[0]) if A.size > 0 and has_shape_with_min_dims(A, min_dims=1) else 0
+    # 6. Initial state: Z_0 = 0, V_0 = stationary covariance of (A, Q), with a finite
+    #    diffuse part on unit-root directions (initial_state_covariance).
+    m = layout.m
     Z_0 = np.zeros(m, dtype=dtype)
-    
-    # 7. Stability checks
-    Q = ensure_process_noise_stable(Q, min_eigenval=_DEFAULT_EM_CONFIG.eigenval_floor, warn=True, dtype=dtype)
-    V_0 = ensure_covariance_stable(V_0, min_eigenval=_DEFAULT_EM_CONFIG.eigenval_floor)
+    V_0 = initial_state_covariance(A, Q).astype(dtype)
     
     return A, C, Q, R, Z_0, V_0

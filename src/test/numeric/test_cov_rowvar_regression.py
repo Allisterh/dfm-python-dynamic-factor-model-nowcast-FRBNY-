@@ -19,4 +19,8 @@ def test_compute_cov_safe_rowvar_true_uses_rows_as_variables() -> None:
     cov = compute_cov_safe(X.T, rowvar=True, pairwise_complete=True, fallback_to_identity=False)
     assert cov.shape == (m, m)
     assert np.allclose(cov, cov.T, atol=1e-6)
+    # Rows of X.T are the variables: the covariance of the m variables over the T observations.
+    np.testing.assert_allclose(cov, np.cov(X, rowvar=False, bias=True), rtol=1e-12, atol=1e-12)
+    cov_cols = compute_cov_safe(X, rowvar=False, pairwise_complete=True, fallback_to_identity=False)
+    np.testing.assert_allclose(cov_cols, cov, rtol=1e-12, atol=1e-12)
 

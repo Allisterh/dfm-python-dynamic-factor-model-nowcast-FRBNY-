@@ -103,7 +103,21 @@ def _monthly_quarterly():
     return model, panel
 
 
-_CASES = {"dfm_synthetic": _synthetic, "dfm_macro_monthly_quarterly": _monthly_quarterly}
+def _weekly_monthly():
+    from dfm_python import DFM, PanelData
+    from dfm_python.config import DFMConfig, load_yaml
+
+    from ..parity._cases import _DFM_WM_ROWS, REPO_ROOT, _macro_tail
+
+    sections = load_yaml(REPO_ROOT / "config" / "dfm_macro.yaml")
+    panel = PanelData.from_wide(_macro_tail(_DFM_WM_ROWS), **sections["data"])
+    model = DFM.from_config(DFMConfig.from_dict(sections["model"]))
+    model.set_params(max_iter=15, tol=0.0)
+    return model, panel
+
+
+_CASES = {"dfm_synthetic": _synthetic, "dfm_macro_monthly_quarterly": _monthly_quarterly,
+          "dfm_macro_weekly_monthly": _weekly_monthly}
 
 
 @pytest.mark.parametrize("case", list(_CASES))
@@ -139,20 +153,29 @@ def _clip_bound(T: int) -> float:
     return math.sqrt(1e3 * T)
 
 
-@pytest.mark.parametrize("rows", [300, 400, 600])
+@pytest.mark.parametrize("rows", [300, 400, 600, "full"])
 def test_macro_truncation_sweep(rows, monkeypatch):
     """data/macro.csv with config/dfm_macro.yaml (weekly clock, monthly tent [1,2,1]) on its last rows.
 
     Finite parameters, smoothed states and forecasts; no state at the clip
-    bound; a non-decreasing exact loglik over the EM iterates.
+    bound; a non-decreasing exact loglik over the EM iterates; the reported
+    loglik is the exact loglik of the returned parameters. ``"full"`` is the
+    whole panel (2538 weeks).
     """
+    import pandas as pd
+
     from dfm_python import DFM, PanelData
     from dfm_python.config import DFMConfig, load_yaml
 
-    from ..parity._cases import REPO_ROOT, _macro_tail
+    from ..parity._cases import MACRO_CSV, REPO_ROOT, _macro_tail
 
     sections = load_yaml(REPO_ROOT / "config" / "dfm_macro.yaml")
-    panel = PanelData.from_wide(_macro_tail(rows), **sections["data"])
+    if rows == "full":
+        df = pd.read_csv(MACRO_CSV)
+        df["date"] = pd.to_datetime(df["date"])
+    else:
+        df = _macro_tail(rows)
+    panel = PanelData.from_wide(df, **sections["data"])
     model = DFM.from_config(DFMConfig.from_dict(sections["model"]))
     logging.disable(logging.CRITICAL)
     try:
@@ -170,4 +193,7 @@ def test_macro_truncation_sweep(rows, monkeypatch):
     bound = _clip_bound(X.shape[0])
     assert np.max(np.abs(Z)) < bound * (1 - 1e-9), "smoothed state at the clip bound"
     assert np.max(np.abs(model.result_.Z_0)) < bound * (1 - 1e-9), "Z_0 at the clip bound"
-    assert_monotone(reference_logliks(X, iterates), f"macro last {rows}")
+    lls = reference_logliks(X, iterates)
+    assert_monotone(lls, f"macro last {rows}")
+    reported = float(model.result_.loglik)
+    assert abs(reported - lls[-1]) <= 1e-8 * abs(lls[-1]), (reported, lls[-1])

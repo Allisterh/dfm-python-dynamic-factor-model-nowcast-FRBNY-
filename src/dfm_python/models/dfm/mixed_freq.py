@@ -11,10 +11,10 @@ from ...config.constants import (
     DEFAULT_HIERARCHY_VALUE,
     FREQUENCY_HIERARCHY,
     DEFAULT_IDENTITY_SCALE,
-    DEFAULT_REGULARIZATION,
     MAX_TENT_SIZE,
 )
 from ...numeric.stability import create_scaled_identity
+from ...functional.state_layout import bm14_idio_indicator
 from ...utils.errors import ConfigurationError, DataValidationError
 from ...logger import get_logger
 from .tent import get_agg_structure
@@ -252,8 +252,10 @@ def setup_mixed_frequency_params(
     # Convert frequencies to numpy array if available
     frequencies_np = np.array(frequencies_list) if frequencies_list else None
     
-    # Idiosyncratic indicator: all series have idiosyncratic components by default
-    idio_indicator = np.ones(N, dtype=np.int32)
+    # Idiosyncratic indicator (BM14 layout): an AR(1) idiosyncratic state for each
+    # clock-frequency series; a slower-frequency series carries only its tent
+    # chain (functional.state_layout), so its indicator is 0.
+    idio_indicator = bm14_idio_indicator(n_clock_freq, n_slower_freq)
     
     # Determine tent kernel size and validate
     # Validate consistency between R_mat and tent_weights_dict
@@ -337,16 +339,18 @@ def build_slower_freq_idiosyncratic_chain(
     rho0 : float
         AR(1) coefficient for slower-frequency series
     sig_e : np.ndarray
-        Observation noise variances for slower-frequency series (n_slower_freq,)
+        Stationary variances of the chain heads (n_slower_freq,): the residual
+        variances of the slower-frequency series after the factors, divided by
+        ``DEFAULT_SLOWER_FREQ_VARIANCE_DENOMINATOR`` (FRBNY)
     dtype : type, default np.float32
         Data type for output matrices
         
     Returns
     -------
     BQ : np.ndarray
-        Transition matrix for slower-frequency chains (chain_size * n_slower_freq x chain_size * n_slower_freq)
+        Transition matrix for slower-frequency chains (head AR(1), identity shift below) (chain_size * n_slower_freq x chain_size * n_slower_freq)
     SQ : np.ndarray
-        Process noise covariance (chain_size * n_slower_freq x chain_size * n_slower_freq)
+        Process noise covariance, nonzero only on the chain heads (chain_size * n_slower_freq x chain_size * n_slower_freq)
     initViQ : np.ndarray
         Initial covariance (chain_size * n_slower_freq x chain_size * n_slower_freq)
     """
@@ -361,47 +365,22 @@ def build_slower_freq_idiosyncratic_chain(
     temp = np.zeros((chain_size, chain_size), dtype=dtype)
     temp[0, 0] = 1.0
     
-    # Modeling assumption: slower-frequency idiosyncratic variance
-    # ======================================================================
-    # We compute innovation variance as: innovation_var = (1 - ρ²) * sig_e
-    # where sig_e is observation noise variance from R matrix.
-    #
-    # This assumes sig_e represents STATIONARY VARIANCE, not innovation variance.
-    # For an AR(1) process: y_t = ρ*y_{t-1} + ε_t
-    #   - Innovation variance: Var(ε_t) = σ²_ε
-    #   - Stationary variance: Var(y_t) = σ²_ε / (1 - ρ²)
-    #   - Therefore: σ²_ε = (1 - ρ²) * Var(y_t)
-    #
-    # RISK: This creates a closed loop in EM:
-    #   1. R (observation noise) provides sig_e
-    #   2. sig_e → SQ (process noise for idio chain)
-    #   3. SQ → BQ (transition matrix for idio chain)
-    #   4. BQ feeds back into R updates in EM
-    #
-    # This can self-reinforce mis-scaled noise if initialization is poor.
-    # 
-    # RECOMMENDATION: Consider decoupling slower-freq idio variance from R,
-    # or use a separate variance parameter that doesn't depend on R.
-    # ======================================================================
-    innovation_var = (1 - rho0 ** 2) * sig_e
+    # FRBNY: the chain head is an AR(1) with coefficient rho0 whose stationary
+    # variance is sig_e (the residual variance of the series after the factors,
+    # divided by DEFAULT_SLOWER_FREQ_VARIANCE_DENOMINATOR), so its innovation
+    # variance is (1 - rho0^2) * sig_e. The other chain states are pure shifts
+    # with zero process noise.
+    innovation_var = (1 - rho0 ** 2) * np.asarray(sig_e, dtype=dtype)
     SQ = np.kron(np.diag(innovation_var), temp)
-    
-    _logger.debug(
-        f"Slower-freq idio chain: Using sig_e (from R) as stationary variance. "
-        f"Innovation variance = (1 - {rho0:.3f}²) * sig_e. "
-        f"This creates R → SQ → BQ → R feedback loop in EM."
-    )
-    
-    
-    
+
     BQ_block = np.zeros((chain_size, chain_size), dtype=dtype)
     BQ_block[0, 0] = rho0
     BQ_block[1:, :chain_size-1] = create_scaled_identity(chain_size-1, DEFAULT_IDENTITY_SCALE, dtype=dtype)
     BQ = np.kron(create_scaled_identity(n_slower_freq, DEFAULT_IDENTITY_SCALE, dtype=dtype), BQ_block)
     
-    # Compute initial covariance: solve (I - BQ ⊗ BQ) vec(V_0) = vec(SQ)
-    from ...numeric.estimator import compute_initial_covariance_from_transition
-    initViQ = compute_initial_covariance_from_transition(BQ, SQ, regularization=DEFAULT_REGULARIZATION, dtype=dtype)
+    # Stationary covariance of the chains: V = BQ V BQ' + SQ (exact, no regularization)
+    from .initialization import initial_state_covariance
+    initViQ = initial_state_covariance(BQ, SQ).astype(dtype)
     
     
     

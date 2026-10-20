@@ -59,6 +59,7 @@ from ...config.schema.params import DFMModelState
 from ...config.schema.results import DFMResult
 from ...dataset.dfm_dataset import DFMDataset
 from ...dataset.panel import PanelData
+from ...functional.state_layout import DFMStateLayout
 from ...io.layout import index_from_spec, index_to_spec
 from ...logger import get_logger
 from ...logger.progress import fit_verbosity, quiet_engine_loggers
@@ -768,9 +769,12 @@ class DFM(BaseFactorModel):
           so ``predict(h)`` then starts from the filtered state of the last new
           row. ``result_``, ``factors_`` and the parameters are unchanged.
         - ``refit=True``: one EM iteration (today's ``retrain=True``, with
-          threshold ``tol``) on all rows, starting from the fitted parameters.
-          ``result_``, ``n_iter_``, ``converged_``, ``loglik_`` and
-          ``factors_`` then describe the refitted model on all rows.
+          threshold ``tol``) on all rows, starting from the fitted parameters,
+          through the same EM driver as ``fit``. ``result_``, ``n_iter_``,
+          ``converged_``, ``loglik_`` and ``factors_`` then describe the
+          refitted model on all rows; ``loglik_`` is the exact log-likelihood
+          of the returned parameters on all rows. If the iteration would lower
+          it, the fitted parameters are kept (``converged_`` is False).
 
         In both cases ``conditioning_index_`` is extended by ``data.index``.
 
@@ -1032,6 +1036,13 @@ class DFM(BaseFactorModel):
             max_lag_size=meta["max_lag_size"],
             **{name: arrays[f"ssm/{name}"] for name in _SSM_FIELDS},
         )
+        layout = DFMStateLayout.from_state(state)
+        if not layout.is_bm14() or np.asarray(state.A).shape[0] != layout.m:
+            raise ConfigurationError(
+                f"{str(path)!r}: the saved DFM state does not have the current state layout (an AR(1) "
+                "idiosyncratic state per clock-frequency series, only a tent chain per slower-frequency series). "
+                "It was written by a development build before that layout; fit the model again and save it."
+            )
         result = cls._read_result(path, DFMResult, target_scaler=None)
         engine_meta = {
             "training_columns": internal,

@@ -559,11 +559,9 @@ def compute_cov_safe(
     # Compute covariance
     try:
         if pairwise_complete:
-            # Pairwise complete covariance: compute covariance for each pair separately
-            if rowvar:
-                data_for_cov = data.T  # Transpose to (N, T) for np.cov
-            else:
-                data_for_cov = data
+            # Pairwise complete covariance: compute covariance for each pair separately,
+            # on a (variables x observations) view of the data.
+            data_for_cov = data if rowvar else data.T
             
             # Compute pairwise complete covariance manually
             cov = np.zeros((n_vars, n_vars))

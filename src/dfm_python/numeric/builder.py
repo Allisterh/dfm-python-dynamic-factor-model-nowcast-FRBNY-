@@ -210,21 +210,15 @@ def build_lag_matrix(
     Returns
     -------
     np.ndarray
-        Lag matrix (T x (num_factors * num_lags))
+        Lag matrix (T x (num_factors * num_lags)), ``num_lags = max(p + 1, tent_kernel_size)``:
+        row ``t``, column block ``k`` holds ``factors[t - k]`` (zero for ``t < k``),
+        as FRBNY's ``[f_t, f_{t-1}, ..., f_{t-num_lags+1}]``.
     """
     num_lags = max(p + 1, tent_kernel_size)
     lag_matrix = np.zeros((T, num_factors * num_lags), dtype=dtype)
-    
-    # Vectorized implementation: build all lags at once
-    for lag_idx in range(num_lags):
-        start_idx = max(0, tent_kernel_size - lag_idx)
-        end_idx = T - lag_idx
-        if start_idx < end_idx:
-            col_start = lag_idx * num_factors
-            col_end = col_start + num_factors
-            # Use advanced indexing for better performance
-            lag_matrix[start_idx:end_idx, col_start:col_end] = factors[start_idx:end_idx, :num_factors].copy()
-    
+    for lag_idx in range(min(num_lags, T)):
+        col_start = lag_idx * num_factors
+        lag_matrix[lag_idx:, col_start:col_start + num_factors] = factors[:T - lag_idx, :num_factors]
     return lag_matrix
 
 

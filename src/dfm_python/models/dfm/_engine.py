@@ -754,7 +754,11 @@ class DFMEngine:
         rescale : bool, default False
             If True, fit scaler on new data and transform. If False, only transform.
         retrain : bool, default False
-            If True, run full EM. If False, only update state via Kalman filter.
+            If True, run EM (``run_em_algorithm``, the driver ``fit`` uses) on
+            the training rows plus the new rows, starting from the fitted
+            parameters; the reported loglik is the exact loglik of the returned
+            parameters on all rows, and an iteration that would lower it is not
+            kept. If False, only update the state via the Kalman filter.
         **kwargs
             Additional parameters for retraining:
             - max_iter : int, default 1

@@ -12,6 +12,16 @@ loadings' cross-moments subtracted, the missing-data R formula, and
 aligned with the E-step (``EZ[t]`` goes with data row ``t``); there are no
 caps, clips or ridge terms, so with the exact E-step the log-likelihood of the
 iterates does not decrease.
+
+The state layout (factor companion blocks, one AR(1) idiosyncratic state per
+clock-frequency series, one tent chain per slower-frequency series whose head
+is the only stochastic state) is ``functional.state_layout.DFMStateLayout``;
+the M-step takes every index from it.
+
+``run_em_algorithm`` tests convergence on the exact log-likelihood, stops on a
+decrease or a non-finite value and returns the best parameters seen, and
+reports the exact log-likelihood of the parameters it returns (one final
+filter/smoother pass, whose smoothed states it also returns).
 """
 
 import time as time_module
@@ -21,6 +31,7 @@ from dataclasses import dataclass, replace
 from scipy.linalg import block_diag, cho_factor, cho_solve
 
 from ..ssm.kalman import DFMKalmanFilter
+from .state_layout import DFMStateLayout
 from ..logger import get_logger
 from ..config.schema.block import BlockStructure
 from ..config.schema.params import DFMModelState
@@ -369,12 +380,6 @@ def _compute_and_cache_block_indices(block_structure: BlockStructure, N: int) ->
     block_structure._cached_N = N  # Store N value used for caching
 
 
-def _factor_offsets(r: np.ndarray, p_plus_one: int) -> np.ndarray:
-    """State index where each factor block starts (blocks are ``r_b * p_plus_one`` wide)."""
-    widths = np.asarray(r).astype(int) * int(p_plus_one)
-    return np.concatenate([[0], np.cumsum(widths)[:-1]]).astype(int)
-
-
 def _update_transition_matrix_blocked(
     EZ: np.ndarray,
     V_smooth: np.ndarray,
@@ -396,10 +401,11 @@ def _update_transition_matrix_blocked(
     The other columns of those rows are zero, and the companion shift rows and
     their process noise are kept as they are.
 
-    Idiosyncratic AR(1) states (``sum(idio_indicator)`` states after the factor
-    blocks): ``a_i = S10_ii / S00_ii`` and ``q_i = (S11_ii - a_i S10_ii) / (T-1)``,
-    with the lag-one smoothed covariance in ``S10``. The slower-frequency
-    idiosyncratic chains after them are kept fixed.
+    AR(1) states (``DFMStateLayout.ar1_states``: the clock-frequency
+    idiosyncratic states and the head of each slower-frequency chain):
+    ``a_i = S10_ii / S00_ii`` and ``q_i = (S11_ii - a_i S10_ii) / (T-1)``, with
+    the lag-one smoothed covariance in ``S10``. The chain shift states (identity
+    rows, zero process noise) are kept fixed, as in FRBNY's code.
 
     ``V_0`` is set to ``V_smooth[0]`` (the maximizer; see ``_initial_covariance_update``).
     Everything is float64, with no caps, clips or regularization; a singular
@@ -414,15 +420,12 @@ def _update_transition_matrix_blocked(
     if T < 2:
         return replace(state, A=A_new, Q=Q_new)
 
-    r = np.asarray(state.r).astype(int)
-    p = int(state.p)
-    p_plus_one = int(state.max_lag_size if state.max_lag_size is not None else (p + 1))
-    n_lags = min(p, p_plus_one)
-    offsets = _factor_offsets(r, p_plus_one)
+    layout = DFMStateLayout.from_state(state)
+    n_lags = min(layout.p, layout.L)
 
-    for b, (r_b, start) in enumerate(zip(r, offsets)):
-        cur = np.arange(start, start + r_b)
-        lag = np.arange(start, start + r_b * n_lags)
+    for b, r_b in enumerate(layout.r):
+        cur = layout.factor_current(b)
+        lag = layout.factor_lags(b, n_lags)
         A_b, Q_b = estimate_var(
             y=EZ[1:, cur],
             x=EZ[:-1, lag],
@@ -431,16 +434,16 @@ def _update_transition_matrix_blocked(
             VVsmooth=VVsmooth[1:][:, cur][:, :, lag],
             dtype=np.float64,
         )
-        A_new[start:start + r_b, start:start + r_b * p_plus_one] = 0.0
+        start = int(layout.factor_offsets[b])
+        A_new[start:start + r_b, start:start + r_b * layout.L] = 0.0
         A_new[np.ix_(cur, lag)] = A_b
         Q_new[np.ix_(cur, cur)] = Q_b
 
-    n_factor_states = int(np.sum(r) * p_plus_one)
-    idio_indicator = state.idio_indicator
-    n_idio = int(np.sum(np.asarray(idio_indicator) > 0)) if idio_indicator is not None else 0
-    n_idio = max(0, min(n_idio, m - n_factor_states))
-    if n_idio > 0:
-        ii = np.arange(n_factor_states, n_factor_states + n_idio)
+    # AR(1) states: the clock-frequency idiosyncratic states and the head of every
+    # slower-frequency chain (its other states are pure shifts and stay fixed).
+    ii = layout.ar1_states
+    ii = ii[ii < m]
+    if ii.size > 0:
         a_diag, q_diag = estimate_ar1(
             y=EZ[1:, ii],
             x=EZ[:-1, ii],
@@ -524,11 +527,11 @@ def _update_observation_matrix_blocked(
     C = np.array(state.C, dtype=np.float64, copy=True)
     blocks = np.asarray(state.blocks)
     _validate_blocks_shape(blocks, N)
-    r = np.asarray(state.r).astype(int)
-    p_plus_one = int(state.max_lag_size if state.max_lag_size is not None else (state.p + 1))
-    offsets = _factor_offsets(r, p_plus_one)
-    n_slower = int(state.n_slower_freq or 0)
-    n_clock = int(state.n_clock_freq) if state.n_clock_freq is not None else N - n_slower
+    layout = DFMStateLayout.from_state(state, n_series=N)
+    r = np.asarray(layout.r, dtype=int)
+    p_plus_one = layout.L
+    offsets = layout.factor_offsets
+    n_clock = layout.n_clock
     R_mat = state.constraint_matrix
     q = state.constraint_vector
     if R_mat is not None:
@@ -833,6 +836,33 @@ def em_step(
     return state, loglik, kalman_filter
 
 
+#: Relative tolerance of the EM monotonicity guard: an iterate whose exact
+#: log-likelihood is below the best one seen by more than this (relative) stops EM.
+EM_MONOTONICITY_RTOL = 1e-6
+
+
+def _params_finite(state: DFMModelState) -> bool:
+    return all(p is not None and np.all(np.isfinite(p)) for p in
+               (state.A, state.C, state.Q, state.R, state.Z_0, state.V_0))
+
+
+def _relative_change(loglik: float, previous: float) -> float:
+    """``|L_k - L_{k-1}| / |L_{k-1}|`` (absolute change when ``|L_{k-1}|`` is ~0)."""
+    if not (np.isfinite(loglik) and np.isfinite(previous)):
+        return float('inf')
+    if abs(previous) > 1e-10:
+        return abs((loglik - previous) / previous)
+    return abs(loglik - previous)
+
+
+def _format_time(seconds: float) -> str:
+    if seconds < 60:
+        return f"{seconds:.0f}s"
+    if seconds < 3600:
+        return f"{seconds/60:.1f}m"
+    return f"{int(seconds // 3600)}h{int((seconds % 3600) // 60)}m"
+
+
 def run_em_algorithm(
     X: np.ndarray,
     initial_state: DFMModelState,
@@ -841,28 +871,40 @@ def run_em_algorithm(
     config: Optional[EMConfig] = None,
     checkpoint_callback: Optional[Callable[[int, DFMModelState], None]] = None
 ) -> Tuple[DFMModelState, Dict[str, Any]]:
-    """Run EM algorithm until convergence.
-    
-    Iterates E-step (Kalman filter/smoother) and M-step (parameter updates) until
-    convergence (relative log-likelihood change < threshold) or max_iter reached.
-    Returns final state and training metadata (loglik, num_iter, converged, etc.).
-    
-    The E-step is exact (no covariance regularization). If it fails after the
-    first iteration (non-finite filter at the latest parameters), EM stops and
-    returns the parameters of the last E-step that succeeded, with its loglik.
+    """Run the EM algorithm; return the fitted state and its metadata.
 
-    If the M-step cannot be computed (singular moment matrix) after the first
-    iteration, EM stops and returns the parameters that iteration started from,
-    with their loglik.
+    Iteration ``k`` (``k = 0, 1, ...``) runs the E-step at ``theta_k`` (exact
+    smoothed moments and exact log-likelihood ``L_k``, from
+    ``DFMKalmanFilter``), then the M-step to ``theta_{k+1}`` (closed-form
+    Banbura-Modugno 2014 update, see ``em_step``). With the exact E-step every
+    M-step block is a conditional maximizer of the expected complete-data
+    log-likelihood, so ``L_k`` does not decrease.
 
-    The M-step is the closed-form Banbura-Modugno (2014) update (with the tent
-    restriction for slower-frequency loadings); with the exact E-step every
-    block is a conditional maximizer of the expected complete-data
-    log-likelihood, so the exact log-likelihood of the iterates does not
-    decrease. The opt-in ``config.damping_factor`` and ``config.ar_clip`` break
-    that property. When ``config.normalize_C`` is True the returned parameters
-    are rescaled once, after the last iteration, to unit-norm factor loading
-    columns (``_normalize_C_with_invariance``; same likelihood).
+    Convergence: from ``k = config.min_iterations_for_convergence_check`` on,
+    EM stops when ``|L_k - L_{k-1}| / |L_{k-1}| < threshold`` (both finite).
+    It then returns ``theta_{k+1}``. Otherwise it stops after ``max_iter``
+    iterations and returns the last M-step output.
+
+    Guards (each stops EM with ``converged=False`` and returns the parameters
+    with the best exact log-likelihood seen, ``theta_best``):
+
+    - ``L_k`` is not finite, or ``L_k < L_best - EM_MONOTONICITY_RTOL * |L_best|``
+      (a decrease, which an exact EM cannot produce; a warning is logged);
+    - the E-step fails (non-finite filter, an innovation covariance that is not
+      positive definite) or the M-step cannot be computed (singular moment
+      matrix) after the first iteration. In the first iteration either raises
+      ``RuntimeError``;
+    - the parameters to be returned fail the same checks in the final pass.
+
+    Reporting: the returned parameters go through one more filter/smoother
+    pass, after the optional likelihood-invariant factor rescaling
+    (``config.normalize_C``, ``_normalize_C_with_invariance``). ``loglik`` in the
+    metadata is the exact log-likelihood of the RETURNED parameters from that
+    pass, and ``smoothed_factors`` are its smoothed states. ``num_iter`` is the
+    number of EM iterations that ran (E-step and M-step).
+
+    The opt-in ``config.damping_factor`` and ``config.ar_clip`` change the
+    M-step output and can break monotonicity; the guard applies to them too.
     """
 
     if config is None:
@@ -879,8 +921,6 @@ def run_em_algorithm(
         X = X_clipped
     
     state = initial_state
-    previous_state = initial_state
-    
     kalman_filter = DFMKalmanFilter(
         transition_matrices=state.A,
         observation_matrices=state.C,
@@ -907,18 +947,15 @@ def run_em_algorithm(
             tent_weights_dict=state.tent_weights_dict
         )
     
+    min_iterations = get_config_attr(config, 'min_iterations_for_convergence_check', 1)
+    progress_interval = get_config_attr(config, 'progress_log_interval', 1)
+    best_state: Optional[DFMModelState] = None
+    best_loglik = float('-inf')
     previous_loglik = float('-inf')
-    # Input parameters and loglik of the last iteration whose E-step succeeded.
-    previous_input_state = initial_state
-    previous_input_loglik = float('-inf')
     num_iter = 0
     converged = False
-    loglik = float('-inf')
+    stop_reason: Optional[str] = None
     change = DEFAULT_ZERO_VALUE
-    
-    # Track damping state for proper convergence checking
-    damping_applied = False
-    loglik_undamped = float('-inf')
     
     em_start_time = time_module.time()
     iteration_times = []
@@ -930,21 +967,16 @@ def run_em_algorithm(
     if state.constraint_matrix is not None:
         _logger.info(f"  Mixed-frequency: tent kernel constraints enabled (R_mat shape: {state.constraint_matrix.shape})")
     
-    while num_iter < max_iter and not converged:
+    while num_iter < max_iter:
         iter_start_time = time_module.time()
-        # Heartbeat every 10 iterations
         if num_iter % 10 == 0:
             _logger.info(f"EM heartbeat: iteration {num_iter}/{max_iter}")
-        
         if num_iter < 3:
             _logger.info(f"Starting iteration {num_iter + 1}/{max_iter}...")
-        
-        # Parameters this iteration starts from (and whose E-step it runs).
-        # Returned instead of the update if the M-step output is not usable.
-        last_finite_state = state
 
+        # E-step at theta_k (= state), M-step to theta_{k+1} (= new_state).
         try:
-            state, loglik, kalman_filter_updated = em_step(
+            new_state, loglik, _ = em_step(
                 X, state, kalman_filter=kalman_filter, config=config,
                 block_structure=block_structure, num_iter=num_iter
             )
@@ -952,199 +984,161 @@ def run_em_algorithm(
             if num_iter == 0:
                 _logger.error(f"EM step failed at iteration 1: {e}", exc_info=True)
                 raise RuntimeError(f"EM algorithm failed at iteration 1: {e}") from e
-            # The E-step at this iteration's parameters succeeded but no M-step
-            # update could be computed: return these parameters and their loglik.
-            _logger.error(f"EM: {e}; stopping and returning the parameters of iteration {num_iter + 1}.")
-            state = last_finite_state
-            loglik = e.loglik
+            # The E-step at theta_k succeeded (its loglik is e.loglik); no update
+            # could be computed from it.
+            _logger.error(f"EM: {e}; stopping.")
+            if np.isfinite(e.loglik) and e.loglik > best_loglik:
+                best_state, best_loglik = state, float(e.loglik)
+            stop_reason = "M-step failed"
             break
         except NumericalError as e:
             if num_iter == 0:
                 _logger.error(f"EM step failed at iteration 1: {e}", exc_info=True)
                 raise RuntimeError(f"EM algorithm failed at iteration 1: {e}") from e
-            # The Kalman filter is not finite (or an innovation covariance is not
-            # positive definite) at the parameters of the previous M-step: keep the
-            # parameters of the last E-step that succeeded and its loglik.
-            _logger.error(
-                f"EM: the E-step failed at iteration {num_iter + 1} ({e}); stopping and returning "
-                f"the parameters of iteration {num_iter}."
-            )
-            state = previous_input_state
-            loglik = previous_input_loglik
+            # The filter is not usable at theta_k (the previous M-step output).
+            _logger.error(f"EM: the E-step failed at iteration {num_iter + 1} ({e}); stopping.")
+            stop_reason = "E-step failed"
             break
         except Exception as e:
             _logger.error(f"EM step failed at iteration {num_iter + 1}: {e}", exc_info=True)
             _logger.error(f"  Current parameters shapes - A: {state.A.shape if state.A is not None else None}, C: {state.C.shape if state.C is not None else None}, Q: {state.Q.shape if state.Q is not None else None}, R: {state.R.shape if state.R is not None else None}")
             _logger.error(f"  Data shape: {X.shape}, Block structure: {block_structure is not None}")
             raise RuntimeError(f"EM algorithm failed at iteration {num_iter + 1}: {e}") from e
-        # The E-step of this iteration succeeded: its input parameters and loglik
-        # are the fallback if a later E-step fails.
-        previous_input_state = last_finite_state
-        previous_input_loglik = loglik
 
-        # Track undamped loglik for convergence checks
-        loglik_undamped = loglik
-        damping_applied = False
+        # loglik is L_k, the exact log-likelihood of theta_k.
+        if not np.isfinite(loglik):
+            if num_iter == 0:
+                raise RuntimeError(f"EM algorithm failed at iteration 1: the log-likelihood of the "
+                                   f"initial parameters is not finite ({loglik!r}).")
+            _logger.error(f"EM: the log-likelihood is not finite at iteration {num_iter + 1}; stopping.")
+            stop_reason = "non-finite log-likelihood"
+            break
+        if best_state is not None and loglik < best_loglik - EM_MONOTONICITY_RTOL * abs(best_loglik):
+            _logger.warning(
+                f"EM: the exact log-likelihood decreased at iteration {num_iter + 1} "
+                f"({best_loglik:.6f} -> {loglik:.6f}); stopping and returning the best parameters."
+            )
+            stop_reason = "log-likelihood decreased"
+            break
+        if loglik > best_loglik or best_state is None:
+            best_state, best_loglik = state, float(loglik)
+        if num_iter == 0 and loglik < -1e10:
+            _logger.warning(f"Extremely negative initial log-likelihood: {loglik:.2e}. "
+                            f"This may indicate numerical instability or data scaling issues.")
+
+        # Convergence on the exact loglik of theta_k.
+        if num_iter >= min_iterations:
+            change = _relative_change(loglik, previous_loglik)
+            converged = change < threshold
+        elif np.isfinite(previous_loglik):
+            change = abs(loglik - previous_loglik)
+        previous_loglik = loglik
 
         if config.damping_factor is not None and 0 < config.damping_factor <= 1:
             alpha = config.damping_factor
-            A_damped = alpha * state.A + (1 - alpha) * previous_state.A if previous_state.A is not None else state.A
-            C_damped = alpha * state.C + (1 - alpha) * previous_state.C if previous_state.C is not None else state.C
-            Q_damped = alpha * state.Q + (1 - alpha) * previous_state.Q if previous_state.Q is not None else state.Q
-            R_damped = alpha * state.R + (1 - alpha) * previous_state.R if previous_state.R is not None else state.R
-            Z_0_damped = alpha * state.Z_0 + (1 - alpha) * previous_state.Z_0 if previous_state.Z_0 is not None else state.Z_0
-            V_0_damped = alpha * state.V_0 + (1 - alpha) * previous_state.V_0 if previous_state.V_0 is not None else state.V_0
-            state = replace(state, A=A_damped, C=C_damped, Q=Q_damped, R=R_damped, Z_0=Z_0_damped, V_0=V_0_damped)
-            damping_applied = True
+            new_state = replace(
+                new_state,
+                **{name: alpha * getattr(new_state, name) + (1 - alpha) * getattr(state, name)
+                   for name in ("A", "C", "Q", "R", "Z_0", "V_0")}
+            )
             if num_iter < 3:
                 _logger.info(f"  Applied damping: {alpha*100:.0f}% new, {(1-alpha)*100:.0f}% old")
                 _logger.warning("Damping breaks the EM monotonicity guarantee.")
 
-        previous_state = state
-
-        params_finite = all(np.isfinite(p).all() if isinstance(p, np.ndarray) else np.isfinite(p)
-                            for p in [state.A, state.C, state.Q, state.R, state.Z_0, state.V_0])
-        if not (params_finite and np.isfinite(loglik)):
-            _logger.error(f"EM: NaN/Inf detected at iteration {num_iter + 1}, stopping")
-            _logger.error(f"  Parameter shapes - A: {state.A.shape if state.A is not None else None}, C: {state.C.shape if state.C is not None else None}, Q: {state.Q.shape if state.Q is not None else None}, R: {state.R.shape if state.R is not None else None}")
-            _logger.error(f"  Loglik: {loglik}, isfinite: {np.isfinite(loglik) if isinstance(loglik, (int, float, np.number)) else 'N/A'}")
-            if not params_finite:
-                # Only revert when the parameters themselves diverged; a non-finite
-                # loglik with finite parameters keeps the M-step update.
-                _logger.error("  Keeping parameters from the last finite iteration.")
-                state = last_finite_state
-            break
-        
-        if num_iter == 0 and loglik < -1e10:
-            _logger.warning(f"Extremely negative initial log-likelihood: {loglik:.2e}. "
-                          f"This may indicate numerical instability or data scaling issues.")
-        
-        kalman_filter.update_parameters(state.A, state.C, state.Q, state.R, state.Z_0, state.V_0)
-        
-        # Never propagate cached factors across EM steps
-        # Cache should be per-parameter snapshot only, not shared across iterations
-        # Damping and parameter updates invalidate caches, so propagating stale cache
-        # would reintroduce incorrect state silently
-        # Cache is set within em_step() after E-step completes, and invalidated on parameter changes
-        # Do NOT copy cache from kalman_filter_updated as it may reflect pre-damped parameters
-        
-        min_iterations = get_config_attr(config, 'min_iterations_for_convergence_check', 1)
-        
-        # Use undamped loglik for convergence checks
-        # Damping breaks monotonicity, so damped loglik is not a valid convergence metric
-        loglik_for_convergence = loglik_undamped if damping_applied else loglik
-        
-        # Convergence criterion that handles zero/near-zero loglik
-        if num_iter >= min_iterations:
-            # Use absolute change if loglik is near zero to avoid division issues
-            if (previous_loglik != float('-inf') and np.isfinite(previous_loglik) and 
-                abs(previous_loglik) > 1e-10 and abs(loglik_for_convergence) > 1e-10):
-                # Both are non-zero and finite - use relative change
-                change = abs((loglik_for_convergence - previous_loglik) / previous_loglik)
-            else:
-                # Use absolute change when near zero or infinite
-                change = abs(loglik_for_convergence - previous_loglik) if (np.isfinite(loglik_for_convergence) and np.isfinite(previous_loglik)) else float('inf')
-            
-            converged = change < threshold
-        else:
-            change = abs(loglik_for_convergence - previous_loglik) if previous_loglik != float('-inf') and np.isfinite(loglik_for_convergence) and np.isfinite(previous_loglik) else DEFAULT_ZERO_VALUE
-        
-        # Track undamped loglik for next iteration's convergence check
-        previous_loglik = loglik_for_convergence
+        state = new_state
         num_iter += 1
-        
+
         iter_time = time_module.time() - iter_start_time
         iteration_times.append(iter_time)
         if len(iteration_times) > 5:
             iteration_times.pop(0)
         avg_iter_time = sum(iteration_times) / len(iteration_times)
-        
-        elapsed_time = time_module.time() - em_start_time
-        progress_pct = (num_iter / max_iter) * 100
-        remaining_iters = max_iter - num_iter if not converged else 0
-        estimated_remaining = avg_iter_time * remaining_iters if remaining_iters > 0 else 0
-        
-        def format_time(seconds):
-            if seconds < 60:
-                return f"{seconds:.0f}s"
-            elif seconds < 3600:
-                return f"{seconds/60:.1f}m"
-            else:
-                hours = int(seconds // 3600)
-                minutes = int((seconds % 3600) // 60)
-                return f"{hours}h{minutes}m"
-        
-        progress_interval = get_config_attr(config, 'progress_log_interval', 1)
-        should_log = (num_iter % progress_interval == 0) or converged
-        
-        if should_log:
-            progress_msg = f"[{progress_pct:.1f}%]"
-            if elapsed_time > 0:
-                elapsed_str = format_time(elapsed_time)
-                if remaining_iters > 0 and len(iteration_times) >= 2:
-                    remaining_str = format_time(estimated_remaining)
-                    progress_msg += f" Elapsed: {elapsed_str}, Est. remaining: {remaining_str}"
-                else:
-                    progress_msg += f" Elapsed: {elapsed_str}"
-            
-            # Log both damped and undamped loglik if damping was applied
-            loglik_to_log = loglik
-            if damping_applied and loglik_undamped != loglik:
-                _logger.debug(f"  Iteration {num_iter}: Undamped loglik={loglik_undamped:.2e}, Damped loglik={loglik:.2e}")
-            
+        if (num_iter % progress_interval == 0) or converged:
+            elapsed_time = time_module.time() - em_start_time
+            progress_msg = f"[{(num_iter / max_iter) * 100:.1f}%] Elapsed: {_format_time(elapsed_time)}"
+            remaining_iters = max_iter - num_iter if not converged else 0
+            if remaining_iters > 0 and len(iteration_times) >= 2:
+                progress_msg += f", Est. remaining: {_format_time(avg_iter_time * remaining_iters)}"
             log_em_iteration(
                 iteration=num_iter,
-                loglik=loglik_to_log,
+                loglik=loglik,
                 delta=change if change > 0 else None,
                 max_iter=max_iter,
                 converged="✓" if converged else ""
             )
-            
-            if avg_iter_time > 0:
-                _logger.info(f"  Progress: {progress_msg}, Iteration time: {iter_time:.1f}s (avg: {avg_iter_time:.1f}s)")
-        
+            _logger.info(f"  Progress: {progress_msg}, Iteration time: {iter_time:.1f}s (avg: {avg_iter_time:.1f}s)")
+
         if checkpoint_callback is not None and num_iter % 5 == 0 and num_iter > 0:
             try:
                 _logger.info(f"Saving checkpoint at iteration {num_iter}...")
                 checkpoint_callback(num_iter, state)
             except Exception as e:
                 _logger.warning(f"Checkpoint callback failed at iteration {num_iter}: {e}", exc_info=True)
-    
-    # Use final undamped loglik for convergence reporting
-    # If damping was never applied, loglik_undamped will still be -inf, so use loglik
-    final_loglik = loglik_undamped if (damping_applied and np.isfinite(loglik_undamped)) else loglik
-    
+
+        if converged:
+            break
+        if not _params_finite(state):
+            _logger.error(f"EM: non-finite parameters after iteration {num_iter}; stopping.")
+            stop_reason = "non-finite parameters"
+            break
+
+    def _final(candidate: DFMModelState) -> Tuple[DFMModelState, float, np.ndarray]:
+        """Rescale (if configured) and run the final filter/smoother pass at ``candidate``."""
+        if config.normalize_C and candidate.C is not None and candidate.r is not None:
+            _, candidate = _normalize_C_with_invariance(candidate.C, candidate, config, log_prefix="EM: ")
+        kalman_filter.update_parameters(candidate.A, candidate.C, candidate.Q, candidate.R,
+                                        candidate.Z_0, candidate.V_0)
+        EZ_final, _, _, ll_final = kalman_filter.filter_and_smooth(X)
+        if not np.isfinite(ll_final):
+            raise NumericalError(f"the log-likelihood of the returned parameters is not finite ({ll_final!r})")
+        return candidate, float(ll_final), EZ_final
+
+    # The parameters to return: the last M-step output, unless EM stopped on a
+    # guard; it must also pass the guard (finite, not below the best loglik).
+    result = None
+    if stop_reason is None:
+        try:
+            result = _final(state)
+            if best_state is not None and result[1] < best_loglik - EM_MONOTONICITY_RTOL * abs(best_loglik):
+                _logger.warning(
+                    f"EM: the exact log-likelihood of the last M-step output is below the best one seen "
+                    f"({best_loglik:.6f} -> {result[1]:.6f}); returning the best parameters."
+                )
+                stop_reason = "log-likelihood decreased"
+                result = None
+        except (NumericalError, ValueError) as e:
+            _logger.error(f"EM: the final filter pass failed at the last M-step output ({e}); "
+                          f"returning the best parameters.")
+            stop_reason = "final E-step failed"
+    if result is None:
+        converged = False
+        if best_state is None:  # max_iter == 0
+            best_state = initial_state
+        try:
+            result = _final(best_state)
+        except (NumericalError, ValueError) as e:
+            _logger.error(f"EM: the final filter pass failed at the best parameters ({e}); "
+                          f"no smoothed factors are cached.")
+            result = (best_state, best_loglik, None)
+    state, final_loglik, EZ_final = result
+    kalman_filter._cached_smoothed_factors = EZ_final
+
     log_convergence(
         converged=converged,
         num_iter=num_iter,
         final_loglik=final_loglik if np.isfinite(final_loglik) else None,
-        reason="converged" if converged else f"max_iterations_reached (change: {change:.2e})",
+        reason=("converged" if converged else
+                (stop_reason if stop_reason is not None else f"max_iterations_reached (change: {change:.2e})")),
         model_type="dfm"
     )
-    
-    # One likelihood-invariant change of factor units (never inside the loop).
-    if config.normalize_C and state.C is not None and state.r is not None:
-        _, state = _normalize_C_with_invariance(state.C, state, config, log_prefix="EM: ")
-
-    # Smoothed states at the returned parameters.
-    try:
-        kalman_filter.update_parameters(state.A, state.C, state.Q, state.R, state.Z_0, state.V_0)
-        EZ_final, _, _, _ = kalman_filter.filter_and_smooth(X)
-        kalman_filter._cached_smoothed_factors = EZ_final
-    except (NumericalError, ValueError) as e:
-        _logger.warning(
-            f"Final filter_and_smooth() failed at the returned parameters ({type(e).__name__}: {e}); "
-            f"no smoothed factors are cached."
-        )
-        kalman_filter._cached_smoothed_factors = None
 
     metadata = {
-        'loglik': loglik,
+        'loglik': final_loglik,
         'num_iter': num_iter,
         'converged': converged,
         'change': change,
-        'smoothed_factors': kalman_filter._cached_smoothed_factors
+        'smoothed_factors': EZ_final,
+        'stop_reason': stop_reason,
+        'best_loglik': best_loglik,
     }
-    
     return state, metadata
-

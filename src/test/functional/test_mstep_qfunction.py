@@ -61,7 +61,12 @@ def q_parts(theta: dict, mom: dict, Y: np.ndarray) -> np.ndarray:
     S10 = pair[1:].sum(0) + sm[1:].T @ sm[:-1]
     S00 = sP[:-1].sum(0) + sm[:-1].T @ sm[:-1]
     E = S11 - A @ S10.T - S10 @ A.T + A @ S00 @ A.T
-    q_trans = -0.5 * ((T - 1) * (m * LOG2PI + _logdet(Q)) + np.trace(np.linalg.solve(Q, E)))
+    # Only the states with process noise have a transition density: the companion
+    # lag states and the chain shift states are deterministic (zero rows of Q, fixed
+    # identity rows of A), so their part is a constant.
+    s = np.flatnonzero(np.any(Q != 0.0, axis=1))
+    Qs, Es = Q[np.ix_(s, s)], E[np.ix_(s, s)]
+    q_trans = -0.5 * ((T - 1) * (s.size * LOG2PI + _logdet(Qs)) + np.trace(np.linalg.solve(Qs, Es)))
     q_obs = 0.0
     for t in range(T):
         o = ~np.isnan(Y[t])
@@ -139,6 +144,7 @@ def iterates():
 
 
 def _layout(state):
+    """``(r, L, f, n_idio)`` of the BM14 state layout: factor states, then one AR(1) per clock series."""
     r = np.asarray(state.r).astype(int)
     L = int(state.max_lag_size)
     f = int(r.sum() * L)
@@ -146,14 +152,29 @@ def _layout(state):
     return r, L, f, n_idio
 
 
-#: EM iterations whose parameters are checked. The initial parameters (k=0)
-#: are not in the M-step's parameter set: their slower-frequency loadings do
-#: not satisfy the tent restriction (the initial C columns are normalized one
-#: by one) and their R is below the R floor (1e-8 < MIN_OBSERVATION_NOISE), so
-#: the slower-C and R blocks (and the whole M-step) are only checked from k=1
-#: on; the other blocks are also checked at k=0.
-CASE_ITERS = [(c, k) for c in _CASES for k in (1, 3)]
-CASE_ITERS_WITH_INIT = [(c, k) for c in _CASES for k in (0, 1, 3)]
+def _ar1_states(state) -> np.ndarray:
+    """The clock idiosyncratic AR(1) states and the head of each slower-frequency chain.
+
+    Computed from the sizes alone: the ``m - f - n_idio`` states after the
+    AR(1) states are one chain of equal length per slower-frequency series.
+    """
+    r, L, f, n_idio = _layout(state)
+    m = np.asarray(state.A).shape[0]
+    n_slower = int(state.n_slower_freq or 0)
+    heads = []
+    if n_slower:
+        k = (m - f - n_idio) // n_slower
+        assert k * n_slower == m - f - n_idio
+        heads = [f + n_idio + k * s for s in range(n_slower)]
+    return np.concatenate([np.arange(f, f + n_idio), heads]).astype(int)
+
+
+#: EM iterations whose parameters are checked, the initial parameters (k=0)
+#: included: their slower-frequency loadings satisfy the tent restriction and
+#: their R is at the R floor (MIN_OBSERVATION_NOISE), so they are in the
+#: M-step's parameter set.
+CASE_ITERS = [(c, k) for c in _CASES for k in (0, 1, 3)]
+CASE_ITERS_WITH_INIT = CASE_ITERS
 
 
 def _setup(iterates, case, k):
@@ -184,16 +205,16 @@ def test_transition_blocks_increase_q(iterates, case, k):
     fac["Q"][:f, :f] = np.asarray(new.Q)[:f, :f]
     _assert_not_lower(q_parts(fac, mom, X)[1], q0, f"{case} k={k} factor A/Q")
 
-    ii = np.arange(f, f + n_idio)
+    ii = _ar1_states(state)
     idio = dict(theta, A=theta["A"].copy(), Q=theta["Q"].copy())
     idio["A"][ii, ii] = np.asarray(new.A)[ii, ii]
     idio["Q"][ii, ii] = np.asarray(new.Q)[ii, ii]
-    _assert_not_lower(q_parts(idio, mom, X)[1], q0, f"{case} k={k} idiosyncratic AR(1)")
+    _assert_not_lower(q_parts(idio, mom, X)[1], q0, f"{case} k={k} idiosyncratic AR(1) and chain heads")
 
     both = dict(theta, A=np.asarray(new.A), Q=np.asarray(new.Q))
     _assert_not_lower(q_parts(both, mom, X)[1], q0, f"{case} k={k} A/Q")
 
-    # Companion shift rows and the slower-frequency chains are untouched.
+    # Companion shift rows and the chain shift states are untouched (zero Q).
     rows_fixed = np.ones(theta["A"].shape[0], dtype=bool)
     offset = 0
     for r_b in r:
@@ -202,6 +223,7 @@ def test_transition_blocks_increase_q(iterates, case, k):
     rows_fixed[ii] = False
     np.testing.assert_array_equal(np.asarray(new.A)[rows_fixed], theta["A"][rows_fixed])
     np.testing.assert_array_equal(np.asarray(new.Q)[rows_fixed], theta["Q"][rows_fixed])
+    np.testing.assert_array_equal(np.asarray(new.Q)[rows_fixed], 0.0)
 
 
 @pytest.mark.parametrize("case,k", CASE_ITERS_WITH_INIT)
@@ -219,10 +241,10 @@ def test_transition_update_is_the_maximizer(iterates, case, k):
         pert = dict(new, A=new["A"].copy())
         pert["A"][:r_b, :r_b * p] += 1e-3 * rng.standard_normal((r_b, r_b * p))
         assert q_parts(pert, mom, X)[1] <= q_best + RTOL * abs(q_best)
-        if n_idio:
-            ii = np.arange(f, f + n_idio)
+        ii = _ar1_states(state)
+        if ii.size:
             pert = dict(new, A=new["A"].copy())
-            pert["A"][ii, ii] += 1e-3 * rng.standard_normal(n_idio)
+            pert["A"][ii, ii] += 1e-3 * rng.standard_normal(ii.size)
             assert q_parts(pert, mom, X)[1] <= q_best + RTOL * abs(q_best)
 
 
