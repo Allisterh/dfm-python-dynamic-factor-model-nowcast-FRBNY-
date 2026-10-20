@@ -28,7 +28,9 @@ scikit-learn-style estimator API.
 [Migrating from 0.7](https://github.com/minkeymouse/dfm-python#migrating-from-07) ·
 [Known limitations](https://github.com/minkeymouse/dfm-python#known-limitations) ·
 [Development](https://github.com/minkeymouse/dfm-python#development) ·
-[Citing](https://github.com/minkeymouse/dfm-python#citing)
+[Security](https://github.com/minkeymouse/dfm-python#security) ·
+[Citing](https://github.com/minkeymouse/dfm-python#citing) ·
+[Star history](https://github.com/minkeymouse/dfm-python#star-history)
 
 ## Why dfm-python
 
@@ -970,3 +972,13 @@ behind the model you use (see each model's **Method** note above).
 ## License
 
 MIT. See [LICENSE](https://github.com/minkeymouse/dfm-python/blob/main/LICENSE).
+
+## Star history
+
+<a href="https://star-history.com/#minkeymouse/dfm-python&Date">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=minkeymouse/dfm-python&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=minkeymouse/dfm-python&type=Date" />
+    <img alt="Star history chart for minkeymouse/dfm-python" src="https://api.star-history.com/svg?repos=minkeymouse/dfm-python&type=Date" />
+  </picture>
+</a>
