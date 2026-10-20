@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- The torch floor is now `torch>=2.10.0`. `load()` reads `weights.pt` with
+  `torch.load(..., weights_only=True)`, and torch releases before 2.10 have
+  advisories against that loader (CVE-2025-32434, fixed in 2.6.0;
+  CVE-2026-24747, fixed in 2.10.0).
+- Loading without `allow_pickle=True` now rebuilds only the public classes
+  of `sklearn.preprocessing` (the names in its `__all__`), looked up on that
+  package: a class name in a saved file can no longer make `load()` import
+  another module under `sklearn.preprocessing` (such as its tests). Runs
+  saved by 0.8.0 load unchanged.
+- Release workflow: actions pinned to commit SHAs, manual publish runs only
+  from `main`, no persisted checkout credentials, no uv cache in the release
+  build, bounded build backend (`hatchling>=1.27,<2`). Added `SECURITY.md`
+  and a Dependabot configuration.
+
 ## 0.8.0
 
 First release with the estimator API. It also replaces the DFM E-step and

@@ -219,3 +219,17 @@ agent/
 *.pt
 # Runs saved by the tutorials (tutorial/*.py --run-dir defaults to models/<name>)
 /models/
+
+# Local artifacts that must never be committed (some were in the past)
+.env.*
+!.env.example
+*venv*/
+*.ckpt
+lightning_logs/
+failure_reports/
+*.pem
+*.key
+*.p12
+*.pfx
+results*/
+runs/

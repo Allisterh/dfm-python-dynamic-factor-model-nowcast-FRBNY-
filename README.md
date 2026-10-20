@@ -82,7 +82,7 @@ pip install dfm-python        # or: uv add dfm-python
 ```
 
 dfm-python supports Python 3.10 to 3.13. The runtime dependencies are numpy,
-pandas, scipy, scikit-learn, torch and einops. PyTorch is a required
+pandas, scipy, scikit-learn, torch (2.10 or newer) and einops. PyTorch is a required
 dependency even if you only use the numpy `DFM`, because the package imports
 it. pip installs the default PyTorch wheel for your platform; for a CPU-only
 or a specific CUDA build, install `torch` first from the
@@ -655,10 +655,11 @@ without data.
 | `scaler.pkl`     | any other scaler                                                      |
 
 Nothing is pickled by default: arrays are read with `allow_pickle=False` and
-weights with `torch.load(..., weights_only=True)`. Another scaler is written
-to `scaler.pkl`, and loading it needs `allow_pickle=True`, as does a
-`config.json` naming an estimator class outside `sklearn.preprocessing`;
-enable it only for directories you trust. `device=` chooses where torch
+weights with `torch.load(..., weights_only=True)` (hence the torch 2.10
+floor: older releases have known flaws in that loader). Another scaler is
+written to `scaler.pkl`, and loading it needs `allow_pickle=True`, as does a
+`config.json` naming an estimator class other than the public classes of
+`sklearn.preprocessing`; enable it only for directories you trust. `device=` chooses where torch
 weights are loaded (`map_location`), so a run saved on a GPU loads on a
 CPU-only machine. A single-file `.pkl` or `.pt` checkpoint from 0.7 raises
 `ConfigurationError`: load it with the release that wrote it.
@@ -695,7 +696,9 @@ both sections as dicts, `XConfig.from_yaml(path)` builds the config from the
 call `Model(**cfg.to_dict())`. A flat file without `model:`, or an unknown
 key (including a pre-redesign name such as `num_factors`, `threshold` or
 `seed`), raises `ConfigurationError` naming the canonical key. Needs the
-`yaml` extra.
+`yaml` extra. With omegaconf, `load_yaml` resolves interpolations, including
+`${oc.env:NAME}` environment lookups, and `save()` writes the resolved
+parameters to `config.json`; load YAML files only from sources you trust.
 
 ```yaml
 # config/dfm_macro.yaml (abridged)
@@ -946,6 +949,15 @@ tests in `src/test/parity/`, so say why in the pull request and in
 [CHANGELOG.md](https://github.com/minkeymouse/dfm-python/blob/main/CHANGELOG.md).
 The API design is specified in
 [docs/design/api-redesign.md](https://github.com/minkeymouse/dfm-python/blob/main/docs/design/api-redesign.md).
+
+## Security
+
+Loading a run directory or a YAML file from someone else is the main trust
+boundary; see
+[Saving and loading](https://github.com/minkeymouse/dfm-python#saving-and-loading).
+Please report vulnerabilities privately as described in
+[SECURITY.md](https://github.com/minkeymouse/dfm-python/blob/main/SECURITY.md),
+not in a public issue.
 
 ## Citing
 
