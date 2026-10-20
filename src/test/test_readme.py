@@ -1,7 +1,8 @@
 """Run the Python examples of README.md.
 
-Each ``## `` section's ```` ```python ```` blocks run in order in one fresh
-namespace, in a temporary working directory that links the repository's
+Each ``## `` or ``### `` section's ```` ```python ```` blocks run in order in
+one fresh namespace (a ``## `` section ends at its first ``### ``
+subsection), in a temporary working directory that links the repository's
 ``config/`` and ``data/`` (the examples read the shipped YAMLs and CSVs and
 save under ``runs/``). Global state an example changes on purpose (torch
 threads and determinism, the package logger) is restored afterwards.
@@ -21,7 +22,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[2]
 README = ROOT / "README.md"
 
-_SECTION = re.compile(r"^## (.+)$", re.M)
+_SECTION = re.compile(r"^#{2,3} (.+)$", re.M)
 _PYTHON_BLOCK = re.compile(r"^```python\n(.*?)^```", re.S | re.M)
 
 
@@ -69,7 +70,7 @@ def readme_cwd(tmp_path, monkeypatch):
 
 def test_readme_has_examples_for_every_model():
     expected = {
-        "Quick start", "Data", "DFM", "DDFM", "iVDFM", "AFM",
+        "Quick start", "The estimator API", "Data", "DFM", "DDFM", "iVDFM", "AFM",
         "Saving and loading", "YAML configurations", "Reproducibility", "Logging",
     }
     assert expected <= set(SECTIONS), sorted(expected - set(SECTIONS))

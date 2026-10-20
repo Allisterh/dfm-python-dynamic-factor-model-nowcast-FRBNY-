@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use dfm-python, please cite it using the metadata from this file."
+type: software
+title: dfm-python
+abstract: >-
+  Dynamic factor models in Python with one scikit-learn-style estimator API:
+  a linear, mixed-frequency dynamic factor model estimated by EM with an exact
+  Kalman filter and smoother (DFM), a deep dynamic factor model (DDFM), an
+  identifiable variational dynamic factor model (iVDFM) and the Attention
+  Factor Model for statistical arbitrage (AFM).
+authors:
+  - given-names: Minkey
+    family-names: Chang
+version: 0.8.0
+date-released: "2026-10-20"
+license: MIT
+repository-code: "https://github.com/minkeymouse/dfm-python"
+url: "https://pypi.org/project/dfm-python/"
+keywords:
+  - dynamic factor model
+  - mixed frequency
+  - Kalman filter
+  - EM algorithm
+  - forecasting
+  - time series
+  - econometrics
+  - deep learning
