@@ -527,7 +527,7 @@ def test_inputs_are_not_mutated_and_are_copied():
     freq["q"].append("ip")
     assert data.equals(_full())
 
-    arr = _y().to_numpy()
+    arr = _y().to_numpy(copy=True)  # writable under pandas copy-on-write too
     from_arr = PanelData.from_arrays(arr)
     arr[0, 0] = -1.0
     assert from_arr.y.iloc[0, 0] == 0.0

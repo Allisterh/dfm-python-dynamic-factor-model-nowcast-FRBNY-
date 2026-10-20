@@ -43,10 +43,12 @@ def test_index_round_trip(index):
 
 
 def test_index_spec_fields():
-    spec = index_to_spec(_month_end(3, name="date"))
+    index = _month_end(3, name="date")
+    spec = index_to_spec(index)
     assert spec["kind"] == "datetime" and spec["freq"] == "ME" and spec["name"] == "date"
     assert spec["first"] == "2000-01-31 00:00:00" and spec["last"] == "2000-03-31 00:00:00"
-    assert spec["unit"] == "ns" and spec["tz"] is None and len(spec["values"]) == 3
+    # The index's own resolution: ns under pandas 2, us for date_range under pandas 3.
+    assert spec["unit"] == index.unit and spec["tz"] is None and len(spec["values"]) == 3
     assert index_to_spec(pd.RangeIndex(2, 8, 2))["kind"] == "range"
 
 

@@ -80,8 +80,11 @@ def denoise_targets(
     # Features (X) are only used for encoder input, not for denoising
     # eps @ Phi gives (T-1, num_target_series), update only target columns
     eps_denoise = eps[:-1, :] @ Phi  # (T-1, num_target_series)
-    data_denoised.values[lags_input+1:, dataset.target_indices] = \
-        data_imputed.values[lags_input+1:, dataset.target_indices] - eps_denoise
+    # Write through the frame (positional .iloc), not through ``.values``: under
+    # pandas copy-on-write (the default from pandas 3) ``.values`` is read-only.
+    # The values written are the same, element by element.
+    data_denoised.iloc[lags_input+1:, dataset.target_indices] = \
+        data_imputed.to_numpy()[lags_input+1:, dataset.target_indices] - eps_denoise
     
     # Interpolate denoised data
     data_denoised_interpolated = interpolate_dataframe(

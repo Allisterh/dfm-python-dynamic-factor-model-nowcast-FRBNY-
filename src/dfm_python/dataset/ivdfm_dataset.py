@@ -282,7 +282,9 @@ class iVDFMDataset(Dataset):
         if isinstance(time_idx, str) and data_df is not None and time_idx in data_df.columns:
             tcol = data_df[time_idx]
             if np.issubdtype(tcol.dtype, np.datetime64):
-                t = pd.to_datetime(tcol).astype("int64").to_numpy(dtype=np.float32)
+                # int64 nanoseconds whatever the column's resolution (pandas 3 parses
+                # dates at a coarser unit than pandas 2's ns), so the features match.
+                t = pd.to_datetime(tcol).dt.as_unit("ns").astype("int64").to_numpy(dtype=np.float32)
             else:
                 # numeric-like
                 t = pd.to_numeric(tcol, errors="coerce").to_numpy(dtype=np.float32)

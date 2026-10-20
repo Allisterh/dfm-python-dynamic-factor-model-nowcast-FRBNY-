@@ -317,7 +317,10 @@ class DDFMEngine(nn.Module):
     
     def _impute_missing_targets(self, y_pred_full: np.ndarray) -> None:
         """Impute missing target values with predictions.
-        
+
+        Only when every column is a target; with covariates this is a no-op
+        (see the comment in the body).
+
         Parameters
         ----------
         y_pred_full : np.ndarray
@@ -328,11 +331,20 @@ class DDFMEngine(nn.Module):
             return
         
         if self._dataset.all_columns_are_targets:
-            # y_pred_full has full shape (T, num_series)
-            self.data_imputed.values[missing_y] = y_pred_full[missing_y]
-        else:
-            # y_pred_full only has target columns (T, num_target_series)
-            self.data_imputed.values[:, self.target_indices][missing_y] = y_pred_full[missing_y]
+            # y_pred_full has full shape (T, num_series). Fill a copy and write it
+            # back through the frame: under pandas copy-on-write (the default
+            # from pandas 3) ``.values`` is read-only.
+            imputed = self.data_imputed.to_numpy(copy=True)
+            imputed[missing_y] = y_pred_full[missing_y]
+            self.data_imputed.iloc[:, :] = imputed
+        # With covariates (y_pred_full holds the target columns only), nothing is
+        # imputed. Up to 0.8 this branch was the chained write
+        # ``data_imputed.values[:, target_indices][missing_y] = ...``: the integer
+        # array ``target_indices`` makes a fancy-index copy, so the write never
+        # reached ``data_imputed``. The no-op is kept so that DDFM's numbers do not
+        # change. TODO: impute the missing targets here too in a release that may
+        # change DDFM's results (it changes ``data_imputed``, the residuals and
+        # the denoised targets when covariates are given).
     
     def _update_imputed_and_eps(self, y_pred_full: np.ndarray) -> None:
         """Update data_imputed with predictions and compute eps (idiosyncratic residuals).

@@ -296,7 +296,9 @@ def impute_for_init(data: np.ndarray) -> np.ndarray:
         try:
             import pandas as pd
             s = pd.Series(data_imputed)
-            data_imputed = s.ffill().bfill().values
+            # A writable copy: the mean fill below writes into it, and under pandas
+            # copy-on-write (the default from pandas 3) ``.values`` is read-only.
+            data_imputed = s.ffill().bfill().to_numpy(copy=True)
         except ImportError:
             # Fallback: numpy-based forward/backward fill (slower but no pandas dependency)
             # Forward fill
