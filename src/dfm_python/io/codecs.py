@@ -3,8 +3,9 @@
 - :func:`write_json` / :func:`read_json`: sorted keys; numpy scalars and
   arrays become plain Python values; scikit-learn estimators are written as
   ``{"class": "module.QualName", "params": get_params(deep=False)}`` and
-  rebuilt on reading only for classes under ``sklearn.preprocessing`` (any
-  other class only when the caller explicitly allows importing it).
+  rebuilt on reading only for the public estimator classes of
+  ``sklearn.preprocessing`` (any other class only when the caller explicitly
+  allows importing it).
 - :func:`write_npz` / :func:`read_npz`: a ``.npz`` archive with namespaced
   keys such as ``"ssm/A"``, written and read without pickle (object arrays are
   refused).
@@ -140,13 +141,37 @@ def _tuple_params(cls: type, params: dict) -> dict:
     return out
 
 
+def _safe_preprocessing_class(name: str) -> Any:
+    """Resolve ``name`` against the public names of ``sklearn.preprocessing`` without importing anything else.
+
+    Accepts ``"sklearn.preprocessing.<Name>"`` and the private-module form
+    :func:`class_path` writes (``"sklearn.preprocessing._data.<Name>"``), where
+    ``<Name>`` is listed in ``sklearn.preprocessing.__all__``. Any other path
+    under the package (for example its ``tests`` subpackage) returns None, so
+    that no submodule named in a file is ever imported without opt-in.
+    """
+    prefix = SAFE_ESTIMATOR_PACKAGE + "."
+    if not name.startswith(prefix):
+        return None
+    *middle, attr = name[len(prefix):].split(".")
+    if not attr.isidentifier() or any(not (part.isidentifier() and part.startswith("_")) for part in middle):
+        return None
+    import sklearn.preprocessing
+
+    if attr not in getattr(sklearn.preprocessing, "__all__", ()):
+        return None
+    return getattr(sklearn.preprocessing, attr, None)
+
+
 def _rebuild_estimator(name: str, params: Any, allow_import: bool) -> Any:
-    safe = name.startswith(SAFE_ESTIMATOR_PACKAGE + ".")
-    if not (safe or allow_import):
-        return {"class": name, "params": params}
+    if allow_import:
+        cls = _import_class(name)
+    else:
+        cls = _safe_preprocessing_class(name)
+        if cls is None:
+            return {"class": name, "params": params}
     from sklearn.base import BaseEstimator
 
-    cls = _import_class(name)
     if not (isinstance(cls, type) and issubclass(cls, BaseEstimator)):
         raise ConfigurationError(f"{name!r} in the saved run is not a scikit-learn estimator class.")
     if not allow_import and not cls.__module__.startswith(SAFE_ESTIMATOR_PACKAGE):
@@ -164,10 +189,12 @@ def is_encoded_estimator(obj: Any) -> bool:
 def from_jsonable(obj: Any, *, allow_import: bool = False) -> Any:
     """Inverse of :func:`to_jsonable` for estimators: rebuild ``{"class", "params"}`` dicts.
 
-    Classes under ``sklearn.preprocessing`` are always rebuilt. Any other
-    class is imported and rebuilt only with ``allow_import=True`` (importing
-    a class named in a file can run arbitrary code); otherwise the dict is
-    returned as is (see :func:`is_encoded_estimator`).
+    The public estimator classes of ``sklearn.preprocessing`` (the names in
+    its ``__all__``) are always rebuilt; they are looked up on that package,
+    so no module named in the file is imported. Any other class is imported
+    and rebuilt only with ``allow_import=True`` (importing a class named in a
+    file can run arbitrary code); otherwise the dict is returned as is (see
+    :func:`is_encoded_estimator`).
     """
     if isinstance(obj, list):
         return [from_jsonable(v, allow_import=allow_import) for v in obj]

@@ -99,10 +99,39 @@ def test_other_estimators_are_rebuilt_only_with_allow_import(tmp_path):
 
 
 def test_preprocessing_prefix_cannot_reach_other_classes():
-    encoded = {"class": "sklearn.preprocessing._data.BaseEstimator", "params": {}}
-    assert from_jsonable(encoded) == encoded  # BaseEstimator lives outside sklearn.preprocessing
+    for name in ("sklearn.preprocessing._data.BaseEstimator", "sklearn.preprocessing._data.np"):
+        encoded = {"class": name, "params": {}}
+        assert from_jsonable(encoded) == encoded  # not a public estimator of sklearn.preprocessing
     with pytest.raises(ConfigurationError, match="not a scikit-learn estimator"):
-        from_jsonable({"class": "sklearn.preprocessing._data.np", "params": {}})
+        from_jsonable({"class": "sklearn.preprocessing._data.scale", "params": {}})  # public, but a function
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "sklearn.preprocessing.tests.test_data.StandardScaler",  # public subpackage: would import its module
+        "sklearn.preprocessing._data.os.path.StandardScaler",
+        "sklearn.preprocessing..StandardScaler",
+        "sklearn.preprocessing._data.StandardScaler()",
+        "sklearn.preprocessingX.StandardScaler",
+    ],
+)
+def test_preprocessing_names_outside_the_public_form_are_not_imported(name, monkeypatch):
+    import sys
+
+    for module in [m for m in sys.modules if m.startswith("sklearn.preprocessing.tests")]:
+        monkeypatch.delitem(sys.modules, module)
+    encoded = {"class": name, "params": {}}
+    assert from_jsonable(encoded) == encoded
+    assert not any(m.startswith("sklearn.preprocessing.tests") for m in sys.modules)
+
+
+@pytest.mark.parametrize(
+    "name", ["sklearn.preprocessing.StandardScaler", "sklearn.preprocessing._data.StandardScaler"]
+)
+def test_public_preprocessing_names_are_rebuilt(name):
+    rebuilt = from_jsonable({"class": name, "params": {"with_mean": False}})
+    assert type(rebuilt) is StandardScaler and rebuilt.with_mean is False
 
 
 @pytest.mark.parametrize("name", ["os.system", "json.dumps"])
