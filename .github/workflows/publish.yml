@@ -6,13 +6,24 @@ name: Publish to PyPI
 # add a GitHub publisher with owner "minkeymouse", repository "dfm-python",
 # workflow "publish.yml" and environment "pypi".
 
+#
+# Either push a v* tag, or create a GitHub Release (Releases -> Draft a new
+# release -> new tag v0.8.0 on main -> Publish). If both events fire for the
+# same version, the second upload is skipped.
+
 on:
   push:
     tags: ["v*"]
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
@@ -54,3 +65,5 @@ jobs:
           path: dist/
       - name: Upload to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
