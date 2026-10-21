@@ -224,7 +224,7 @@ def get_transition_params(f_t: np.ndarray, eps_t: np.ndarray, bool_no_miss: np.n
             "This may indicate numerical instability in factor estimation."
         )
         try:
-            A_t, residuals, rank, s = np.linalg.lstsq(XtX + ridge, Xty, rcond=None)
+            A_t, _, rank, _ = np.linalg.lstsq(XtX + ridge, Xty, rcond=None)
             A_f = A_t.T
             if rank < XtX.shape[0]:
                 _logger.warning(
@@ -316,7 +316,7 @@ def forecast_ar1_factors(
         validate_no_nan_inf(Z_forecast, name="forecasted factors")
         return Z_forecast
     except (RuntimeError, ValueError, TypeError, AttributeError, KeyError, IndexError) as e:
-        if isinstance(e, (ConfigurationError, DataValidationError)):
+        if isinstance(e, DataValidationError):  # from validate_no_nan_inf (a ValueError)
             raise
         raise NumericalError(
             f"Forecast computation failed: {e}",
@@ -815,7 +815,6 @@ def estimate_constrained_ols(
                 max_eig = np.max(np.abs(eigenvals_XTX))
                 min_eig = np.max(np.abs(eigenvals_XTX[eigenvals_XTX != 0]))
                 cond_num = max_eig / max(min_eig, 1e-12)
-                # Increase regularization for ill-conditioned matrices
                 if cond_num > 1e10:
                     adaptive_reg = regularization * (cond_num / 1e10)
                     XTX_reg = XTX + create_scaled_identity(XTX.shape[0], adaptive_reg, dtype=dtype)
@@ -981,22 +980,17 @@ def compute_initial_covariance_from_transition(
 
 
 __all__ = [
-    # AR clipping
     'clip_ar',
     'apply_ar_clipping',
-    # Estimation functions
     'estimate_idio_dynamics',
-    # DDFM-specific functions
     'get_idio',
     'get_transition_params',
-    # Estimation functions
     'estimate_var',
     'estimate_ar1',
     'estimate_constrained_ols',
     'estimate_variance',
     'compute_initial_covariance_from_transition',
     'stabilize_innovation_covariance',
-    # Forecast functions
     'forecast_ar1_factors',
 ]
 

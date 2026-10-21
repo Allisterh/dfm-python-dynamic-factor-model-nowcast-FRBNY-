@@ -66,7 +66,7 @@ class iVDFMCompanionSSM(BaseSSM):
             for i in range(latent_dim):
                 self.C.data[i, i * factor_order] = 1.0
         else:
-            self.C = None
+            self.C = None  # the AR(1) paths never read C
 
         self.f0 = nn.Parameter(torch.zeros(latent_dim))
 
@@ -184,13 +184,12 @@ class iVDFMCompanionSSM(BaseSSM):
         B_norm = self._normed(B_diag)
         for i in range(r):
             B_block[i * p, i] = B_norm[i]
-        C_norm = self.C if self.C is not None else torch.eye(r, device=ar_coeffs.device)
         # Factor i only sees innovation i: H[i] = C[i] (B_i, A B_i, A^2 B_i, ...).
         H_list = []
         for i in range(r):
             b_i = B_block[:, i]
             krylov_seq = krylov(length, A_block, b_i, c=None)
-            H_i = torch.einsum('j, jl -> l', C_norm[i, :], krylov_seq)
+            H_i = torch.einsum('j, jl -> l', self.C[i, :], krylov_seq)
             H_list.append(H_i)
         return torch.stack(H_list, dim=0)
 
@@ -225,7 +224,7 @@ class iVDFMCompanionSSM(BaseSSM):
         torch.Tensor
             Factors, (batch, T, r).
         """
-        batch_size, T, r = eta_sequence.shape
+        batch_size = eta_sequence.shape[0]
         f0 = self._batched_f0(f0, batch_size)
         if self.factor_order == 1:
             A = torch.sigmoid(ar_coeffs[:, :, 0])
@@ -257,8 +256,7 @@ class iVDFMCompanionSSM(BaseSSM):
             A_block = build_ivdfm_diagonal_companion(ar_norm)
             A_block_b = A_block.unsqueeze(0)
             s_seq = krylov(T, A_block_b, s0, c=None)
-            C_norm = self.C if self.C is not None else torch.eye(r, device=ar_coeffs.device)
-            f_init = torch.einsum('ij, bjt -> bit', C_norm, s_seq)
+            f_init = torch.einsum('ij, bjt -> bit', self.C, s_seq)
             f_init = rearrange(f_init, 'b r t -> b t r')
             factors_b = factors_b + f_init
             factors_list.append(factors_b)
@@ -276,7 +274,6 @@ class iVDFMCompanionSSM(BaseSSM):
         batch_size, T, r = eta_sequence.shape
         p = self.factor_order
         factors = torch.empty(batch_size, T, r, device=eta_sequence.device, dtype=eta_sequence.dtype)
-        C_norm = self.C if self.C is not None else torch.eye(r, device=ar_coeffs.device, dtype=ar_coeffs.dtype)
         uniq = group_id.unique()
         for g in uniq:
             idx = (group_id == g).nonzero(as_tuple=True)[0]
@@ -293,7 +290,7 @@ class iVDFMCompanionSSM(BaseSSM):
             A_block_g = build_ivdfm_diagonal_companion(ar_norm_g)
             A_block_batched = A_block_g.unsqueeze(0).expand(idx.shape[0], -1, -1)
             s_seq_g = krylov(T, A_block_batched, s0_g, c=None)  # (|g|, r*p, T)
-            f_init_g = torch.einsum('ij, bjt -> bit', C_norm, s_seq_g)  # (|g|, r, T)
+            f_init_g = torch.einsum('ij, bjt -> bit', self.C, s_seq_g)  # (|g|, r, T)
             f_init_g = rearrange(f_init_g, 'b r t -> b t r')
             factors[idx] = f_conv_g + f_init_g
         return factors
@@ -326,7 +323,7 @@ class iVDFMCompanionSSM(BaseSSM):
         or (latent_dim,), None for the learned ``self.f0``. Returns
         (batch, T, latent_dim).
         """
-        batch_size, T, r = eta_sequence.shape
+        batch_size, _, r = eta_sequence.shape
         assert r == self.latent_dim, f"Expected latent_dim={self.latent_dim}, got {r}"
         f0 = self._batched_f0(f0, batch_size)
 
@@ -366,8 +363,7 @@ class iVDFMCompanionSSM(BaseSSM):
         # A is broadcast over the batch so that each s0[b] gets its own sequence.
         A_block_b = A_block.unsqueeze(0).expand(batch_size, -1, -1)  # (batch, r*p, r*p)
         s_seq = krylov(T, A_block_b, s0, c=None)  # (batch, r*p, T)
-        C_norm = self.C if self.C is not None else torch.eye(r)
-        f_init = torch.einsum('ij, bjt -> bit', C_norm, s_seq)  # (batch, r, T)
+        f_init = torch.einsum('ij, bjt -> bit', self.C, s_seq)  # (batch, r, T)
         f_init = rearrange(f_init, 'b r t -> b t r')
 
         factors = factors + f_init
