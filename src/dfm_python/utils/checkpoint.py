@@ -1,50 +1,25 @@
-"""Checkpoint loading utilities for factor models.
+"""Inferring input dimensions from data or a checkpoint state dict.
 
-This module provides utilities for loading and parsing PyTorch model checkpoints,
-inferring model parameters from state dictionaries, and extracting input dimensions.
-
-The state-dict helper defaults to the DDFM autoencoder's key names and can be
-parameterized for other autoencoder-based models. Saved DDFM runs are
-directories (see ``DDFM.save``/``DDFM.load``); the single-file checkpoint
-helpers ``infer_ddfm_input_dim`` and ``infer_ddfm_params_from_state_dict``
-were removed with the old ``torch.save`` checkpoints.
+The state-dict helper defaults to the DDFM autoencoder's key names. Saved
+DDFM runs are directories (see ``DDFM.save`` / ``DDFM.load``), so these
+helpers only serve callers that still hold a raw ``state_dict``.
 """
 
 from typing import Any, Dict, List, Optional, Tuple, Union
-from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import torch
 
-try:
-    import torch
-    _has_torch = True
-except ImportError:
-    _has_torch = False
-    torch = None
-
-from ..logger import get_logger
-from ..utils.errors import DataError, DataValidationError, ConfigurationError
+from ..utils.errors import DataError, DataValidationError
 from ..utils.validation import has_shape_with_min_dims
-from ..config.constants import MAX_WARNING_ITEMS
-
-_logger = get_logger(__name__)
 
 
 def parse_checkpoint(checkpoint: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Extract state_dict and hyperparameters from checkpoint.
-    
-    Parameters
-    ----------
-    checkpoint : Any
-        Checkpoint object (dict with 'state_dict' key or raw state_dict)
-        
-    Returns
-    -------
-    state_dict : Dict[str, Any]
-        Model state dictionary
-    hparams : Dict[str, Any]
-        Hyperparameters dictionary (empty if not available)
+    """Split a checkpoint into ``(state_dict, hyper_parameters)``.
+
+    A dict with a ``'state_dict'`` key is unpacked (``hyper_parameters``
+    defaults to ``{}``); anything else is taken to be the state dict itself.
     """
     if isinstance(checkpoint, dict) and 'state_dict' in checkpoint:
         return checkpoint['state_dict'], checkpoint.get('hyper_parameters', {})
@@ -52,51 +27,29 @@ def parse_checkpoint(checkpoint: Any) -> Tuple[Dict[str, Any], Dict[str, Any]]:
 
 
 def infer_input_dim_from_data(
-    data: Union[pd.DataFrame, np.ndarray, "torch.Tensor"],
+    data: Union[pd.DataFrame, np.ndarray, torch.Tensor],
     date_id_col: str = "date_id"
 ) -> int:
-    """Infer input dimension from data.
-    
-    Parameters
-    ----------
-    data : pd.DataFrame, np.ndarray, or torch.Tensor
-        Input data
-    date_id_col : str, default "date_id"
-        Column name to exclude if data is DataFrame
-        
-    Returns
-    -------
-    int
-        Input dimension (number of features)
-        
+    """Number of features: DataFrame columns other than ``date_id_col``, or ``shape[1]``.
+
     Raises
     ------
     DataError
-        If data type is unsupported or shape is invalid
+        If an array or tensor has fewer than two dimensions, or the type is unsupported.
     """
     if isinstance(data, pd.DataFrame):
-        # Exclude date column if present
-        feature_cols = [c for c in data.columns if c != date_id_col]
-        return len(feature_cols)
-    elif isinstance(data, np.ndarray):
+        return len([c for c in data.columns if c != date_id_col])
+    if isinstance(data, (np.ndarray, torch.Tensor)):
         if not has_shape_with_min_dims(data, min_dims=2):
             raise DataError(
                 "Data must be at least 2D to infer input dimension",
                 details=f"Got shape: {data.shape}"
             )
         return data.shape[1]
-    elif _has_torch and isinstance(data, torch.Tensor):
-        if not has_shape_with_min_dims(data, min_dims=2):
-            raise DataError(
-                "Data must be at least 2D to infer input dimension",
-                details=f"Got shape: {data.shape}"
-            )
-        return data.shape[1]
-    else:
-        raise DataError(
-            f"Unsupported data type: {type(data)}",
-            details="Data must be pandas.DataFrame, numpy.ndarray, or torch.Tensor"
-        )
+    raise DataError(
+        f"Unsupported data type: {type(data)}",
+        details="Data must be pandas.DataFrame, numpy.ndarray, or torch.Tensor"
+    )
 
 
 def infer_input_dim_from_state_dict(
@@ -105,59 +58,41 @@ def infer_input_dim_from_state_dict(
     decoder_prefixes: Optional[List[str]] = None,
     output_dim_equals_input_dim: bool = True
 ) -> Optional[int]:
-    """Infer input_dim from checkpoint state_dict (generalized for autoencoder models).
-    
-    This function can be used for DDFM or other autoencoder-based models by
-    specifying the appropriate key prefixes.
-    
-    Parameters
-    ----------
-    state_dict : Dict[str, Any]
-        Model state dictionary
-    encoder_prefix : str, default "encoder.layers.0.weight"
-        Key pattern for encoder first layer weight (shape: (hidden_dim, input_dim))
-    decoder_prefixes : List[str], optional
-        Key patterns for decoder layers. If None, uses default DDFM patterns.
-        For DDFM: ["decoder.decoder.weight", "decoder.layers.0.weight"]
-    output_dim_equals_input_dim : bool, default True
-        If True, assumes decoder output_dim equals input_dim (DDFM convention).
-        If False, decoder shape interpretation may differ.
-        
-    Returns
-    -------
-    Optional[int]
-        Inferred input dimension, or None if cannot be determined
-        
+    """Infer the autoencoder input dimension from weight shapes in ``state_dict``.
+
+    The first key containing ``encoder_prefix`` gives ``weight.shape[1]``.
+    Otherwise the first key containing one of ``decoder_prefixes`` (default
+    ``["decoder.decoder.weight", "decoder.layers.0.weight"]``) gives
+    ``weight.shape[0]`` when ``output_dim_equals_input_dim`` else
+    ``weight.shape[1]``. Non-tensor values are skipped; returns None when
+    nothing matches.
+
     Raises
     ------
     DataValidationError
-        If state_dict is invalid
+        If ``state_dict`` is not a dict.
     """
     if not isinstance(state_dict, dict):
         raise DataValidationError(
             "Cannot infer input_dim: state_dict must be a dictionary",
             details=f"Received type: {type(state_dict).__name__}"
         )
-    
-    # Check encoder first layer: (hidden_dim, input_dim)
+
     first_layer_keys = [k for k in state_dict.keys() if encoder_prefix in k]
     if first_layer_keys:
         weight = state_dict[first_layer_keys[0]]
-        if _has_torch and isinstance(weight, torch.Tensor):
-            return weight.shape[1]  # input_dim is second dimension
-    
-    # Check decoder layers: (output_dim, num_factors) or (output_dim, input_dim)
+        if isinstance(weight, torch.Tensor):
+            return weight.shape[1]
+
     if decoder_prefixes is None:
         decoder_prefixes = ["decoder.decoder.weight", "decoder.layers.0.weight"]
-    
+
     for prefix in decoder_prefixes:
-        decoder_keys = [k for k in state_dict.keys() if prefix in k]
-        for key in decoder_keys:
+        for key in [k for k in state_dict.keys() if prefix in k]:
             weight = state_dict[key]
-            if _has_torch and isinstance(weight, torch.Tensor):
+            if isinstance(weight, torch.Tensor):
                 if output_dim_equals_input_dim:
-                    return weight.shape[0]  # output_dim = input_dim (DDFM)
-                else:
-                    return weight.shape[1]  # input_dim is second dimension
-    
+                    return weight.shape[0]
+                return weight.shape[1]
+
     return None
