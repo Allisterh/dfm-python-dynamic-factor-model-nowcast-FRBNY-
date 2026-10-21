@@ -29,14 +29,14 @@
       }
     ],
     "cpu_capability": "AVX512",
-    "cpu_model": "Intel(R) Xeon(R) Processor",
+    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
     "machine": "x86_64",
     "numpy": "2.3.5",
     "processor": "x86_64",
     "python": "3.12",
-    "torch": "2.9.1+cu128"
+    "torch": "2.14.1+cu130"
   },
-  "git_commit": "6c6e985da85d2d0f8061abab33a4d818f301124b",
+  "git_commit": "bfa0053022b3fcbb83e363fbacf452d6f464fc11",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "activation": "lrelu",
