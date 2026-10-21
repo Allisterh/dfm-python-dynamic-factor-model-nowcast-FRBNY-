@@ -1,208 +1,120 @@
-"""Base State Space Model (SSM) for iVDFM.
+"""Base state-space model of iVDFM: innovations to factors.
 
-This module provides the base SSM class that maps innovations to factors
-using deterministic linear dynamics. The SSM implements the convolution:
-    f_t = Σ_{k=0}^{t-1} H_k η_{t-1-k}
-where H_k = C A^k B is the impulse response kernel.
-
-Key differences from standard SSMs:
-- Input: innovations η_t (not observations)
-- Output: factors f_t (not processed observations)
-- Block-diagonal structure for identifiability (one block per factor)
-- Deterministic mapping (no stochasticity in SSM itself)
+The SSM is the deterministic convolution ``f_t = sum_{k=0}^{t-1} H_k eta_{t-1-k}``
+with the impulse response kernel ``H_k = C A^k B``. Its input is the
+innovations ``eta_t`` (not observations), its output the factors ``f_t``, and
+it is block-diagonal (one block per factor) for identifiability.
 """
 
 import torch
 import torch.nn as nn
 from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Optional
 from einops import rearrange
 
 
 class BaseSSM(nn.Module, ABC):
-    """Abstract base class for State Space Models in iVDFM.
-    
-    Maps innovations η_t to factors f_t via deterministic linear dynamics:
-        f_t = Σ_{k=0}^{t-1} H_k η_{t-1-k}
-    where H_k = C A^k B is the impulse response kernel.
-    
-    Subclasses should implement:
-    - get_impulse_response(): Compute impulse response kernel H_k
-    - forward(): Compute factors from innovation sequence
+    """Abstract SSM mapping innovations ``eta_t`` to factors ``f_t``.
+
+    Subclasses implement ``get_impulse_response`` and ``forward``.
+
+    Parameters
+    ----------
+    latent_dim : int
+        Number of factors (r).
+    factor_order : int, default 1
+        AR order p of the factor dynamics.
+    device : torch.device, optional
+        Defaults to CUDA when available, else CPU.
     """
-    
+
     def __init__(
         self,
         latent_dim: int,
         factor_order: int = 1,
         device: Optional[torch.device] = None,
     ):
-        """Initialize BaseSSM.
-        
-        Parameters
-        ----------
-        latent_dim : int
-            Dimension of latent factors (r in paper)
-        factor_order : int, default 1
-            AR order for factor dynamics (p in AR(p))
-        device : Optional[torch.device]
-            Device for computation
-        """
         super().__init__()
         self.latent_dim = latent_dim
         self.factor_order = factor_order
         self.device = device or torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     def fft_conv(
         self,
         u_input: torch.Tensor,
         v_kernel: torch.Tensor
     ) -> torch.Tensor:
-        """Convolve input with kernel using FFT (O(n log n) complexity).
-        
-        Parameters
-        ----------
-        u_input : torch.Tensor
-            Input sequence, shape (batch, dim, length) or (batch, length, dim)
-        v_kernel : torch.Tensor
-            Convolution kernel, shape (..., length)
-            
-        Returns
-        -------
-        torch.Tensor
-            Convolved output, same shape as u_input
+        """Causal FFT convolution of ``u_input`` with ``v_kernel``, (batch, dim, length).
+
+        ``u_input`` is (batch, dim, length); a (batch, length, dim) input is
+        recognized (and transposed) only against a (dim, length) kernel. A 1-D
+        kernel is used for every channel.
         """
-        # Ensure input is (batch, dim, length).
-        # Avoid heuristic based on shape[-1] != shape[1] (can be true for correct (b, d, L) when d != L).
-        if u_input.dim() == 3:
-            # If kernel is provided as (dim, L), use it to disambiguate.
-            if v_kernel.dim() == 2:
-                k_dim = v_kernel.shape[0]
-                if u_input.shape[1] == k_dim:
-                    # Already (batch, dim, length)
-                    pass
-                elif u_input.shape[-1] == k_dim:
-                    # (batch, length, dim) -> (batch, dim, length)
-                    u_input = rearrange(u_input, 'b l d -> b d l')
-            else:
-                # Fall back: assume already (batch, dim, length)
-                pass
-        
-        L = u_input.shape[-1]  # Sequence length
-        batch_size, dim = u_input.shape[:2]
-        
-        # FFT convolution
-        u_f = torch.fft.rfft(u_input, n=2*L, dim=-1)  # (batch, dim, L//2+1)
-        
-        # Handle kernel shape: could be (dim, L) or (L,) or (..., L)
+        if (u_input.dim() == 3 and v_kernel.dim() == 2
+                and u_input.shape[1] != v_kernel.shape[0] and u_input.shape[-1] == v_kernel.shape[0]):
+            u_input = rearrange(u_input, 'b l d -> b d l')
+
+        L = u_input.shape[-1]
+        dim = u_input.shape[1]
+        # Zero-padding to 2L makes the circular FFT convolution a linear one.
+        u_f = torch.fft.rfft(u_input, n=2*L, dim=-1)  # (batch, dim, L+1)
         if v_kernel.dim() == 1:
-            # Broadcast to (dim, L)
             v_kernel = v_kernel.unsqueeze(0).expand(dim, -1)
-        elif v_kernel.dim() == 2 and v_kernel.shape[0] == dim:
-            # Already (dim, L)
-            pass
-        else:
-            # Try to broadcast: (..., L) -> (dim, L)
-            if v_kernel.shape[-1] == L:
-                v_kernel = v_kernel[..., :L]
-                if v_kernel.dim() == 1:
-                    v_kernel = v_kernel.unsqueeze(0).expand(dim, -1)
-        
-        v_f = torch.fft.rfft(v_kernel[..., :L], n=2*L, dim=-1)  # (dim, L//2+1)
-        
-        # Element-wise multiplication and inverse FFT
-        y_f = u_f * v_f.unsqueeze(0)  # (batch, dim, L//2+1)
+        v_f = torch.fft.rfft(v_kernel[..., :L], n=2*L, dim=-1)  # (dim, L+1)
+
+        y_f = u_f * v_f.unsqueeze(0)
         y = torch.fft.irfft(y_f, n=2*L, dim=-1)[..., :L]  # (batch, dim, L)
-        
+
         return y
-    
+
     @abstractmethod
     def get_impulse_response(
         self,
         length: int
     ) -> torch.Tensor:
-        """Compute impulse response kernel H_k = C A^k B.
-        
-        Parameters
-        ----------
-        length : int
-            Length of impulse response sequence (T)
-            
-        Returns
-        -------
-        torch.Tensor
-            Impulse response kernel, shape (latent_dim, length) or (latent_dim, latent_dim, length)
-            Each row/block corresponds to one factor's impulse response
+        """Impulse response ``H_k = C A^k B`` for ``k < length``, one row per factor.
+
+        Shape (latent_dim, length), or (latent_dim, latent_dim, length).
         """
         raise NotImplementedError
-    
+
     @abstractmethod
     def forward(
         self,
         eta_sequence: torch.Tensor,
         f0: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
-        """Compute factors from innovation sequence.
-        
-        Implements: f_t = A^t f_0 + Σ_{k=0}^{t-1} H_k η_{t-1-k}
-        
-        Parameters
-        ----------
-        eta_sequence : torch.Tensor
-            Innovation sequence, shape (batch, T, latent_dim)
-        f0 : Optional[torch.Tensor]
-            Initial state, shape (batch, latent_dim) or (latent_dim,)
-            
-        Returns
-        -------
-        torch.Tensor
-            Factor sequence, shape (batch, T, latent_dim)
+        """Factors ``f_t = A^t f_0 + sum_{k<t} H_k eta_{t-1-k}`` of the innovations.
+
+        ``eta_sequence`` is (batch, T, latent_dim); ``f0`` is (batch, latent_dim)
+        or (latent_dim,). Returns (batch, T, latent_dim).
         """
         raise NotImplementedError
-    
+
     def forward_closed_loop(
         self,
         f_current: torch.Tensor,
         eta_future: torch.Tensor,
         horizon: int
     ) -> torch.Tensor:
-        """Rollout factors for forecasting (closed-loop).
-        
-        Computes: f_{t+h} = A^h f_t + Σ_{k=0}^{h-1} A^k B η_{t+h-k}
-        
-        Parameters
-        ----------
-        f_current : torch.Tensor
-            Current factor state, shape (batch, latent_dim)
-        eta_future : torch.Tensor
-            Future innovations, shape (batch, horizon, latent_dim)
-        horizon : int
-            Forecast horizon
-            
-        Returns
-        -------
-        torch.Tensor
-            Forecasted factors, shape (batch, horizon, latent_dim)
+        """Forecast rollout ``f_{t+h} = A^h f_t + sum_{k=0}^{h-1} A^k B eta_{t+h-k}``.
+
+        ``f_current`` is (batch, latent_dim) and ``eta_future`` (batch, horizon,
+        latent_dim); returns (batch, horizon, latent_dim). The horizon is
+        ``eta_future.shape[1]``; ``horizon`` is not read.
         """
-        # Default implementation: use forward with zero-padded sequence
-        # Subclasses can override for efficiency
+        # forward() from f_current on a sequence with a leading zero innovation,
+        # dropping that first step.
         batch_size = f_current.shape[0]
-        T = eta_future.shape[1]
-        
-        # Pad with zeros to get full sequence
         eta_padded = torch.cat([
             torch.zeros(batch_size, 1, self.latent_dim, device=eta_future.device),
             eta_future
         ], dim=1)
-        
-        # Use forward with initial state
         factors = self.forward(eta_padded, f0=f_current)
-        
-        # Return only future horizon
-        return factors[:, 1:, :]  # Skip initial state
-    
+        return factors[:, 1:, :]
+
     def to(self, device):
-        """Move model to device."""
+        """Move the module to ``device`` and record it in ``self.device``."""
         super().to(device)
         self.device = device
         return self
