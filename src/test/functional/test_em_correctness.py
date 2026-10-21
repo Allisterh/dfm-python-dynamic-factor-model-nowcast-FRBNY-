@@ -467,8 +467,6 @@ class TestCacheInvalidation:
     
     def test_cache_cleared_on_structure_change(self):
         """Cache should be cleared when blocks, r, p, idio_indicator change."""
-        from dfm_python.functional.em import _compute_and_cache_block_indices
-        
         T, N = 50, 10
         n_blocks = 1
         num_factors = 2
@@ -488,18 +486,16 @@ class TestCacheInvalidation:
             idio_indicator=np.zeros(N, dtype=DEFAULT_DTYPE)
         )
         
-        # Compute and cache indices
-        _compute_and_cache_block_indices(block_structure, N)
+        # Populate the cache (EM itself does not read it)
+        block_structure._cached_unique_blocks = [blocks[0].copy()]
+        block_structure._cached_N = N
         assert block_structure.has_cached_indices()
-        
+
         # Change r (should invalidate cache)
         r_new = np.array([num_factors + 1], dtype=DEFAULT_DTYPE)
         block_structure.r = r_new
         block_structure.clear_cache()
-        
+
         # Cache should be cleared
         assert not block_structure.has_cached_indices()
-        
-        # Recompute with new r
-        _compute_and_cache_block_indices(block_structure, N)
-        assert block_structure.has_cached_indices()
+        assert block_structure._cached_N is None
