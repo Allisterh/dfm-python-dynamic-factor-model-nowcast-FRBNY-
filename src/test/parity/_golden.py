@@ -44,6 +44,7 @@ from __future__ import annotations
 import contextlib
 import json
 import platform
+import re
 import sys
 import warnings
 from collections.abc import Iterable, Iterator, Mapping
@@ -117,16 +118,23 @@ def _blas_info() -> list[dict[str, Any]]:
 
 
 def _cpu_model() -> str:
-    """The CPU model name: ``model name`` from ``/proc/cpuinfo`` on Linux, else ``platform.processor()``."""
+    """The CPU model name without its clock-speed suffix.
+
+    ``model name`` from ``/proc/cpuinfo`` on Linux, else ``platform.processor()``.
+    The ``@ 2.80GHz`` suffix is dropped: on virtual machines it changes between
+    hosts of the same CPU model and does not affect the kernels selected.
+    """
+    name = platform.processor()
     try:
         with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as fh:
             for line in fh:
                 key, sep, value = line.partition(":")
                 if sep and key.strip() == "model name":
-                    return value.strip()
+                    name = value.strip()
+                    break
     except OSError:
         pass
-    return platform.processor()
+    return re.sub(r"\s*@\s*[\d.]+\s*GHz\b", "", name).strip()
 
 
 def _cpu_capability() -> str | None:

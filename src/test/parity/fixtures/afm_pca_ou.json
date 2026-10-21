@@ -29,7 +29,7 @@
       }
     ],
     "cpu_capability": "AVX512",
-    "cpu_model": "Intel(R) Xeon(R) Processor @ 2.80GHz",
+    "cpu_model": "Intel(R) Xeon(R) Processor",
     "machine": "x86_64",
     "numpy": "2.3.5",
     "processor": "x86_64",
