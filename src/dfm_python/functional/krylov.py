@@ -1,4 +1,4 @@
-"""Krylov sequences ``c' A^l b`` (the S3 "state space kernel"), from the Spacetime code."""
+"""Krylov sequences ``c' A^l b`` (S3's "state space kernel"), from Spacetime."""
 
 import torch
 from einops import rearrange
@@ -29,11 +29,11 @@ def krylov_sequential(L, A, b, c=None):
 
 
 def krylov(L, A, b, c=None, return_power=False):
-    """Krylov matrix ``(b, A b, ..., A^{L-1} b)``, shape (..., N, L), by repeated squaring.
+    """Krylov matrix ``(b, A b, ..., A^{L-1} b)`` by repeated squaring.
 
-    With ``c`` returns ``c @ x``, shape (..., L); with ``return_power`` also
-    ``A^{L-1}``. For ``L == 1`` the result is ``b[..., None]``, not broadcast
-    against the batch dimensions of ``A``.
+    Shape (..., N, L); with ``c`` returns ``c @ x``, shape (..., L); with
+    ``return_power`` also ``A^{L-1}``. For ``L == 1`` the result is
+    ``b[..., None]``, not broadcast against the batch dimensions of ``A``.
     """
     x = b.unsqueeze(-1) # (..., N, 1)
     A_ = A
@@ -72,9 +72,9 @@ def krylov(L, A, b, c=None, return_power=False):
         return x
 
 def power(L, A, v=None):
-    """``A^L``, and with ``v`` (shape (..., N, L)) also the scan ``sum_i A^i v[..., i]``.
+    """``A^L``, and with ``v`` also the scan ``sum_i A^i v[..., i]``.
 
-    A : (..., N, N).
+    A : (..., N, N), v : (..., N, L).
     """
 
     I = torch.eye(A.shape[-1]).to(A)

@@ -69,7 +69,10 @@ def _sym(M: np.ndarray) -> np.ndarray:
 
 
 def _observed_mask(observations) -> Tuple[np.ndarray, np.ndarray]:
-    """``(values, observed)`` of a (T x N) array or masked array; observed = not masked, not NaN."""
+    """``(values, observed)`` of a (T x N) array or masked array.
+
+    Observed means neither masked nor NaN.
+    """
     if isinstance(observations, np.ma.MaskedArray):
         mask = np.ma.getmaskarray(observations)
         values = np.asarray(observations.filled(np.nan), dtype=np.float64)
@@ -86,11 +89,11 @@ def _observed_mask(observations) -> Tuple[np.ndarray, np.ndarray]:
 
 
 class DFMKalmanFilter:
-    """Kalman filter and Durbin-Koopman smoother of the DFM (see the module docstring).
+    """Kalman filter and Durbin-Koopman smoother of the DFM.
 
-    Parameters are set with :meth:`update_parameters` (or all six constructor
-    arguments) and are only validated (shapes, finiteness) and symmetrized,
-    never regularized.
+    See the module docstring. Parameters are set with
+    :meth:`update_parameters` (or all six constructor arguments) and are only
+    validated (shapes, finiteness) and symmetrized, never regularized.
     """
 
     def __init__(
@@ -194,7 +197,7 @@ class DFMKalmanFilter:
             )
 
     def _forward(self, observations, *, keep_filtered: bool, keep_gains: bool) -> dict:
-        """Filter every row; return the predicted (and filtered) moments, loglik and smoother inputs."""
+        """Filter every row: predicted (and filtered) moments, loglik, smoother inputs."""
         self._require_parameters()
         A = self.transition_matrices
         C = self.observation_matrices
@@ -287,7 +290,7 @@ class DFMKalmanFilter:
         observations: FloatArray,
         compute_loglik: bool = True,
     ) -> Tuple[FloatArray, FloatArray, FloatArray, float]:
-        """Smoothed moments, lag-one covariances and exact log-likelihood of ``observations``.
+        """Smoothed moments, lag-one covariances and the exact log-likelihood.
 
         Parameters
         ----------

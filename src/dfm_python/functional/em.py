@@ -303,7 +303,7 @@ def _update_transition_matrix_blocked(
 
 
 def _second_moments(EZ: np.ndarray, V_smooth: np.ndarray) -> np.ndarray:
-    """``E[x_t x_t' | Y] = EZ_t EZ_t' + V_smooth_t`` for every row (T x m x m), float64."""
+    """``E[x_t x_t' | Y] = EZ_t EZ_t' + V_smooth_t`` for every row, (T x m x m)."""
     EZ = np.asarray(EZ, dtype=np.float64)
     return np.asarray(V_smooth, dtype=np.float64) + EZ[:, :, np.newaxis] * EZ[:, np.newaxis, :]
 
@@ -319,7 +319,7 @@ def _update_loading_row(
     R_con: Optional[np.ndarray] = None,
     q_con: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Loadings of series ``j`` on the state columns ``cols`` (BM14 C update, one row).
+    """BM14 loadings of series ``j`` on the state columns ``cols`` (one row of C).
 
     The other entries of the row (idiosyncratic loadings, lag columns the
     series does not load on) are held fixed and their contribution is
@@ -887,7 +887,7 @@ def run_em_algorithm(
             break
 
     def _final(candidate: DFMModelState) -> Tuple[DFMModelState, float, np.ndarray]:
-        """Rescale (if configured) and run the final filter/smoother pass at ``candidate``."""
+        """Rescale (if configured), then the final filter/smoother pass at ``candidate``."""
         if config.normalize_C and candidate.C is not None and candidate.r is not None:
             _, candidate = _normalize_C_with_invariance(candidate.C, candidate, config, log_prefix="EM: ")
         kalman_filter.update_parameters(candidate.A, candidate.C, candidate.Q, candidate.R,

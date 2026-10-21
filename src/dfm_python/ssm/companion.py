@@ -18,7 +18,7 @@ _ZERO_ROW_NORM = 1e-12
 
 
 class iVDFMCompanionSSM(BaseSSM):
-    """Companion-form SSM with one block per factor (diagonal A and B, for identifiability).
+    """Companion-form SSM with one block per factor (identifiable: diagonal A, B).
 
     For ``factor_order == 1`` the parameters are the diagonals ``A`` (through a
     sigmoid, so in (0, 1)) and ``B``; for ``factor_order > 1`` they are
@@ -87,11 +87,11 @@ class iVDFMCompanionSSM(BaseSSM):
         return result
 
     def norm(self, x: torch.Tensor, ord: int = None) -> torch.Tensor:
-        """Divide each row of ``x`` (last dimension) by its ``ord``-norm (default ``norm_order``).
+        """Divide each row of ``x`` (last dimension) by its ``ord``-norm.
 
-        ``ord == 0`` returns ``x``. Nothing is divided when the mean row norm is
-        at most 1e-4, and rows with norm at most ``_ZERO_ROW_NORM`` are left as
-        they are (dividing them would give NaN).
+        ``ord`` defaults to ``norm_order``; ``ord == 0`` returns ``x``. Nothing
+        is divided when the mean row norm is at most 1e-4, and rows with norm at
+        most ``_ZERO_ROW_NORM`` are left as they are (dividing them gives NaN).
         """
         if ord is None:
             ord = self.norm_order
@@ -121,7 +121,7 @@ class iVDFMCompanionSSM(BaseSSM):
     @staticmethod
     def _diagonal_scan(A: torch.Tensor, B: torch.Tensor, eta_sequence: torch.Tensor,
                        f0: torch.Tensor) -> torch.Tensor:
-        """``f_t = A * f_{t-1} + B * eta_t`` from ``f_{-1} = f0``, elementwise; (batch, T, r)."""
+        """``f_t = A * f_{t-1} + B * eta_t`` from ``f_{-1} = f0``; (batch, T, r)."""
         # An O(T) scan avoids the a^{-t} blowup of a closed form; it is
         # vectorized across batch and factors.
         batch_size, T, r = eta_sequence.shape
@@ -133,7 +133,7 @@ class iVDFMCompanionSSM(BaseSSM):
         return factors
 
     def get_impulse_response(self, length: int, use_cache: bool = True) -> torch.Tensor:
-        """Impulse response ``H_k = C A^k B`` for ``k < length``, shape (latent_dim, length).
+        """Impulse response ``H_k = C A^k B`` for ``k < length``, (latent_dim, length).
 
         With ``use_cache`` a detached copy is cached by ``length`` and returned
         on later calls, until ``clear_cache`` or ``train()``.
@@ -162,10 +162,11 @@ class iVDFMCompanionSSM(BaseSSM):
         ar_coeffs: torch.Tensor,
         B_diag: torch.Tensor,
     ) -> torch.Tensor:
-        """Impulse response (r, length) for the given ``ar_coeffs`` (r, p) and ``B_diag`` (r,).
+        """Impulse response (r, length) of the given ``ar_coeffs`` and ``B_diag``.
 
-        For ``factor_order == 1`` ``ar_coeffs[:, 0]`` plays the role of ``A``
-        (before the sigmoid). Nothing is cached.
+        ``ar_coeffs`` is (r, p) and ``B_diag`` (r,). For ``factor_order == 1``
+        ``ar_coeffs[:, 0]`` plays the role of ``A`` (before the sigmoid).
+        Nothing is cached.
         """
         r, p = ar_coeffs.shape
         assert r == self.latent_dim and p == self.factor_order
@@ -271,7 +272,7 @@ class iVDFMCompanionSSM(BaseSSM):
         B_diag: torch.Tensor,
         group_id: torch.Tensor,
     ) -> torch.Tensor:
-        """One impulse response per group (its first window's coefficients), batched within the group."""
+        """One impulse response per group (from its first window), batched in the group."""
         batch_size, T, r = eta_sequence.shape
         p = self.factor_order
         factors = torch.empty(batch_size, T, r, device=eta_sequence.device, dtype=eta_sequence.dtype)
@@ -305,7 +306,7 @@ class iVDFMCompanionSSM(BaseSSM):
         B_diag: torch.Tensor,
         group_id: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        """``forward_closed_loop`` with per-window coefficients (see ``forward_with_coeffs``)."""
+        """``forward_closed_loop`` with per-window coefficients (``forward_with_coeffs``)."""
         batch_size = f_current.shape[0]
         eta_padded = torch.cat([
             torch.zeros(batch_size, 1, self.latent_dim, device=eta_future.device, dtype=eta_future.dtype),
@@ -349,7 +350,7 @@ class iVDFMCompanionSSM(BaseSSM):
         eta_sequence: torch.Tensor,
         f0: torch.Tensor
     ) -> torch.Tensor:
-        """AR(p) path: FFT convolution with the Krylov impulse response, plus ``C A^t s_0``."""
+        """AR(p) path: FFT convolution with the impulse response, plus ``C A^t s_0``."""
         batch_size, T, r = eta_sequence.shape
 
         H = self.get_impulse_response(T)  # (r, T)
