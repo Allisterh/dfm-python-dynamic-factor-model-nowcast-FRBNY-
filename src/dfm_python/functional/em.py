@@ -53,7 +53,6 @@ from ..numeric.estimator import (
     estimate_ar1,
     apply_ar_clipping,
 )
-from ..utils.misc import get_config_attr
 from ..utils.errors import DataValidationError, NumericalError
 from ..logger.progress import log_em_iteration, log_convergence
 
@@ -130,8 +129,8 @@ class _MStepError(NumericalError):
     iteration started from, so ``run_em_algorithm`` can return them.
     """
 
-    def __init__(self, message: str, loglik: float, details: Optional[str] = None):
-        super().__init__(message, details=details)
+    def __init__(self, message: str, loglik: float):
+        super().__init__(message)
         self.loglik = loglik
 
 
@@ -352,7 +351,6 @@ def _update_observation_matrix_blocked(
     V_smooth: np.ndarray,
     state: DFMModelState,
     config: EMConfig,
-    block_structure: Optional[BlockStructure] = None
 ) -> DFMModelState:
     """M-step for C (Banbura-Modugno 2014), one series at a time.
 
@@ -446,7 +444,7 @@ def _update_observation_noise_blocked(
     C = np.asarray(state.C, dtype=np.float64)
     R_old = np.diag(np.asarray(state.R, dtype=np.float64))
     W = ~np.isnan(X)
-    resid = np.where(W, np.where(W, X, 0.0) - EZ @ C.T, 0.0)
+    resid = np.where(W, X - EZ @ C.T, 0.0)
     CVC = np.einsum('ij,tjk,ik->ti', C, V_smooth, C, optimize=True)
     total = (np.sum(resid ** 2, axis=0) + np.sum(np.where(W, CVC, 0.0), axis=0)
              + np.sum(~W, axis=0) * R_old)
@@ -588,7 +586,7 @@ def em_step(
             state = _update_transition_matrix_blocked(EZ, V_smooth, VVsmooth, state, config)
             if verbose_iterations:
                 _logger.info("      → Updating observation matrix C...")
-            state = _update_observation_matrix_blocked(X, EZ, V_smooth, state, config, block_structure=block_structure)
+            state = _update_observation_matrix_blocked(X, EZ, V_smooth, state, config)
             if verbose_iterations:
                 _logger.info("      → Updating observation noise R...")
             state = _update_observation_noise_blocked(X, EZ, V_smooth, state, config)
@@ -752,8 +750,8 @@ def run_em_algorithm(
             tent_weights_dict=state.tent_weights_dict
         )
     
-    min_iterations = get_config_attr(config, 'min_iterations_for_convergence_check', 1)
-    progress_interval = get_config_attr(config, 'progress_log_interval', 1)
+    min_iterations = config.min_iterations_for_convergence_check
+    progress_interval = config.progress_log_interval
     best_state: Optional[DFMModelState] = None
     best_loglik = float('-inf')
     previous_loglik = float('-inf')
