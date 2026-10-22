@@ -1,11 +1,9 @@
 """Parametric Avellaneda--Lee trading policy (the paper's PCA+OU benchmark).
 
-Rather than learning the residual-history filter (LongConv), the classical
-Avellaneda and Lee (2010) recipe cumulates the residual returns into a level,
-fits an Ornstein--Uhlenbeck / AR(1) mean-reversion model on the trailing window,
-and trades an s-score threshold rule. This module provides that policy as a
-non-learned mapping from residual histories to portfolio weights, so it can be
-dropped in where the LongConv filter would otherwise sit.
+Avellaneda and Lee (2010) cumulate the residual returns into a level, fit an
+Ornstein--Uhlenbeck / AR(1) mean-reversion model on the trailing window and
+trade an s-score threshold rule: a non-learned mapping from residual histories
+to portfolio weights that drops in where the LongConv filter would sit.
 """
 
 from __future__ import annotations
@@ -47,10 +45,7 @@ def ou_sscore(residual_hist: torch.Tensor, eps: float = 1e-8) -> torch.Tensor:
 
 def avellaneda_lee_weights(residual_hist: torch.Tensor, entry: float = 1.25,
                            hl_max: float = 60.0) -> torch.Tensor:
-    """Fade-the-stretch weights from the OU s-score threshold rule.
-
-    Enters a unit fade against the estimated stretch when it exceeds ``entry``;
-    the direction is ``-sign(s)`` (short a rich residual, long a cheap one).
+    """Fade-the-stretch weights ``-sign(s) * (|s| >= entry)`` from the OU s-score.
 
     Parameters
     ----------
@@ -59,8 +54,7 @@ def avellaneda_lee_weights(residual_hist: torch.Tensor, entry: float = 1.25,
     entry : float
         s-score entry threshold.
     hl_max : float
-        Kept for signature compatibility with the eligibility screen; the
-        half-life screen is applied by the caller when residual scales are known.
+        Unused; the half-life eligibility screen is the caller's.
 
     Returns
     -------

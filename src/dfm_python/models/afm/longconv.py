@@ -8,8 +8,8 @@ asset:
 
 LongConv (Fu et al., 2023) is a long causal convolution with a learned kernel of
 the full history length, computed in O(L log L) via the convolution theorem
-K * u = IFFT( FFT(u) . FFT(K) ). Faithful to the paper's Appendix, this includes
-the two ingredients it specifies from Fu et al. (2023):
+K * u = IFFT( FFT(u) . FFT(K) ), with the two ingredients the paper's Appendix
+takes from Fu et al. (2023):
 
   * the **Squash** kernel regularizer applied every forward pass,
         Kbar = sign(K) . max(|K| - lambda_squash, 0),
@@ -37,8 +37,7 @@ class LongConv1d(nn.Module):
     seq_len : int
         Residual-history length ``s`` consumed per asset.
     n_kernels : int
-        Number of distinct long convolutions (32 in the tuned model of the
-        paper). Each captures a different time-series pattern.
+        Number of distinct long convolutions (32 in the paper's tuned model).
     squash_lambda : float
         Strength of the Squash (soft-threshold) kernel regularizer.
     """

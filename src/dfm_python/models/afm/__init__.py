@@ -1,12 +1,10 @@
 """Attention Factor Model (AFM) for statistical arbitrage.
 
-Implements Epstein et al. (2025), "Attention Factors for Statistical Arbitrage":
-learned conditional factors via cross-sectional attention, a LongConv residual
-trading filter, and an after-cost Sharpe + explained-variance objective, with
-PCA and Avellaneda--Lee benchmarks.
-
-``AFM`` is the public estimator; the training code lives in the private engine
-``_engine.AFMEngine``.
+Epstein et al. (2025), "Attention Factors for Statistical Arbitrage": learned
+conditional factors via cross-sectional attention, a LongConv residual trading
+filter, and an after-cost Sharpe + explained-variance objective, with PCA and
+Avellaneda--Lee benchmarks. ``AFM`` is the public estimator; the training code
+is the private engine ``_engine.AFMEngine``.
 """
 
 from .estimator import AFM

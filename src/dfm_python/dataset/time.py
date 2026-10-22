@@ -1,7 +1,4 @@
-"""Time index utilities for Dynamic Factor Models.
-
-This module provides a simplified TimeIndex class for datetime handling.
-"""
+"""``TimeIndex``: a datetime index wrapping a pandas Series."""
 
 from typing import Union, List, Any
 from datetime import datetime
@@ -11,19 +8,16 @@ from ..utils.errors import DataValidationError
 
 
 class TimeIndex:
-    """Time index abstraction wrapping pandas Series with datetime dtype.
-    
-    This class provides a simple datetime index interface using pandas Series internally.
-    
+    """Datetime index backed by a pandas Series.
+
     Parameters
     ----------
-    data : pd.Series, list, np.ndarray, or datetime-like
-        Time index data. If pd.Series, must have datetime dtype.
-        If list/array, will be converted to datetime.
+    data : pd.Series, list, np.ndarray, TimeIndex or datetime-like
+        A Series is kept (converted to datetime dtype if needed); anything
+        else is parsed with ``pd.to_datetime``.
     """
-    
+
     def __init__(self, data: Union[pd.Series, List, np.ndarray, Any]):
-        """Initialize TimeIndex from various input types."""
         if isinstance(data, pd.Series):
             if not pd.api.types.is_datetime64_any_dtype(data):
                 try:
@@ -44,18 +38,16 @@ class TimeIndex:
                     f"Cannot create TimeIndex from {type(data)}: {e}",
                     details="TimeIndex requires datetime-compatible input"
                 )
-    
+
     @property
     def series(self) -> pd.Series:
-        """Get underlying pandas Series."""
         return self._series
-    
+
     def __len__(self) -> int:
-        """Return length of time index."""
         return len(self._series)
-    
+
     def __getitem__(self, key: Union[int, slice, np.ndarray, pd.Series]) -> Union[datetime, 'TimeIndex']:
-        """Get item or slice from time index."""
+        """An int gives a ``datetime``; a slice, boolean array or Series gives a ``TimeIndex``."""
         if isinstance(key, (int, np.integer)):
             val = self._series.iloc[key]
             if isinstance(val, pd.Timestamp):
@@ -72,26 +64,22 @@ class TimeIndex:
                 f"Unsupported index type: {type(key)}",
                 details="TimeIndex indexing supports int, slice, array, or Series"
             )
-    
+
     def __iter__(self):
-        """Iterate over time index."""
         for val in self._series:
             if isinstance(val, pd.Timestamp):
                 yield val.to_pydatetime()
             else:
                 yield val
-    
-    def __repr__(self) -> str:
-        """String representation."""
-        return f"TimeIndex({len(self)} periods)"
-    
-    def to_numpy(self) -> np.ndarray:
-        """Convert to numpy array of datetime objects."""
-        return np.array([dt.to_pydatetime() if isinstance(dt, pd.Timestamp) else dt 
-                        for dt in self._series], dtype=object)
-    
-    def to_list(self) -> List[datetime]:
-        """Convert to list of datetime objects."""
-        return [dt.to_pydatetime() if isinstance(dt, pd.Timestamp) else dt 
-                for dt in self._series]
 
+    def __repr__(self) -> str:
+        return f"TimeIndex({len(self)} periods)"
+
+    def to_numpy(self) -> np.ndarray:
+        """Object array of ``datetime`` values."""
+        return np.array([dt.to_pydatetime() if isinstance(dt, pd.Timestamp) else dt
+                        for dt in self._series], dtype=object)
+
+    def to_list(self) -> List[datetime]:
+        return [dt.to_pydatetime() if isinstance(dt, pd.Timestamp) else dt
+                for dt in self._series]

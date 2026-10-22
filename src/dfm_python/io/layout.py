@@ -106,9 +106,7 @@ def read_config(path: PathLike, *, allow_import: bool = False) -> dict:
     return dict(config)
 
 
-# ---------------------------------------------------------------------------
 # Index spec (data_spec.json)
-# ---------------------------------------------------------------------------
 
 
 def index_to_spec(index: pd.Index) -> dict:

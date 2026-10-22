@@ -1,22 +1,16 @@
 """``AFM``: the Attention Factor Model estimator (sklearn conventions, PanelData input).
 
-The estimator is a thin layer over the private engine
+A thin layer over the private engine
 :class:`~dfm_python.models.afm._engine.AFMEngine`. ``fit`` builds the engine's
 dataset from :class:`~dfm_python.PanelData` (returns from ``y``,
 characteristics from ``series_exog``), constructs the engine with every
 hyperparameter passed explicitly (the engine seeds, then builds its network)
-and trains it. The engine's numbers are unchanged: same data and same
-hyperparameters give the same residuals, weights and Sharpe ratio.
+and trains it.
 
 AFM allocates rather than forecasts: :meth:`AFM.allocate` returns portfolio
 weights, :meth:`AFM.backtest` evaluates the fitted policy on new data, and
-``predict`` raises ``TypeError``.
-
-``save(path)`` writes the pickle-free directory of the save layout
-(``state.npz``/``state.json`` with the training diagnostics, ``result.npz``/
-``result.json`` with ``result_`` and ``weights.pt`` with the network weights);
-``AFM.load(path, device=None)`` rebuilds the engine from them without data or
-seeding.
+``predict`` raises ``TypeError``. ``save``/``load`` write and read the
+pickle-free save directory; a loaded model has no data attached.
 """
 
 from __future__ import annotations
@@ -37,6 +31,7 @@ from ...dataset.afm_dataset import AFMDataset
 from ...dataset.panel import PanelData
 from ...io.codecs import read_json, read_npz
 from ...io.layout import RESULT_JSON, RESULT_NPZ
+from ...io.results import result_from_files
 from ...logger import get_logger
 from ...logger.progress import fit_verbosity
 from ...utils.errors import ConfigurationError, DataValidationError, UnsupportedInputError
@@ -65,10 +60,10 @@ def _is_real(value: Any) -> bool:
 class AFM(BaseFactorModel):
     """Attention Factor Model for statistical arbitrage (Epstein, Wang, Choi and Pelger, 2025).
 
-    The model learns a conditional factor model whose residuals are traded and
-    a trading policy on the residual history, under an after-cost Sharpe
-    objective with an explained-variance regularizer. Two switches select the
-    paper's three model classes:
+    Learns a conditional factor model whose residuals are traded and a trading
+    policy on the residual history, under an after-cost Sharpe objective with
+    an explained-variance regularizer. Two switches select the paper's three
+    model classes:
 
     - ``factor_model="attention", trading="longconv"``: Attention Factors
       (needs ``series_exog``, the firm characteristics);
@@ -123,11 +118,9 @@ class AFM(BaseFactorModel):
         ``"auto"`` uses CUDA if available, else CPU. A ``torch.device`` is
         written to ``config.json`` and YAML as its string.
     verbose : int, default 0
-        0 is silent. 1 logs a record when training starts and one when it
-        ends (epochs run, early stop, loss, Sharpe ratio, explained
-        variance) during ``fit`` and ``update(refit=True)``; 2 also logs the
-        hyperparameters passed to the engine. The engine trains full-batch
-        and logs nothing per epoch.
+        0 is silent. 1 logs one record when training starts and one when it
+        ends (``fit`` and ``update(refit=True)``); 2 also logs the engine
+        hyperparameters. Training is full-batch, with no per-epoch log.
 
     Attributes
     ----------
@@ -143,9 +136,8 @@ class AFM(BaseFactorModel):
     device_ : torch.device
         The resolved device.
     data_ : PanelData
-        The attached data that ``allocate()`` uses (the training data, or the
-        data of the last ``update``). A loaded model has none until
-        ``update(data)``; pass ``allocate(data=...)`` instead.
+        The data ``allocate()`` uses: the training data, or the data of the
+        last ``update``. A loaded model has none until ``update(data)``.
     n_features_in_, feature_names_in_, exog_names_in_, series_exog_names_in_, index_
         Number and names of the assets, exog names (always empty),
         characteristic names and the training index.
@@ -154,22 +146,12 @@ class AFM(BaseFactorModel):
     converged_ : bool
         True when training stopped early through ``patience``.
     n_factors_ : int
-        Number of factors.
     n_char_ : int or None
         Number of characteristics (None without ``series_exog``).
     scaler_ : None
         AFM does not scale its inputs.
     random_state_ : int or None
         The seed the run used.
-
-    Examples
-    --------
-    >>> from dfm_python import AFM, PanelData
-    >>> data = PanelData.from_arrays(y=returns, series_exog=characteristics)  # doctest: +SKIP
-    >>> model = AFM(n_factors=3, hist_len=20, max_epochs=20, random_state=0).fit(data)  # doctest: +SKIP
-    >>> weights = model.allocate()  # doctest: +SKIP
-    >>> model.save("runs/afm")  # doctest: +SKIP
-    >>> AFM.load("runs/afm").allocate(data=data)  # doctest: +SKIP
     """
 
     _tags = {
@@ -180,8 +162,7 @@ class AFM(BaseFactorModel):
         "capability:device": True,
         "update_kind": "reattach",
         "predict_data": None,
-        # The class default (random_state=None); an instance reports random_state is None.
-        "non_deterministic": True,
+        "non_deterministic": True,  # the class default random_state=None; see _instance_tags
     }
     _config_class = AFMConfig
 
@@ -242,8 +223,6 @@ class AFM(BaseFactorModel):
             {**tiny, "factor_model": "pca", "trading": "longconv", "n_kernels": 4, "pca_window": 20, "reestim": 5},
             {**tiny, "factor_model": "pca", "trading": "ou", "pca_window": 20, "reestim": 5},
         ]
-
-    # -- validation ----------------------------------------------------------
 
     def _validate_params(self) -> None:
         """Raise ``ConfigurationError`` naming the first invalid hyperparameter."""
@@ -322,10 +301,9 @@ class AFM(BaseFactorModel):
     def _adapter(panel: PanelData) -> AFMDataset:
         """The engine's dataset: returns (T, N) from ``y``, characteristics (T, N, M) from ``series_exog``.
 
-        Both arrays are C-contiguous, like the arrays users passed to the old
-        constructor: ``DataFrame.to_numpy`` can return a Fortran-ordered array,
-        whose strided float32 tensor takes other BLAS paths and rounds
-        differently.
+        Both arrays are made C-contiguous: ``DataFrame.to_numpy`` can return a
+        Fortran-ordered array, whose strided float32 tensor takes other BLAS
+        paths and rounds differently.
         """
         returns = np.ascontiguousarray(panel.y.to_numpy(np.float64))
         characteristics = panel.series_exog_array()
@@ -355,8 +333,6 @@ class AFM(BaseFactorModel):
             "patience": self.patience,
             "seed": self.random_state,
         }
-
-    # -- fit -----------------------------------------------------------------
 
     def fit(self, data: Any, **fit_kwargs: Any) -> AFM:
         """Train on ``data`` and return ``self``.
@@ -388,18 +364,15 @@ class AFM(BaseFactorModel):
         self._require_characteristics(data, self.factor_model)
         device = self._resolve_device()
         dataset = self._adapter(data)
-        # The engine seeds the global torch RNG (random_state) and then builds its network, as before.
-        engine = AFMEngine(dataset, None, n_char=None, **self._engine_params(), device=device)
+        # The engine seeds the global torch RNG (random_state) and then builds its network.
+        engine = AFMEngine(dataset, **self._engine_params(), device=device)
         self._train(engine, dataset, lambda: engine.fit())
         self._set_fitted(engine, device)
         self.data_ = data
         self._set_results(data.index)
 
     def _train(self, engine: AFMEngine, dataset: AFMDataset, run: Any) -> None:
-        """Call ``run()`` (the engine's training) between the progress records of ``verbose``.
-
-        The records only read values; the engine's numbers are unchanged.
-        """
+        """Call ``run()`` (the engine's training) between the progress records of ``verbose``."""
         if self.verbose >= 1:
             _logger.info(
                 "AFM: training factor_model=%r, trading=%r, n_factors=%d on T=%d, N=%d for up to %d epochs on %s.",
@@ -444,8 +417,6 @@ class AFM(BaseFactorModel):
         self.book_returns_ = pd.Series(
             np.asarray(result.book_returns[0], dtype=np.float64), index=index[engine.hist_len:], name="book_return"
         )
-
-    # -- allocation ----------------------------------------------------------
 
     def allocate(self, data: Any = None) -> pd.DataFrame:
         """Portfolio weights of the fitted policy.
@@ -541,18 +512,13 @@ class AFM(BaseFactorModel):
         self.data_ = panel
         return self
 
-    # -- save / load ---------------------------------------------------------
-
     def _save_state(self, path: Path) -> None:
-        """Write the AFM part of the saved run (spec section 7).
+        """Write the AFM part of the saved run.
 
         - ``state.npz``: ``residuals`` and ``book_returns`` of the last training
-          pass (plus the ``scaler/`` entry the base class adds);
-        - ``state.json``: ``num_iter``, ``converged``, ``loss_now``, ``sharpe``,
-          ``explained_variance`` and ``n_char``;
-        - ``result.npz`` / ``result.json``: ``result_``. ``Z`` and ``x_sm`` are
-          the same array as ``residual_portfolios`` and are restored as such
-          rather than written three times;
+          pass; ``state.json``: the training diagnostics and ``n_char``;
+        - ``result.npz`` / ``result.json``: ``result_`` without ``Z`` and
+          ``x_sm``, which alias ``residual_portfolios`` and are restored as such;
         - ``weights.pt``: ``network_.state_dict()``.
         """
         state = self.network_.training_state
@@ -571,11 +537,7 @@ class AFM(BaseFactorModel):
 
     @classmethod
     def _load_state(cls, est: AFM, path: Path, device: Any, allow_pickle: bool) -> None:
-        """Rebuild the engine without data or seeding, load its weights and restore the fitted attributes.
-
-        A loaded model has no attached data (``data_``): pass ``data`` to
-        ``allocate``, or attach it with ``update(data)``.
-        """
+        """Rebuild the engine without data or seeding, load its weights and restore the fitted attributes."""
         arrays, meta = cls._read_state(path)
         device = est._load_device(device)
         engine = AFMEngine._from_saved(est._engine_params(), meta["n_char"], device)
@@ -594,7 +556,7 @@ class AFM(BaseFactorModel):
 
         result_arrays = read_npz(Path(path) / RESULT_NPZ)
         residuals = result_arrays.get("residual_portfolios")
-        engine._result = cls._result_from_files(
+        engine._result = result_from_files(
             AFMResult,
             result_arrays,
             read_json(Path(path) / RESULT_JSON),

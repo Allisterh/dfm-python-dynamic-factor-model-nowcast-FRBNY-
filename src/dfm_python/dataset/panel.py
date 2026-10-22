@@ -44,9 +44,7 @@ _LONG_ID, _LONG_TIME, _LONG_TARGET = "unique_id", "ds", "y"
 _SLOTS = ("_y", "_exog", "_series_exog", "_freq", "_series_names", "_exog_names", "_series_exog_names")
 
 
-# ---------------------------------------------------------------------------
 # Input coercion helpers
-# ---------------------------------------------------------------------------
 
 
 def _to_pandas(obj: Any) -> Any:
@@ -202,9 +200,7 @@ def _normalize_freq(freq: Optional[Mapping], series_names: Sequence[Hashable]) -
     return {name: per_series[name] for name in series_names if name in per_series} or None
 
 
-# ---------------------------------------------------------------------------
 # PanelData
-# ---------------------------------------------------------------------------
 
 
 class PanelData:
@@ -280,8 +276,6 @@ class PanelData:
         ):
             object.__setattr__(self, slot, value)
 
-    # -- validation helpers -------------------------------------------------
-
     @staticmethod
     def _check_shared_index(frame: pd.DataFrame, index: pd.Index, slot: str) -> None:
         other = _validate_index(frame.index, slot)
@@ -323,8 +317,6 @@ class PanelData:
             )
         return columns.set_names(list(_SERIES_EXOG_LEVELS)), features
 
-    # -- immutability -------------------------------------------------------
-
     def __setattr__(self, name: str, value: Any) -> None:
         raise AttributeError(f"PanelData is immutable; cannot set {name!r}. Build a new PanelData instead.")
 
@@ -337,8 +329,6 @@ class PanelData:
     def __setstate__(self, state: dict) -> None:
         for slot in _SLOTS:
             object.__setattr__(self, slot, state[slot])
-
-    # -- constructors -------------------------------------------------------
 
     @classmethod
     def from_wide(
@@ -551,8 +541,6 @@ class PanelData:
             "Wrap other inputs with PanelData(...) or PanelData.from_arrays(...)."
         )
 
-    # -- small helpers ------------------------------------------------------
-
     @staticmethod
     def _as_name_list(cols: Any, what: str) -> list:
         if cols is None:
@@ -592,8 +580,6 @@ class PanelData:
         if len(names) != n:
             raise DataValidationError(f"{what} has {len(names)} entries; expected {n}.")
         return pd.Index(names, tupleize_cols=False)
-
-    # -- accessors ----------------------------------------------------------
 
     @property
     def y(self) -> pd.DataFrame:
