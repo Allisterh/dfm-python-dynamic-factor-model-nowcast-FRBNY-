@@ -4,6 +4,13 @@
 
 ### Bug fixes
 
+- DFM `ar_clip` clipped every entry of the transition matrix, including the
+  identity entries of the companion and chain shift rows (1.0 became
+  `ar_clip["max"]`). Only the estimated VAR and AR(1) coefficients are
+  clipped now.
+- DFM `update(data, refit=True)`: the training rows were extended before EM
+  ran, so a failing EM left the model with the new rows but the old
+  parameters. The model is now untouched when EM raises.
 - `validate_horizon`: the `DFM_SUPPRESS_HORIZON_WARNING` environment variable
   skipped the integer and `>= 1` checks as well as the long-horizon warning;
   it now silences only the warning.

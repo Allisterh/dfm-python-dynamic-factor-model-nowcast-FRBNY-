@@ -496,6 +496,26 @@ def _max_abs(M: np.ndarray) -> float:
     return np.max(np.abs(M)) if np.isfinite(M).all() else np.nan
 
 
+def _clip_estimated_ar(state: DFMModelState, config: EMConfig) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Clip the estimated AR coefficients of ``state.A`` to ``config.ar_clip``.
+
+    Only the factor VAR rows and the AR(1) diagonal entries are clipped; the
+    companion and chain shift entries (structural ones) are left alone.
+    """
+    layout = DFMStateLayout.from_state(state)
+    A = np.array(state.A, dtype=np.float64, copy=True)
+    mask = np.zeros(A.shape, dtype=bool)
+    n_lags = min(layout.p, layout.L)
+    for b in range(len(layout.r)):
+        mask[np.ix_(layout.factor_current(b), layout.factor_lags(b, n_lags))] = True
+    ii = layout.ar1_states
+    ii = ii[ii < A.shape[0]]
+    mask[ii, ii] = True
+    clipped, stats = apply_ar_clipping(A[mask], config)
+    A[mask] = clipped
+    return A, stats
+
+
 def em_step(
     X: np.ndarray,
     state: DFMModelState,
@@ -599,7 +619,7 @@ def em_step(
     state = replace(state, Z_0=np.array(EZ[0], dtype=np.float64), V_0=_initial_covariance_update(V_smooth[0]))
 
     if config.ar_clip is not None:
-        A_new, clip_stats = apply_ar_clipping(state.A, config)
+        A_new, clip_stats = _clip_estimated_ar(state, config)
         if clip_stats['n_clipped'] > 0:
             _logger.debug(f"AR clipping: {clip_stats['n_clipped']}/{clip_stats['n_total']} coefficients clipped")
         state = replace(state, A=A_new)

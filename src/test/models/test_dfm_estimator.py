@@ -1274,3 +1274,40 @@ def test_tutorial_runs_on_truncated_data(name, tmp_path):
     assert loaded.n_iter_ == 1 and loaded.index_.size == 120
     assert list(loaded.feature_names_in_) == _SHIPPED[name]["data"]["target_cols"]
     assert np.isfinite(loaded.predict(6).to_numpy()).all()
+
+
+def test_ar_clip_leaves_the_companion_shift_rows_alone():
+    """``ar_clip`` bounds the estimated AR coefficients only; the identity shift entries stay 1."""
+    from dfm_python.functional.state_layout import DFMStateLayout
+
+    model = DFM(**TINY, scaler="standard", ar_clip={"min": -0.5, "max": 0.5}).fit(_monthly())
+    A = model.result_.A
+    layout = DFMStateLayout.from_state(model.network_.training_state if hasattr(model, "network_") else model.engine_.training_state)
+    assert layout.L >= 2
+    start = int(layout.factor_offsets[0])
+    shift = A[start + layout.r[0]:start + layout.r[0] * layout.L, start:start + layout.r[0] * (layout.L - 1)]
+    assert np.array_equal(shift, np.eye(shift.shape[0], shift.shape[1]))
+    cur = layout.factor_current(0)
+    lag = layout.factor_lags(0, min(layout.p, layout.L))
+    assert np.all(np.abs(A[np.ix_(cur, lag)]) <= 0.5)
+    ii = layout.ar1_states
+    assert np.all(np.abs(A[ii, ii]) <= 0.5)
+
+
+def test_refit_failure_leaves_the_model_untouched(monkeypatch):
+    """When EM raises during ``update(refit=True)`` the fitted model is unchanged and still usable."""
+    import dfm_python.functional.em as em_module
+
+    data = _monthly(T=72)
+    model = DFM(**TINY, scaler="standard").fit(PanelData(y=data.y.iloc[:60]))
+    before = model.predict(3)
+    n_rows = model.engine_.data_processed.shape[0]
+
+    def boom(*args, **kwargs):
+        raise RuntimeError("EM exploded")
+
+    monkeypatch.setattr(em_module, "run_em_algorithm", boom)
+    with pytest.raises(RuntimeError):
+        model.update(PanelData(y=data.y.iloc[60:]), refit=True)
+    assert model.engine_.data_processed.shape[0] == n_rows
+    pd.testing.assert_frame_equal(model.predict(3), before)

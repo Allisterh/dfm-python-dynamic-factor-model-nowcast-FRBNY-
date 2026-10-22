@@ -523,7 +523,6 @@ class DFMEngine:
 
         if retrain:
             X_combined = np.vstack([self.data_processed, data_new])
-            self.data_processed = X_combined
             final_state, training_metadata = _em.run_em_algorithm(
                 X=X_combined,
                 initial_state=self.training_state,
@@ -532,6 +531,7 @@ class DFMEngine:
                 config=self._config.to_em_config(),
                 checkpoint_callback=None
             )
+            self.data_processed = X_combined
             self.training_state = final_state
             self._training_loglik = training_metadata['loglik']
             self._training_num_iter = training_metadata['num_iter']
