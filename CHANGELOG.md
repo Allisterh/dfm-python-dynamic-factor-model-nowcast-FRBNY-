@@ -4,6 +4,11 @@
 
 ### Bug fixes
 
+- The optimizer builders (`build_ddfm_optimizer`, `build_ivdfm_optimizer`,
+  `build_afm_optimizer`) raise `ConfigurationError` for an unknown optimizer
+  name, and `build_ivdfm_optimizer` for an unknown `scheduler_type`, instead
+  of silently using another optimizer or scheduler. The estimators already
+  validated these names; only direct callers of the builders are affected.
 - `dfm_python.config.get_agg_structure` and `group_by_freq` (also re-exported
   from `dfm_python.utils`) were `None` at runtime because of an import cycle
   with the tent module; they now resolve to the functions.

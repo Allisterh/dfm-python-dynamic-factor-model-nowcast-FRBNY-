@@ -154,3 +154,30 @@ class TestDDFMBuilder:
                 decoder_weight=decoder_weight,
                 observed_y=observed_y
             )
+
+
+class TestOptimizerNameValidation:
+    """An unknown optimizer name is an error, not a silent switch to another optimizer."""
+
+    def test_ddfm_unknown_optimizer_raises(self):
+        from dfm_python.utils.errors import ConfigurationError
+        autoencoder = SimpleAutoencoder.build(input_dim=4, encoder_size=[8, 2], output_dim=4)
+        with pytest.raises(ConfigurationError, match="optimizer"):
+            build_ddfm_optimizer(model=autoencoder, learning_rate=0.01, optimizer_type='RMSprop', n_mc_samples=5)
+
+    def test_ivdfm_unknown_optimizer_and_scheduler_raise(self):
+        from dfm_python.numeric.builder import build_ivdfm_optimizer
+        from dfm_python.utils.errors import ConfigurationError
+        model = torch.nn.Linear(3, 3)
+        with pytest.raises(ConfigurationError, match="optimizer"):
+            build_ivdfm_optimizer(model, 0.01, 'adam', max_epochs=3)
+        with pytest.raises(ConfigurationError, match="scheduler_type"):
+            build_ivdfm_optimizer(model, 0.01, 'Adam', max_epochs=3, scheduler_type='linear')
+
+    def test_afm_unknown_optimizer_raises(self):
+        from dfm_python.numeric.builder import build_afm_optimizer
+        from dfm_python.utils.errors import ConfigurationError
+        params = list(torch.nn.Linear(3, 3).parameters())
+        assert isinstance(build_afm_optimizer(params, 1e-3, "AdamW"), torch.optim.AdamW)
+        with pytest.raises(ConfigurationError, match="optimizer"):
+            build_afm_optimizer(params, 1e-3, "nadam")

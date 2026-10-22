@@ -17,7 +17,7 @@ from ..config.constants import (
 )
 from .stability import create_scaled_identity
 from .estimator import get_transition_params
-from ..utils.errors import ModelNotTrainedError, NumericalError
+from ..utils.errors import ConfigurationError, ModelNotTrainedError, NumericalError
 
 _logger = get_logger(__name__)
 
@@ -142,13 +142,23 @@ def build_lag_matrix(
     return lag_matrix
 
 
+def _pick_optimizer(optimizers: dict, optimizer_type: str):
+    """Look up ``optimizer_type`` in ``optimizers`` or raise ``ConfigurationError``."""
+    try:
+        return optimizers[optimizer_type]
+    except KeyError:
+        raise ConfigurationError(
+            f"optimizer must be one of {sorted(optimizers)}, got {optimizer_type!r}"
+        ) from None
+
+
 def build_ddfm_optimizer(
     model: Any,
     learning_rate: float,
     optimizer_type: str,
     n_mc_samples: int
 ) -> Tuple[Any, Any]:
-    """Build the DDFM optimizer ('Adam', 'AdamW' or 'SGD'; unknown -> SGD) and its LambdaLR scheduler.
+    """Build the DDFM optimizer ('Adam', 'AdamW' or 'SGD') and its LambdaLR scheduler.
 
     The scheduler is stepped once per batch and multiplies the learning rate
     by ``DEFAULT_LR_DECAY_RATE ** (step // n_mc_samples)``, the staircase
@@ -170,7 +180,7 @@ def build_ddfm_optimizer(
         ),
         'SGD': lambda: torch.optim.SGD(model.parameters(), lr=learning_rate)
     }
-    optimizer = optimizers.get(optimizer_type, optimizers['SGD'])()
+    optimizer = _pick_optimizer(optimizers, optimizer_type)()
 
     def lr_lambda(step: int) -> float:
         return DEFAULT_LR_DECAY_RATE ** (step // n_mc_samples)
@@ -199,15 +209,14 @@ def build_ivdfm_optimizer(
     model : torch.nn.Module
     learning_rate : float
     optimizer_type : str
-        'Adam', 'AdamW' or 'SGD' (unknown -> Adam).
+        'Adam', 'AdamW' or 'SGD'.
     max_epochs : int
         Sets the default StepLR step size (``max_epochs // 3``) and cosine ``T_max``.
     optimizer_weight_decay : float, default 0.0
     optimizer_momentum : float, default 0.9
         SGD only.
     scheduler_type : str or None, default 'step'
-        'step', 'plateau', 'cosine', 'exponential' (unknown -> 'step' with the
-        default step size) or None for no scheduler.
+        'step', 'plateau', 'cosine', 'exponential' or None for no scheduler.
     scheduler_step_size : int, optional
         StepLR step size; None means ``max(1, max_epochs // 3)``.
     scheduler_gamma : float, default 0.5
@@ -244,7 +253,7 @@ def build_ivdfm_optimizer(
             weight_decay=optimizer_weight_decay
         )
     }
-    optimizer = optimizers.get(optimizer_type, optimizers['Adam'])()
+    optimizer = _pick_optimizer(optimizers, optimizer_type)()
 
     if scheduler_type is None:
         return optimizer, None
@@ -267,17 +276,17 @@ def build_ivdfm_optimizer(
             optimizer,
             gamma=scheduler_gamma
         )
-    else:
-        if scheduler_type != 'step':
-            _logger.warning(
-                f"Unknown scheduler_type '{scheduler_type}', using StepLR as default"
-            )
-            scheduler_step_size = None
+    elif scheduler_type == 'step':
         step_size = scheduler_step_size if scheduler_step_size is not None else max(1, max_epochs // 3)
         scheduler = torch.optim.lr_scheduler.StepLR(
             optimizer,
             step_size=step_size,
             gamma=scheduler_gamma
+        )
+    else:
+        raise ConfigurationError(
+            "scheduler_type must be one of ['step', 'plateau', 'cosine', 'exponential'] or None, "
+            f"got {scheduler_type!r}"
         )
 
     return optimizer, scheduler
@@ -421,15 +430,16 @@ def build_afm_optimizer(
 ) -> Any:
     """Build the AFM optimizer over ``params`` (no scheduler).
 
-    ``optimizer_type`` is matched case-insensitively: 'adamw', 'sgd', anything
-    else -> Adam.
+    ``optimizer_type`` is 'Adam', 'AdamW' or 'SGD', matched case-insensitively.
     """
     opt = optimizer_type.lower()
     if opt == 'adamw':
         return torch.optim.AdamW(params, lr=learning_rate, weight_decay=weight_decay)
     if opt == 'sgd':
         return torch.optim.SGD(params, lr=learning_rate, weight_decay=weight_decay)
-    return torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
+    if opt == 'adam':
+        return torch.optim.Adam(params, lr=learning_rate, weight_decay=weight_decay)
+    raise ConfigurationError(f"optimizer must be one of ['Adam', 'AdamW', 'SGD'], got {optimizer_type!r}")
 
 
 __all__ = [
