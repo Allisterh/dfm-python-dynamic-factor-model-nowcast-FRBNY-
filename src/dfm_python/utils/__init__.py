@@ -22,8 +22,6 @@ from .metric import (
 from ..config import (
     get_periods_per_year,
     validate_frequency,
-    get_agg_structure,
-    group_by_freq,
 )
 from ..config.constants import (
     FREQUENCY_HIERARCHY,
@@ -31,7 +29,7 @@ from ..config.constants import (
     PERIODS_PER_YEAR,
     DEFAULT_BLOCK_NAME,
 )
-from ..models.dfm.tent import generate_tent_weights, generate_R_mat
+from ..models.dfm.tent import generate_tent_weights, generate_R_mat, get_agg_structure, group_by_freq
 from .misc import (
     _check_sklearn,
     get_target_scaler,

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Bug fixes
+
+- `dfm_python.config.get_agg_structure` and `group_by_freq` (also re-exported
+  from `dfm_python.utils`) were `None` at runtime because of an import cycle
+  with the tent module; they now resolve to the functions.
+
 ## 0.8.1
 
 Security and documentation release.

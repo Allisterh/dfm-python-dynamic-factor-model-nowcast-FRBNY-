@@ -67,12 +67,19 @@ from .types import (
     to_numpy,
     to_tensor,
 )
-# Circular: models.dfm.tent imports this package while it is initializing.
-try:
-    from ..models.dfm.tent import get_agg_structure, group_by_freq
-except ImportError:
-    get_agg_structure = None
-    group_by_freq = None
+_LAZY = {"get_agg_structure", "group_by_freq"}
+
+
+def __getattr__(name: str):
+    # models.dfm.tent imports this package while it initializes, so these two
+    # names are resolved on first access instead of at import time.
+    if name in _LAZY:
+        from ..models.dfm import tent
+
+        value = getattr(tent, name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def get_periods_per_year(frequency: str) -> int:

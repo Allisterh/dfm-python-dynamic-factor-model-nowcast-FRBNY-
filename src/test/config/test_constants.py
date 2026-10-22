@@ -244,3 +244,15 @@ class TestConstants:
         assert 'OSError' not in error_type_names
         # Used to consolidate duplicate exception handling patterns across models
 
+
+
+def test_tent_helpers_are_exported_as_functions():
+    """`get_agg_structure` and `group_by_freq` must resolve to the tent functions, not None."""
+    import dfm_python.config as config
+    import dfm_python.utils as utils
+    from dfm_python.models.dfm import tent
+
+    assert config.get_agg_structure is tent.get_agg_structure
+    assert config.group_by_freq is tent.group_by_freq
+    assert utils.get_agg_structure is tent.get_agg_structure
+    assert utils.group_by_freq is tent.group_by_freq
