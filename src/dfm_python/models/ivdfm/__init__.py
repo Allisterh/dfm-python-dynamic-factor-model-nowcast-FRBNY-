@@ -1,7 +1,6 @@
 """Identifiable Variational Dynamic Factor Model (iVDFM).
 
-This module provides the iVDFM model and its components. ``iVDFM`` is the
-public estimator; the training code lives in the private engine
+``iVDFM`` is the public estimator; the training code is the private engine
 ``_engine.iVDFMEngine``.
 """
 
