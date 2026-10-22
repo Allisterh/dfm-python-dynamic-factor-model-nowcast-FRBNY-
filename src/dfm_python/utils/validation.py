@@ -1,11 +1,6 @@
-"""Validation utilities for common checks.
-
-This module provides generic validation helpers that can be used across
-the codebase to reduce duplication and improve consistency.
-"""
+"""Generic condition checks that raise a caller-chosen exception."""
 
 from typing import Any, Optional, Type
-import numpy as np
 
 
 def check_condition(
@@ -14,12 +9,11 @@ def check_condition(
     message: str,
     details: Optional[str] = None
 ) -> None:
-    """Check a condition and raise an error if it fails."""
+    """Raise ``error_class`` when ``condition`` is false; ``details`` is appended as ``"\\nDetails: ..."``."""
     if not condition:
         if details:
             raise error_class(f"{message}\nDetails: {details}")
-        else:
-            raise error_class(message)
+        raise error_class(message)
 
 
 def check_not_none(
@@ -27,7 +21,7 @@ def check_not_none(
     name: str,
     error_class: Type[Exception] = ValueError
 ) -> None:
-    """Check that a value is not None."""
+    """Raise ``error_class`` when ``value`` is None."""
     if value is None:
         raise error_class(f"{name} must not be None")
 
@@ -38,7 +32,7 @@ def check_has_attr(
     name: str,
     error_class: Type[Exception] = AttributeError
 ) -> None:
-    """Check that an object has an attribute."""
+    """Raise ``error_class`` when ``obj`` lacks attribute ``attr``."""
     if not hasattr(obj, attr):
         raise error_class(f"{name} must have attribute '{attr}'")
 
@@ -47,9 +41,5 @@ def has_shape_with_min_dims(
     obj: Any,
     min_dims: int = 2
 ) -> bool:
-    """Check if an object has a shape attribute with at least min_dims dimensions.
-    
-    Non-raising helper for conditional checks (unlike validation helpers that raise exceptions).
-    """
+    """True when ``obj`` is not None and has a ``shape`` of at least ``min_dims`` dimensions."""
     return obj is not None and hasattr(obj, 'shape') and len(obj.shape) >= min_dims
-

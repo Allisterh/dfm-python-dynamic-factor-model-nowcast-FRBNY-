@@ -1,34 +1,15 @@
-"""Miscellaneous utilities for DFM operations.
+"""Parameter resolution, config access, target-series and scaler lookup helpers."""
 
-This module combines:
-- Helper functions (parameter resolution, config access)
-- Validation utilities
-- Exception classes
-- Parameter resolution utilities
-"""
+from typing import Optional, Any, List, Tuple, Dict, TYPE_CHECKING
 
-from typing import Optional, Any, List, Union, Tuple, Dict, TYPE_CHECKING, NoReturn
-
-import numpy as np
 import pandas as pd
 
 if TYPE_CHECKING:
-    import torch
-    from ..config.schema import DFMResult
     from ..config.schema.model import _DFMEngineConfig
-else:
-    torch = None
-
-try:
-    import torch
-    _has_torch = True
-except ImportError:
-    _has_torch = False
-    if not TYPE_CHECKING:
-        torch = None
 
 from ..logger import get_logger
-from .errors import NumericalError, ConfigValidationError
+from ..config.constants import DEFAULT_CLOCK_FREQUENCY, MAX_WARNING_ITEMS, MAX_ERROR_ITEMS
+from .errors import ConfigValidationError, DataError
 
 _logger = get_logger(__name__)
 
@@ -39,26 +20,7 @@ def resolve_named_param(
     config: Optional[Any] = None,
     defaults: Optional[Dict[str, Any]] = None
 ) -> Any:
-    """Resolve parameter value by name from multiple sources with priority.
-    
-    Checks sources in order: kwargs > config > defaults.
-    
-    Parameters
-    ----------
-    name : str
-        Parameter name to extract
-    kwargs : dict, optional
-        Keyword arguments dictionary (highest priority)
-    config : object, optional
-        Configuration object with attributes
-    defaults : dict, optional
-        Default values dictionary (lowest priority)
-        
-    Returns
-    -------
-    Any
-        Parameter value from first available source, or None if not found
-    """
+    """First of ``kwargs[name]`` (popped), ``getattr(config, name)``, ``defaults[name]``; else None."""
     if kwargs is not None and name in kwargs:
         return kwargs.pop(name) if isinstance(kwargs, dict) else kwargs.get(name)
     if config is not None and hasattr(config, name):
@@ -77,36 +39,9 @@ def resolve_param(
     config: Optional[Any] = None,
     defaults: Optional[Dict[str, Any]] = None
 ) -> Any:
-    """Resolve parameter value from override or default, with optional named lookup.
-    
-    Simple pattern: override > default
-    If name is provided, uses resolve_named_param() to check multiple sources.
-    
-    Parameters
-    ----------
-    override : Any, optional
-        Override value (highest priority if provided)
-    default : Any, optional
-        Default value (lowest priority)
-    name : str, optional
-        If provided, resolves using resolve_named_param() instead
-    kwargs : dict, optional
-        For named resolution (passed to resolve_named_param)
-    config : object, optional
-        For named resolution (passed to resolve_named_param)
-    defaults : dict, optional
-        For named resolution (passed to resolve_named_param)
-        
-    Returns
-    -------
-    Any
-        Resolved parameter value
-    """
-    # Named pattern: use resolve_named_param
+    """``override`` if not None else ``default``; with ``name`` defer to :func:`resolve_named_param`."""
     if name is not None:
         return resolve_named_param(name, kwargs=kwargs, config=config, defaults=defaults)
-    
-    # Simple pattern: override > default
     if override is not None:
         return override
     return default
@@ -118,39 +53,27 @@ def get_config_attr(
     default: Any = None,
     required: bool = False
 ) -> Any:
-    """Get configuration attribute with fallback and validation."""
+    """``getattr(config, attr_name)`` when set and not None, else ``default``.
+
+    Raises ``ConfigValidationError`` instead of returning ``default`` when ``required``.
+    """
     if config is None:
         if required:
             raise ConfigValidationError(f"Config is None, cannot access required attribute '{attr_name}'")
         return default
-    
+
     if hasattr(config, attr_name):
         value = getattr(config, attr_name)
         if value is not None:
             return value
-    
+
     if required:
         raise ConfigValidationError(f"Config missing required attribute '{attr_name}'")
-    
     return default
 
 
 def get_clock_frequency(config: Optional["_DFMEngineConfig"], default: Optional[str] = None) -> str:
-    """Get clock frequency from config.
-    
-    Parameters
-    ----------
-    config : _DFMEngineConfig, optional
-        Configuration object
-    default : str, optional
-        Default clock frequency if config is None
-        
-    Returns
-    -------
-    str
-        Clock frequency string
-    """
-    from ..config.constants import DEFAULT_CLOCK_FREQUENCY
+    """``config.clock``, else ``default``, else ``DEFAULT_CLOCK_FREQUENCY``."""
     return get_config_attr(config, 'clock', default or DEFAULT_CLOCK_FREQUENCY)
 
 
@@ -160,63 +83,35 @@ def resolve_target_series(
     result: Optional[Any] = None,
     model_name: str = "model"
 ) -> Tuple[Optional[List[str]], Optional[List[int]]]:
-    """Resolve target series from Dataset using covariates.
-    
-    This utility function resolves target series from the Dataset's covariates attribute.
-    Targets are computed as: target_series = all_series - covariates.
-    
-    If covariates is None or empty and series_ids is available, all series are used as targets
-    (default behavior when covariates is not specified).
-    
-    Parameters
-    ----------
-    dataset : Any, optional
-        Dataset instance with covariates attribute
-    series_ids : List[str], optional
-        Available series IDs from config or result. Used for validation and default targets.
-    result : Any, optional
-        Result object that may contain series_ids. Used as fallback.
-    model_name : str, default="model"
-        Model name for error messages
-        
-    Returns
-    -------
-    Tuple[Optional[List[str]], Optional[List[int]]]
-        Tuple of (target_series_ids, target_indices) where:
-        - target_series_ids: List of target series IDs (None if not resolved)
-        - target_indices: List of indices into series_ids (None if not resolved)
-        
+    """Target series = all series minus ``dataset.covariates``.
+
+    Without covariates (or without a dataset) every entry of ``series_ids``
+    is a target. ``result`` is unused. Returns ``(target_ids, target_indices)``
+    with indices into ``series_ids``; both are None when they cannot be
+    resolved. Targets missing from ``series_ids`` are skipped with a warning.
+
     Raises
     ------
     DataError
-        If target series are not found in available series
+        If none of the targets is in ``series_ids``.
     """
-    from ..utils.errors import DataError
-    from ..config.constants import MAX_WARNING_ITEMS, MAX_ERROR_ITEMS
-    
-    # Compute target series from Dataset's covariates
     target_series = None
     if dataset is not None:
-        # Get covariates from dataset
         covariates = getattr(dataset, 'covariates', None)
         if covariates is not None and len(covariates) > 0:
-            # Compute target_series = all_series - covariates
             if series_ids is not None:
                 valid_covariates = [c for c in covariates if c in series_ids]
                 target_series = [s for s in series_ids if s not in valid_covariates]
             else:
-                # If series_ids not available, try to get from dataset's processed columns
                 processed_columns = getattr(dataset, '_processed_columns', None)
                 if processed_columns is not None:
                     valid_covariates = [c for c in covariates if c in processed_columns]
                     target_series = [s for s in processed_columns if s not in valid_covariates]
-    
-    # Default case: if target_series is None/empty and series_ids is available, use all series as targets
+
     if (target_series is None or len(target_series) == 0) and series_ids is not None:
         target_series = list(series_ids)
         _logger.debug(f"{model_name}: No target_series specified, using all {len(series_ids)} series as targets")
-    
-    # Resolve indices if we have both target_series and series_ids
+
     target_indices = None
     if target_series is not None and series_ids is not None:
         target_indices = []
@@ -229,33 +124,23 @@ def resolve_target_series(
                     f"Available: {series_ids[:MAX_WARNING_ITEMS]}{'...' if len(series_ids) > MAX_WARNING_ITEMS else ''}. "
                     f"Skipping this target series."
                 )
-        
+
         if len(target_indices) == 0:
             raise DataError(
                 f"{model_name} prediction failed: none of the specified target series found",
                 details=f"Target: {target_series}, Available: {series_ids[:MAX_ERROR_ITEMS]}{'...' if len(series_ids) > MAX_ERROR_ITEMS else ''}"
             )
-    
+
     return target_series, target_indices
 
 
-# Scaling utilities
-from sklearn.preprocessing import StandardScaler, RobustScaler
-from typing import TYPE_CHECKING
+def _check_sklearn() -> bool:
+    """Always True: scikit-learn is a required dependency. Kept for existing callers."""
+    return True
 
-if TYPE_CHECKING:
-    from sklearn.base import BaseEstimator
-
-def _check_sklearn():
-    """Check if sklearn is available."""
-    try:
-        import sklearn
-        return True
-    except ImportError:
-        return False
 
 def select_columns_by_prefix(df: pd.DataFrame, prefixes: List[str], count_per_prefix: int = 2) -> List[str]:
-    """Select columns from DataFrame that start with given prefixes."""
+    """Up to ``count_per_prefix`` column names per prefix, in column order."""
     selected = []
     for prefix in prefixes:
         matching = [col for col in df.columns if col.startswith(prefix)]
@@ -264,33 +149,16 @@ def select_columns_by_prefix(df: pd.DataFrame, prefixes: List[str], count_per_pr
 
 
 def get_target_scaler(dataset: Optional[Any] = None, model: Optional[Any] = None) -> Optional[Any]:
-    """Get scaler from dataset or model.
-    
-    Checks 'scaler' attribute first, then falls back to 'target_scaler' for backward compatibility.
-    Both DFM and DDFM now use 'scaler' attribute.
-    
-    Parameters
-    ----------
-    dataset : Any, optional
-        Dataset instance (DFMDataset, DDFMDataset)
-    model : Any, optional
-        Model instance (DFM, DDFM)
-        
-    Returns
-    -------
-    Any or None
-        Scaler from dataset or model, or None if not available
-    """
+    """``scaler`` (else the older ``target_scaler``) attribute of ``dataset`` if given, else of ``model``."""
     if dataset is not None:
-        # Check 'scaler' first, then 'target_scaler' for backward compatibility
         return getattr(dataset, 'scaler', None) or getattr(dataset, 'target_scaler', None)
     if model is not None:
-        # Check 'scaler' first, then 'target_scaler' for backward compatibility
         return getattr(model, 'scaler', None) or getattr(model, 'target_scaler', None)
     return None
 
-# Metric functions, re-exported from metric.py for existing imports
-from .metric import (
+
+# Re-exported so existing ``from dfm_python.utils.misc import calculate_*`` keeps working.
+from .metric import (  # noqa: E402, F401
     calculate_rmse,
     calculate_mae,
     calculate_mape,
