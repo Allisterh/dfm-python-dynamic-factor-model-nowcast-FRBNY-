@@ -1,8 +1,4 @@
-"""Multi-Layer Perceptron (MLP) for common usage across models.
-
-This module provides a flexible MLP implementation that can be used
-for encoders, decoders, and other neural network components.
-"""
+"""Multi-layer perceptron shared by the iVDFM encoder, prior and regime networks."""
 
 from numbers import Number
 from typing import Union, List, Optional
@@ -14,26 +10,42 @@ from ..config.constants import (
     DEFAULT_XAVIER_GAIN,
     DEFAULT_ZERO_VALUE,
 )
-from ..logger import get_logger
-from ..utils.errors import ConfigurationError
 from ..utils.seed import apply_seed
-
-_logger = get_logger(__name__)
 
 
 class MLP(nn.Module):
-    """Multi-layer perceptron with flexible architecture.
-    
-    Supports various activation functions, custom hidden dimensions,
-    and proper weight initialization.
+    """``n_hidden_layers`` hidden layers (activation, then optional batch/layer norm and dropout) and a linear output.
+
+    Every linear layer is Xavier-normal initialized with zero bias.
+
+    Parameters
+    ----------
+    input_dim : int
+    output_dim : int
+    hidden_dim : int or list of int, default 200
+        One width for every hidden layer, or one per layer (``n_hidden_layers`` entries).
+    n_hidden_layers : int, default 2
+        0 (with ``hidden_dim=[]``) gives a single linear layer.
+    activation : str or list of str, default "relu"
+        'relu', 'lrelu', 'tanh', 'sigmoid', 'swish', 'silu' or 'none'; one per hidden layer when a list.
+    slope : float, default 0.1
+        Negative slope of 'lrelu'.
+    use_bias : bool, default True
+    dropout : float, default 0.0
+        Dropout probability after each hidden layer; 0 disables it.
+    use_batch_norm : bool, default False
+    use_layer_norm : bool, default False
+    device : str or torch.device, optional
+    seed : int, optional
+        Seeds the global RNGs before the initialization.
     """
-    
+
     def __init__(
         self,
         input_dim: int,
         output_dim: int,
         hidden_dim: Union[int, List[int]] = 200,
-        n_hidden_layers: int = 2,  # Number of hidden layers (clear and explicit)
+        n_hidden_layers: int = 2,
         activation: Union[str, List[str]] = 'relu',
         slope: float = 0.1,
         use_bias: bool = True,
@@ -43,48 +55,12 @@ class MLP(nn.Module):
         device: Optional[Union[str, torch.device]] = None,
         seed: Optional[int] = None,
     ):
-        """Initialize MLP.
-        
-        Parameters
-        ----------
-        input_dim : int
-            Input dimension
-        output_dim : int
-            Output dimension
-        hidden_dim : Union[int, List[int]]
-            Hidden layer dimension(s). If int, all hidden layers use this dimension.
-            If list, specifies dimension for each hidden layer.
-        n_hidden_layers : int
-            Number of hidden layers (e.g., 1 = input -> hidden -> output, 2 = input -> hidden1 -> hidden2 -> output)
-        activation : Union[str, List[str]]
-            Activation function(s). Options: 'relu', 'lrelu', 'tanh', 'sigmoid', 'swish', 'silu', 'none'.
-            If str, all layers use this activation. If list, specifies activation per layer.
-        slope : float
-            Slope for leaky ReLU (negative_slope parameter)
-        use_bias : bool
-            Whether to use bias in linear layers
-        dropout : float
-            Dropout probability (0.0 = no dropout)
-        use_batch_norm : bool
-            Whether to use batch normalization after each hidden layer
-        use_layer_norm : bool
-            Whether to use layer normalization after each hidden layer
-        device : Optional[Union[str, torch.device]]
-            Device to move model to (None = no move)
-        seed : Optional[int]
-            Random seed for weight initialization
-        """
         super().__init__()
-        
+
         self.input_dim = input_dim
         self.output_dim = output_dim
         self.n_hidden_layers = n_hidden_layers
-        self.use_bias = use_bias
-        self.dropout = dropout
-        self.use_batch_norm = use_batch_norm
-        self.use_layer_norm = use_layer_norm
-        
-        # Validate and set hidden dimensions
+
         if isinstance(hidden_dim, Number):
             if self.n_hidden_layers < 1:
                 raise ValueError(f"n_hidden_layers must be >= 1, got {self.n_hidden_layers}")
@@ -97,8 +73,7 @@ class MLP(nn.Module):
             self.hidden_dim = [int(d) for d in hidden_dim]
         else:
             raise ValueError(f'Wrong argument type for hidden_dim: {type(hidden_dim)}')
-        
-        # Validate and set activations
+
         if isinstance(activation, str):
             self.activation = [activation] * self.n_hidden_layers
         elif isinstance(activation, list):
@@ -109,12 +84,10 @@ class MLP(nn.Module):
             self.activation = activation
         else:
             raise ValueError(f'Wrong argument type for activation: {type(activation)}')
-        
-        # Set random seed if provided
+
         if seed is not None:
             apply_seed(seed)
-        
-        # Build activation functions
+
         self._act_f = []
         for act in self.activation:
             if act == 'lrelu':
@@ -126,167 +99,78 @@ class MLP(nn.Module):
             elif act == 'sigmoid':
                 self._act_f.append(torch.sigmoid)
             elif act == 'swish' or act == 'silu':
-                # Swish/SiLU: x * sigmoid(x)
                 self._act_f.append(F.silu)
             elif act == 'none' or act is None:
                 self._act_f.append(lambda x: x)
             else:
                 raise ValueError(f'Incorrect activation: {act}. Options: relu, lrelu, tanh, sigmoid, swish, silu, none')
-        
-        # Build layers
+
         self.layers = nn.ModuleList()
         self.batch_norms = nn.ModuleList() if use_batch_norm else None
         self.layer_norms = nn.ModuleList() if use_layer_norm else None
-        
+
         if self.n_hidden_layers == 0:
-            # Single layer: input -> output (no hidden layers)
             layer = nn.Linear(input_dim, output_dim, bias=use_bias)
             self._init_linear(layer)
             self.layers.append(layer)
         else:
-            # First hidden layer: input -> hidden[0]
             layer = nn.Linear(input_dim, self.hidden_dim[0], bias=use_bias)
             self._init_linear(layer)
             self.layers.append(layer)
-            
+
             if use_batch_norm:
                 self.batch_norms.append(nn.BatchNorm1d(self.hidden_dim[0]))
             if use_layer_norm:
                 self.layer_norms.append(nn.LayerNorm(self.hidden_dim[0]))
-            
-            # Hidden layers: hidden[i-1] -> hidden[i]
+
             for i in range(1, len(self.hidden_dim)):
                 layer = nn.Linear(self.hidden_dim[i - 1], self.hidden_dim[i], bias=use_bias)
                 self._init_linear(layer)
                 self.layers.append(layer)
-                
+
                 if use_batch_norm:
                     self.batch_norms.append(nn.BatchNorm1d(self.hidden_dim[i]))
                 if use_layer_norm:
                     self.layer_norms.append(nn.LayerNorm(self.hidden_dim[i]))
-            
-            # Output layer: hidden[-1] -> output
+
             layer = nn.Linear(self.hidden_dim[-1], output_dim, bias=use_bias)
-            self._init_linear(layer, is_output=True)
+            self._init_linear(layer)
             self.layers.append(layer)
-        
-        # Dropout layer
-        if dropout > 0.0:
-            self.dropout_layer = nn.Dropout(dropout)
-        else:
-            self.dropout_layer = None
-        
-        # Move to device if specified
+
+        self.dropout_layer = nn.Dropout(dropout) if dropout > 0.0 else None
+
         if device is not None:
             if isinstance(device, str):
                 device = torch.device(device)
             self.to(device)
-    
+
     @staticmethod
-    def _init_linear(layer: nn.Linear, is_output: bool = False) -> None:
-        """Initialize linear layer weights and bias.
-        
-        Parameters
-        ----------
-        layer : nn.Linear
-            Linear layer to initialize
-        is_output : bool
-            Whether this is the output layer (uses different initialization)
-        """
-        # Weight initialization
-        if is_output:
-            # Output layer: Xavier normal with default gain
-            nn.init.xavier_normal_(layer.weight, gain=DEFAULT_XAVIER_GAIN)
-        else:
-            # Hidden layers: Xavier normal
-            nn.init.xavier_normal_(layer.weight, gain=DEFAULT_XAVIER_GAIN)
-        
-        # Bias initialization
+    def _init_linear(layer: nn.Linear) -> None:
+        nn.init.xavier_normal_(layer.weight, gain=DEFAULT_XAVIER_GAIN)
         if layer.bias is not None:
             nn.init.constant_(layer.bias, DEFAULT_ZERO_VALUE)
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """Forward pass through MLP.
-        
-        Parameters
-        ----------
-        x : torch.Tensor
-            Input tensor, shape (batch, input_dim) or (batch, *, input_dim)
-        
-        Returns
-        -------
-        torch.Tensor
-            Output tensor, shape (batch, output_dim) or (batch, *, output_dim)
-        """
-        # Handle multi-dimensional input (e.g., sequences)
+        """``(..., input_dim)`` to ``(..., output_dim)``; leading dimensions are flattened and restored."""
         original_shape = x.shape
-        if x.dim() > 2:
-            # Flatten all dimensions except last
-            # Use reshape instead of view: inputs may be non-contiguous
+        needs_reshape = x.dim() > 2
+        if needs_reshape:
+            # reshape, not view: the input may be non-contiguous.
             x = x.reshape(-1, x.shape[-1])
-            needs_reshape = True
-        else:
-            needs_reshape = False
-        
-        # Forward through layers
+
         h = x
-        n_hidden = len(self.layers) - 1  # Number of hidden layers
-        
+        n_hidden = len(self.layers) - 1
         for i, layer in enumerate(self.layers):
             h = layer(h)
-            
-            # Apply activation, batch norm, and dropout (except on output layer)
             if i < n_hidden:
-                # Activation
                 h = self._act_f[i](h)
-                
-                # Batch normalization
-                if self.use_batch_norm and self.batch_norms is not None:
+                if self.batch_norms is not None:
                     h = self.batch_norms[i](h)
-                
-                # Layer normalization
-                if self.use_layer_norm and self.layer_norms is not None:
+                if self.layer_norms is not None:
                     h = self.layer_norms[i](h)
-                
-                # Dropout
                 if self.dropout_layer is not None:
                     h = self.dropout_layer(h)
-        
-        # Reshape if needed
+
         if needs_reshape:
-            output_shape = list(original_shape[:-1]) + [self.output_dim]
-            # Use reshape for the same non-contiguity reason
-            h = h.reshape(*output_shape)
-        
+            h = h.reshape(*(list(original_shape[:-1]) + [self.output_dim]))
         return h
-    
-    def get_num_parameters(self) -> int:
-        """Get total number of trainable parameters.
-        
-        Returns
-        -------
-        int
-            Number of trainable parameters
-        """
-        return sum(p.numel() for p in self.parameters() if p.requires_grad)
-    
-    def get_layer_info(self) -> dict:
-        """Get information about MLP architecture.
-        
-        Returns
-        -------
-        dict
-            Dictionary with architecture information
-        """
-        return {
-            'input_dim': self.input_dim,
-            'output_dim': self.output_dim,
-            'hidden_dims': self.hidden_dim,
-            'n_hidden_layers': self.n_hidden_layers,
-            'activations': self.activation,
-            'use_bias': self.use_bias,
-            'dropout': self.dropout,
-            'use_batch_norm': self.use_batch_norm,
-            'use_layer_norm': self.use_layer_norm,
-            'num_parameters': self.get_num_parameters(),
-        }

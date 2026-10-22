@@ -1,27 +1,23 @@
 """``DDFM``: the deep dynamic factor model estimator (sklearn conventions, PanelData input).
 
-The estimator is a thin layer over the private engine
+A thin layer over the private engine
 :class:`~dfm_python.models.ddfm._engine.DDFMEngine`. ``fit`` builds the
 engine's dataset from :class:`~dfm_python.PanelData` as the frame
-``[exog | y]`` (the covariates of the encoder, then the targets), constructs
-the engine with every hyperparameter passed explicitly, trains the autoencoder
-with MCMC denoising and builds the linear state space on its factors. The
-engine's numbers are unchanged: same data and same hyperparameters give the
-same weights, factors, state-space matrices and forecasts.
+``[exog | y]`` (the encoder's covariates, then the targets), constructs the
+engine with every hyperparameter passed explicitly, trains it and builds the
+linear state space on its factors.
 
-``predict(h)`` returns the target forecasts in data units (the engine's
-forecast, inverse-transformed with ``scaler_``; the identity with
-``scaler=None``), and ``predict_factors(h)`` the AR(1) factor forecast.
-``update(data)`` takes the rows after the conditioning data (overlap raises),
-scales them with the scalers fitted at fit time, interpolates them as fit
-interpolates its data and appends their encoded factors;
-``predict(h, data=...)`` does the same on a copy, so the model is unchanged.
+``predict(h)`` returns the target forecasts in data units and
+``predict_factors(h)`` the AR(1) factor forecast. ``update(data)`` takes the
+rows after the conditioning data (overlap raises), scales them with the
+scalers fitted at fit time, interpolates them as fit does and appends their
+encoded factors; ``predict(h, data=...)`` does the same on a copy.
 
-``save(path)`` writes the pickle-free directory of the save layout
-(``state.npz``/``state.json`` with the engine's factors, residuals, state-space
-matrices and scaled training frame, ``result.npz``/``result.json`` with
-``result_`` and ``weights.pt`` with the network weights); ``DDFM.load(path,
-device=None)`` rebuilds the engine from them without data or seeding.
+``save(path)`` writes the pickle-free save layout (``state.npz``/``state.json``
+with the engine's factors, residuals, state-space matrices and scaled
+conditioning frame, ``result.npz``/``result.json`` with ``result_`` and
+``weights.pt`` with the network weights); ``DDFM.load(path, device=None)``
+rebuilds the engine from them without data or seeding.
 """
 
 from __future__ import annotations
@@ -248,17 +244,6 @@ class DDFM(BaseFactorModel):
         Time index of the data the forecasts start from: ``index_``, extended
         by the rows of each ``update``; ``predict(h)`` returns the ``h``
         stamps after its last entry.
-
-    Examples
-    --------
-    >>> from dfm_python import DDFM, PanelData
-    >>> data = PanelData(y=targets_df, exog=covariates_df)  # doctest: +SKIP
-    >>> model = DDFM(n_factors=4, encoder_layers=(16,), max_iter=200, scaler="standard").fit(data)  # doctest: +SKIP
-    >>> model.predict(6)  # doctest: +SKIP
-    >>> model.predict_factors(6)  # doctest: +SKIP
-    >>> model.predict(6, data=new_rows)  # conditions on the rows after index_[-1]; model unchanged  # doctest: +SKIP
-    >>> model.update(new_rows).save("ddfm_run")  # doctest: +SKIP
-    >>> DDFM.load("ddfm_run").predict(6)  # doctest: +SKIP
     """
 
     _tags = {
@@ -598,25 +583,16 @@ class DDFM(BaseFactorModel):
     def update(self, data: Any, *, refit: bool = False) -> DDFM:
         """Condition later forecasts on new rows ``data`` and return ``self``.
 
-        Tag ``update_kind`` is ``"encoder_forward"``: an encoder forward pass
-        with the trained weights. ``data`` holds only the rows after the last
-        conditioning time stamp (tag ``predict_data="new_rows"``, as for DFM);
-        rows that overlap the conditioning data raise.
-
-        - Scaling: the targets are scaled with ``scaler_`` and the covariates
-          with the covariate scaler, both fitted in ``fit`` on the training
-          data and never refitted (any scaler works, "minmax", "robust",
-          "maxabs", "quantile" and custom transformers included).
-        - Missing values: filled as ``fit`` fills its data, by interpolation
-          with ``interpolation_method``, ``interpolation_limit`` and
-          ``interpolation_limit_direction`` over the conditioning rows and the
-          new rows together (so a gap at the boundary is interpolated from
-          the earlier rows); gaps the interpolation leaves (longer than the
-          limit, or at the end) carry the last value forward. Missing targets
-          therefore never reach the encoder as NaN.
-        - Factors: the encoder maps each new row to its factors, which are
-          appended to the engine's factors, so ``predict(h)`` then starts from
-          the last new row.
+        Tag ``update_kind`` is ``"encoder_forward"``: the trained encoder maps
+        each new row to its factors, which are appended to the engine's, so
+        ``predict(h)`` then starts from the last new row. ``data`` holds only
+        the rows after the last conditioning time stamp (tag
+        ``predict_data="new_rows"``); overlap raises. The targets are scaled
+        with ``scaler_`` and the covariates with the covariate scaler, both
+        fitted in ``fit`` and never refitted. Missing values are interpolated
+        as in ``fit``, over the conditioning rows and the new rows together;
+        gaps the interpolation leaves carry the last value forward, so no NaN
+        reaches the encoder.
 
         The network parameters, ``scaler_``, ``result_`` and ``factors_`` are
         unchanged; ``conditioning_index_`` is extended by ``data.index``.
@@ -733,25 +709,18 @@ class DDFM(BaseFactorModel):
     def _save_state(self, path: Path) -> None:
         """Write the DDFM part of the saved run (spec section 7).
 
-        - ``state.npz``: the engine's current ``factors`` (MC x T x r; after
-          ``update`` they include the appended rows), ``eps``,
-          ``last_neurons``, the state-space matrices ``ssm/F``, ``ssm/H``,
-          ``ssm/Q``, ``ssm/R``, ``ssm/mu_0``, ``ssm/Sigma_0``, and
-          ``data/frame``: the engine's scaled conditioning frame ``[exog |
-          y]`` (the training rows and the rows ``update`` appended, NaN kept),
-          which ``update`` interpolates the new rows against; the fitted
-          covariate scaler's arrays under ``covariate_scaler/``; plus the
-          ``scaler/`` entries;
-        - ``state.json``: the training diagnostics (``num_iter``, ``loss_now``,
-          null when training stopped before computing it, ``converged``), the
-          engine's ``input_dim``, ``output_dim``, ``num_series``,
-          ``encoder_size``, ``decoder_size``, ``target_series`` and
-          ``covariates``, the frame's ``data_columns``, the covariate scaler
-          (``covariate_scaler``, encoded like ``scaler.json``) and
-          ``conditioning_index``;
-        - ``result.npz`` / ``result.json``: ``result_`` without
-          ``target_scaler``, which load sets to ``scaler_``;
-        - ``weights.pt``: ``network_.state_dict()``.
+        ``state.npz`` holds the engine's ``factors`` (MC x T x r, the rows
+        ``update`` appended included), ``eps``, ``last_neurons``, the
+        state-space matrices ``ssm/<name>``, ``data/frame`` (the scaled
+        conditioning frame ``[exog | y]``, NaN kept, which ``update``
+        interpolates the new rows against) and the covariate scaler's arrays
+        under ``covariate_scaler/``. ``state.json`` holds the training
+        diagnostics (``loss_now`` is null when training stopped before
+        computing it), the engine dims and sizes, ``data_columns``, the
+        covariate scaler's JSON part and ``conditioning_index``.
+        ``result.npz``/``result.json`` hold ``result_`` without
+        ``target_scaler`` (load sets it to ``scaler_``) and ``weights.pt`` the
+        state dict.
         """
         engine = self.network_
         state = engine.training_state
@@ -812,8 +781,6 @@ class DDFM(BaseFactorModel):
             setattr(engine.training_state, name, arrays[f"ssm/{name}"])
         engine.data = pd.DataFrame(arrays["data/frame"], columns=list(meta["data_columns"]))
         engine.target_indices = np.array([engine.data.columns.get_loc(col) for col in engine.target_series])
-        if engine.covariates:
-            engine._target_col_tensor = torch.tensor(engine.target_indices, device=engine.device, dtype=torch.long)
         engine.scaler = est.scaler_
         engine.covariate_scaler = _decode_covariate_scaler(meta.get("covariate_scaler"), arrays, allow_pickle, path)
 

@@ -1,8 +1,7 @@
-"""Regime probability network.
+"""Regime probability network of iVDFM: π_t = softmax(h(u_t) / τ) from the observed context only.
 
-Outputs π_t = softmax(h(u_t) / τ) from observed context only.
-Temperature τ < 1 sharpens π toward one-hot (local commitment); τ = 1 is standard softmax.
-No latent inputs; no gradients into η through π.
+τ < 1 sharpens π toward one-hot; τ = 1 is the plain softmax. No latent
+inputs, so no gradient reaches η through π.
 """
 
 from typing import Optional
@@ -13,7 +12,7 @@ from .mlp import MLP
 
 
 class RegimeNet(nn.Module):
-    """Maps context u to regime probabilities π over K regimes. Supports temperature for sharper assignments."""
+    """Context ``u`` to probabilities over ``num_regimes`` regimes: an MLP (or a linear map) and a softmax."""
 
     def __init__(
         self,
@@ -46,7 +45,7 @@ class RegimeNet(nn.Module):
             self.to(device)
 
     def forward(self, x: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
-        """Return regime probabilities (batch, ..., K). τ < 1 sharpens π (local commitment)."""
+        """Regime probabilities ``(..., num_regimes)``; the logits are divided by ``temperature``."""
         logits = self.net(x)
         if temperature != 1.0:
             logits = logits / temperature

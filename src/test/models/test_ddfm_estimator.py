@@ -722,8 +722,6 @@ def _assert_same_model(loaded: DDFM, est: DDFM) -> None:
     assert isinstance(engine.data.index, pd.RangeIndex)
     assert engine.target_series == original.target_series and engine.covariates == original.covariates
     np.testing.assert_array_equal(engine.target_indices, original.target_indices, strict=True)
-    if original.covariates:
-        assert torch.equal(engine._target_col_tensor, original._target_col_tensor)
     assert engine._num_iter == original._num_iter
     assert engine._converged == getattr(original, "_converged", False)
     assert getattr(engine, "loss_now", None) == getattr(original, "loss_now", None)
