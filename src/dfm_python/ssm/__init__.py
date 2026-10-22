@@ -1,35 +1,27 @@
-"""State-space model (SSM) modules.
+"""State-space models.
 
-This package provides:
-- DFMKalmanFilter: Kalman filter and Durbin-Koopman smoother for the DFM E-step (per-element missing data, exact log-likelihood)
-- BaseSSM: Base class for SSMs in iVDFM (innovations → factors)
-- iVDFMCompanionSSM: Companion form SSM for iVDFM (block-diagonal, supports p=1 and p>1)
-- CompanionSSM: Companion form state-space models (optional, for DDFM)
+- ``DFMKalmanFilter``: Kalman filter and Durbin-Koopman smoother of the DFM
+  E-step (per-element missing data, exact log-likelihood).
+- ``BaseSSM``: base class of the iVDFM SSMs (innovations to factors).
+- ``iVDFMCompanionSSM``: block-diagonal companion-form SSM of iVDFM.
+
+``CompanionSSM``, ``MACompanionSSM`` and ``CompanionSSMBase`` are None: no such
+classes exist, and the names stay importable.
 """
 
 from .kalman import DFMKalmanFilter
 from .base import BaseSSM
 from .companion import iVDFMCompanionSSM
 
-# Companion SSM modules are optional (used by DDFM, not DFM)
-try:
-    from .companion import CompanionSSM, MACompanionSSM, CompanionSSMBase
-    _HAS_COMPANION = True
-except ImportError:
-    # Companion module not available - make these None or create stubs
-    CompanionSSM = None
-    MACompanionSSM = None
-    CompanionSSMBase = None
-    _HAS_COMPANION = False
+CompanionSSM = None
+MACompanionSSM = None
+CompanionSSMBase = None
 
 __all__ = [
-    # Main modules
     'DFMKalmanFilter',
     'BaseSSM',
     'iVDFMCompanionSSM',
-    # Companion SSM modules (may be None if module not available)
     'CompanionSSM',
     'MACompanionSSM',
     'CompanionSSMBase',
 ]
-

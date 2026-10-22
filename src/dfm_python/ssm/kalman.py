@@ -43,10 +43,6 @@ There is no covariance regularization, eigenvalue capping or state clipping:
 the moments and the log-likelihood describe exactly the model given to
 :meth:`DFMKalmanFilter.update_parameters`. Non-finite results raise
 :class:`~dfm_python.utils.errors.NumericalError`.
-
-Earlier versions used a third-party filter for this E-step; it skipped every
-row with a missing entry and returned ``-T/2`` as the log-likelihood of any
-panel with NaN (see the CHANGELOG).
 """
 
 from __future__ import annotations
@@ -72,8 +68,11 @@ def _sym(M: np.ndarray) -> np.ndarray:
     return 0.5 * (M + M.T)
 
 
-def _observed_mask(observations) -> np.ndarray:
-    """``(values, observed)`` of a (T x N) array or masked array: observed = not masked and not NaN."""
+def _observed_mask(observations) -> Tuple[np.ndarray, np.ndarray]:
+    """``(values, observed)`` of a (T x N) array or masked array.
+
+    Observed means neither masked nor NaN.
+    """
     if isinstance(observations, np.ma.MaskedArray):
         mask = np.ma.getmaskarray(observations)
         values = np.asarray(observations.filled(np.nan), dtype=np.float64)
@@ -90,12 +89,11 @@ def _observed_mask(observations) -> np.ndarray:
 
 
 class DFMKalmanFilter:
-    """Kalman filter and Durbin-Koopman smoother with per-element missing data and exact log-likelihood.
+    """Kalman filter and Durbin-Koopman smoother of the DFM.
 
-    See the module docstring for the model, the timing convention and the
-    algorithms. Parameters are set with :meth:`update_parameters` (or all six
-    constructor arguments) and are only validated (shapes, finiteness) and
-    symmetrized, never regularized.
+    See the module docstring. Parameters are set with
+    :meth:`update_parameters` (or all six constructor arguments) and are only
+    validated (shapes, finiteness) and symmetrized, never regularized.
     """
 
     def __init__(
@@ -122,10 +120,6 @@ class DFMKalmanFilter:
                 initial_state_mean=initial_state_mean,
                 initial_state_covariance=initial_state_covariance,
             )
-
-    # ------------------------------------------------------------------
-    # Parameters
-    # ------------------------------------------------------------------
 
     def update_parameters(
         self,
@@ -202,12 +196,8 @@ class DFMKalmanFilter:
                 "DFMKalmanFilter parameters not initialized. Call update_parameters() first."
             )
 
-    # ------------------------------------------------------------------
-    # Forward pass
-    # ------------------------------------------------------------------
-
     def _forward(self, observations, *, keep_filtered: bool, keep_gains: bool) -> dict:
-        """Filter all rows. Returns predicted (and optionally filtered) moments, the loglik and the smoother inputs."""
+        """Filter every row: predicted (and filtered) moments, loglik, smoother inputs."""
         self._require_parameters()
         A = self.transition_matrices
         C = self.observation_matrices
@@ -295,24 +285,20 @@ class DFMKalmanFilter:
         """Exact Gaussian log-likelihood of the observed entries of ``observations``."""
         return self._forward(observations, keep_filtered=False, keep_gains=False)["loglik"]
 
-    # ------------------------------------------------------------------
-    # Smoother
-    # ------------------------------------------------------------------
-
     def filter_and_smooth(
         self,
         observations: FloatArray,
         compute_loglik: bool = True,
     ) -> Tuple[FloatArray, FloatArray, FloatArray, float]:
-        """Filter, smooth and compute lag-one covariances and the exact log-likelihood.
+        """Smoothed moments, lag-one covariances and the exact log-likelihood.
 
         Parameters
         ----------
         observations : np.ndarray
             Observations (T x N) with NaN for missing entries, or a masked array.
         compute_loglik : bool, default True
-            Kept for compatibility. The log-likelihood comes out of the forward
-            pass at no extra cost and is always returned.
+            Ignored: the log-likelihood comes out of the forward pass at no
+            extra cost and is always returned.
 
         Returns
         -------
@@ -369,10 +355,6 @@ class DFMKalmanFilter:
                 details="The parameters make the smoother diverge.",
             )
         return sm, sP, pair, fwd["loglik"]
-
-    # ------------------------------------------------------------------
-    # Streaming single-step Kalman filter
-    # ------------------------------------------------------------------
 
     def init_streaming(self) -> None:
         """Initialize the streaming state to ``(Z_0, V_0)``.

@@ -1,27 +1,16 @@
-"""EM algorithm implementation for DFM.
+"""EM algorithm for the linear DFM.
 
-This module provides the Expectation-Maximization algorithm for DFM parameter estimation.
 The E-step is ``ssm.kalman.DFMKalmanFilter`` (Kalman filter and Durbin-Koopman
-smoother with per-element missing data and the exact log-likelihood); the M-step
-is the closed-form Banbura-Modugno (2014) update implemented here: per-block
-VAR(p) for the factors (companion shift rows kept), AR(1) idiosyncratic states
-with the lag-one smoothed covariance, per-series loadings (tent-restricted
-least squares for slower-frequency series) with the fixed idiosyncratic
-loadings' cross-moments subtracted, the missing-data R formula, and
-``Z_0, V_0`` from the smoothed initial state. All moments are float64 and
-aligned with the E-step (``EZ[t]`` goes with data row ``t``); there are no
-caps, clips or ridge terms, so with the exact E-step the log-likelihood of the
-iterates does not decrease.
-
-The state layout (factor companion blocks, one AR(1) idiosyncratic state per
-clock-frequency series, one tent chain per slower-frequency series whose head
-is the only stochastic state) is ``functional.state_layout.DFMStateLayout``;
-the M-step takes every index from it.
-
-``run_em_algorithm`` tests convergence on the exact log-likelihood, stops on a
-decrease or a non-finite value and returns the best parameters seen, and
-reports the exact log-likelihood of the parameters it returns (one final
-filter/smoother pass, whose smoothed states it also returns).
+smoother with per-element missing data and the exact log-likelihood); the
+M-step is the closed-form Banbura-Modugno (2014) update: per-block VAR(p) for
+the factors (companion shift rows kept), AR(1) idiosyncratic states with the
+lag-one smoothed covariance, per-series loadings (tent-restricted least squares
+for slower-frequency series) with the fixed idiosyncratic loadings'
+cross-moments subtracted, the missing-data R formula, and ``Z_0, V_0`` from the
+smoothed initial state. All moments are float64 and aligned with the E-step
+(``EZ[t]`` goes with data row ``t``); there are no caps, clips or ridge terms,
+so with the exact E-step the log-likelihood of the iterates does not decrease.
+The M-step takes every state index from ``functional.state_layout.DFMStateLayout``.
 """
 
 import time as time_module
@@ -54,21 +43,16 @@ from ..config.constants import (
     DEFAULT_EXTREME_FORECAST_THRESHOLD,
     DEFAULT_MAX_VARIANCE,
     DEFAULT_ZERO_VALUE,
-    DEFAULT_IDENTITY_SCALE,
     DEFAULT_LOG_INTERVAL,
     DEFAULT_PROGRESS_LOG_INTERVAL,
     DEFAULT_TENT_KERNEL_SIZE,
 )
-from ..numeric.stability import (
-    create_scaled_identity,
-    rescale_ssm_params_for_C_normalization,
-)
+from ..numeric.stability import rescale_ssm_params_for_C_normalization
 from ..numeric.estimator import (
     estimate_var,
     estimate_ar1,
     apply_ar_clipping,
 )
-from ..utils.misc import get_config_attr
 from ..utils.errors import DataValidationError, NumericalError
 from ..logger.progress import log_em_iteration, log_convergence
 
@@ -77,64 +61,59 @@ _logger = get_logger(__name__)
 
 @dataclass
 class EMConfig:
-    """Configuration for EM algorithm parameters.
+    """Settings of the EM algorithm (and constants of the DFM initialization).
 
-    The M-step is the closed-form Banbura-Modugno (2014) update with no caps,
-    clips or ridge terms. Fields kept for API compatibility that the M-step no
-    longer uses: ``regularization`` (no ridge term in the moment solves),
-    ``max_eigenval`` (no eigenvalue cap on A, Q or V_0), ``max_variance`` (no
-    upper clip on R) and ``matrix_regularization``. ``min_variance`` is the
-    floor of ``R_ii`` for series without an idiosyncratic state (series with one
-    use ``MIN_OBSERVATION_NOISE``). ``normalize_C`` rescales each factor once,
-    after the last EM iteration, so its current-period loading column has unit
-    norm (a likelihood-invariant change of state units, see
-    ``_normalize_C_with_invariance``); it is never applied inside the EM loop.
-    ``ar_clip`` and ``damping_factor`` are opt-in and break the EM ascent
-    property.
+    The M-step has no ridge terms, caps or clips, so it does not read
+    ``regularization``, ``max_eigenval``, ``max_variance`` or
+    ``matrix_regularization``. ``min_variance`` floors ``R_ii`` of series
+    without an idiosyncratic state (series with one use
+    ``MIN_OBSERVATION_NOISE``). ``normalize_C`` rescales each factor once,
+    after the last iteration, to a unit-norm current-period loading column
+    (likelihood-invariant, see ``_normalize_C_with_invariance``). The opt-in
+    ``ar_clip`` and ``damping_factor`` break the EM ascent property.
     """
-    regularization: float = DEFAULT_REGULARIZATION  # Unused by the M-step (kept for compatibility)
-    min_norm: float = MIN_EIGENVALUE  # Loading columns with a smaller norm are not normalized
-    max_eigenval: float = VAR_STABILITY_THRESHOLD  # Unused by the M-step (kept for compatibility)
+    regularization: float = DEFAULT_REGULARIZATION
+    min_norm: float = MIN_EIGENVALUE  # loading columns with a smaller norm are not normalized
+    max_eigenval: float = VAR_STABILITY_THRESHOLD
     min_variance: float = MIN_DIAGONAL_VARIANCE
-    max_variance: float = DEFAULT_MAX_VARIANCE  # Unused by the M-step (kept for compatibility)
+    max_variance: float = DEFAULT_MAX_VARIANCE
     min_iterations_for_convergence_check: int = 2
     convergence_log_interval: int = DEFAULT_LOG_INTERVAL
     progress_log_interval: int = DEFAULT_PROGRESS_LOG_INTERVAL
     small_loglik_threshold: float = MIN_FACTOR_VARIANCE
     convergence_threshold: float = DEFAULT_CONVERGENCE_THRESHOLD
-    # Initialization constants (used by DFM initialization)
+    # Read by the DFM initialization.
     default_transition_coef: float = DEFAULT_TRANSITION_COEF
     default_process_noise: float = DEFAULT_PROCESS_NOISE
     default_observation_noise: float = MIN_DIAGONAL_VARIANCE
     matrix_regularization: float = DEFAULT_REGULARIZATION
     eigenval_floor: float = MIN_EIGENVALUE
-    slower_freq_ar_coef: float = DEFAULT_SLOWER_FREQ_AR_COEF  # AR coefficient for slower-frequency idiosyncratic components
+    slower_freq_ar_coef: float = DEFAULT_SLOWER_FREQ_AR_COEF  # AR coefficient of slower-frequency idio states
     tent_kernel_size: int = DEFAULT_TENT_KERNEL_SIZE
-    slower_freq_variance_denominator: float = DEFAULT_SLOWER_FREQ_VARIANCE_DENOMINATOR  # Variance denominator for slower-frequency series
+    slower_freq_variance_denominator: float = DEFAULT_SLOWER_FREQ_VARIANCE_DENOMINATOR
     extreme_forecast_threshold: float = DEFAULT_EXTREME_FORECAST_THRESHOLD
-    # Numerical stability parameters (from DFMConfig)
-    ar_clip: Optional[Dict[str, float]] = None  # AR coefficient clipping: {"min": float, "max": float}
-    damping_factor: Optional[float] = None  # Damping factor for parameter updates (0.8 = 80% new, 20% old)
-    data_clip: Optional[float] = None  # Clip data values beyond this many standard deviations
-    normalize_C: bool = True  # Rescale factors to unit-norm loading columns once after EM (likelihood-invariant)
+    # Opt-in stabilizers (from the DFM estimator).
+    ar_clip: Optional[Dict[str, float]] = None  # {"min": float, "max": float}, applied to A after each M-step
+    damping_factor: Optional[float] = None  # weight of the new parameters (0.8 = 80% new, 20% old)
+    data_clip: Optional[float] = None  # clip the data beyond this many standard deviations
+    normalize_C: bool = True
 
 
 _DEFAULT_EM_CONFIG = EMConfig()
 
 
 def _sym(M: np.ndarray) -> np.ndarray:
-    """Symmetric part of a square matrix (removes round-off asymmetry only)."""
+    """Symmetric part of ``M`` (removes round-off asymmetry)."""
     return 0.5 * (M + M.T)
 
 
 def _initial_covariance_update(V_smooth_0: np.ndarray) -> np.ndarray:
-    """M-step for V_0: ``Cov(x_0 | Y)``, symmetrized and, if needed, projected to PSD.
+    """M-step for V_0: ``Cov(x_0 | Y)``, symmetrized and projected to PSD if needed.
 
-    The exact smoothed covariance is positive semidefinite; with an
-    ill-conditioned prior (e.g. a V_0 with eigenvalues from 1e-6 to 1e5) its
-    computed value can have small negative eigenvalues, which would make the
-    next prior an invalid Gaussian. Those eigenvalues are set to 0 (the
-    nearest PSD matrix); a PSD input is returned only symmetrized.
+    The exact smoothed covariance is PSD, but with an ill-conditioned prior
+    (e.g. V_0 eigenvalues from 1e-6 to 1e5) its computed value can have small
+    negative eigenvalues, which would make the next prior an invalid Gaussian;
+    they are set to 0 (the nearest PSD matrix).
     """
     V = _sym(np.asarray(V_smooth_0, dtype=np.float64))
     w, U = np.linalg.eigh(V)
@@ -144,24 +123,23 @@ def _initial_covariance_update(V_smooth_0: np.ndarray) -> np.ndarray:
 
 
 class _MStepError(NumericalError):
-    """An M-step block could not be computed at parameters whose E-step succeeded.
+    """An M-step block failed at parameters whose E-step succeeded.
 
     ``loglik`` is the exact log-likelihood of the parameters the failed
     iteration started from, so ``run_em_algorithm`` can return them.
     """
 
-    def __init__(self, message: str, loglik: float, details: Optional[str] = None):
-        super().__init__(message, details=details)
+    def __init__(self, message: str, loglik: float):
+        super().__init__(message)
         self.loglik = loglik
 
 
 def _solve_spd(M: np.ndarray, B: np.ndarray, what: str) -> np.ndarray:
-    """Solve ``M X = B`` for a symmetric positive definite moment matrix (Cholesky).
+    """Solve ``M X = B`` for an SPD moment matrix by Cholesky, unregularized.
 
-    The moment matrices of the M-step (sums of ``E[x x' | Y]``) are positive
-    definite unless the data cannot identify the parameters. A matrix that is
-    not numerically positive definite raises ``NumericalError``; nothing is
-    regularized.
+    The M-step moment matrices (sums of ``E[x x' | Y]``) are positive definite
+    unless the data cannot identify the parameters; a matrix that is not
+    numerically positive definite raises ``NumericalError`` naming ``what``.
     """
     M = _sym(np.asarray(M, dtype=np.float64))
     try:
@@ -183,12 +161,11 @@ def _solve_spd(M: np.ndarray, B: np.ndarray, what: str) -> np.ndarray:
 
 
 def _factor_scales(C: np.ndarray, r: np.ndarray, p_plus_one: int, min_norm: float) -> np.ndarray:
-    """Per-factor scale ``d`` (length m) for the C normalization.
+    """Per-state scale ``d`` (length m) of the C normalization.
 
-    ``d`` is the Euclidean norm of the column of C that loads the current value
-    of each factor, repeated on every lag copy of that factor in the companion
-    block; it is 1 on the idiosyncratic states and on factors whose loading
-    column has norm at most ``min_norm``.
+    ``d`` is the norm of the C column loading each factor's current value,
+    repeated on every lag copy of that factor; it is 1 on the idiosyncratic
+    states and on factors whose loading column has norm at most ``min_norm``.
     """
     m = C.shape[1]
     d = np.ones(m, dtype=np.float64)
@@ -216,16 +193,11 @@ def _normalize_C_with_invariance(
 
         C' = C D^-1,  A' = D A D^-1,  Q' = D Q D,  V_0' = D V_0 D,  Z_0' = D Z_0
 
-    ``D`` holds one scale per factor (the norm of the C column of its current
-    value, from ``_factor_scales``), used for every lag copy of that factor so
-    the companion shift rows stay identity; idiosyncratic states keep scale 1.
-    EM calls this once, after the last iteration, when ``config.normalize_C`` is
-    True; it is not part of the M-step.
-
-    Returns
-    -------
-    Tuple[np.ndarray, DFMModelState]
-        ``(C', state')`` where ``state'`` carries C', A', Q', V_0', Z_0'.
+    ``D`` holds one scale per factor (``_factor_scales``), used for every lag
+    copy of that factor so the companion shift rows stay identity;
+    idiosyncratic states keep scale 1. EM calls this once, after the last
+    iteration, when ``config.normalize_C`` is True. Returns ``(C', state')``
+    with ``state'`` carrying C', A', Q', V_0', Z_0'.
     """
     p_plus_one = state.max_lag_size if state.max_lag_size is not None else (state.p + 1)
     d = _factor_scales(np.asarray(C, dtype=np.float64), state.r, int(p_plus_one), config.min_norm)
@@ -242,142 +214,13 @@ def _normalize_C_with_invariance(
 
 
 def _validate_blocks_shape(blocks: np.ndarray, n_series: int) -> None:
-    """Validate that blocks array has correct number of rows.
-    
-    Raises
-    ------
-    ValueError
-        If blocks.shape[0] != n_series
-    """
+    """Raise ``ValueError`` unless ``blocks`` has one row per series."""
     if blocks.shape[0] != n_series:
         raise ValueError(
             f"Blocks array shape mismatch: blocks.shape[0]={blocks.shape[0]} != n_series={n_series}. "
             f"Blocks must have exactly n_series rows (one row per data series). "
             f"This indicates a configuration error - blocks should be aligned in fit() via build_dfm_blocks()."
         )
-
-
-def _compute_and_cache_block_indices(block_structure: BlockStructure, N: int) -> None:
-    """Compute and cache block structure indices for reuse across EM iterations.
-    
-    Computes unique block patterns, factor indices (bl_idxM, bl_idxQ), constraint matrices,
-    and idiosyncratic component indices. Results are cached in block_structure.
-    """
-    # Validate cache is still valid (not just existence check)
-    # Cache validity depends on: N, blocks, r, p, p_plus_one, idio_indicator, R_mat, q, n_clock_freq
-    if block_structure.has_cached_indices():
-        # Check if cached N matches current N
-        if block_structure._cached_N == N:
-            # Additional validation: check if structure parameters match
-            # If blocks, r, p, etc. changed, cache is invalid
-            # For now, we trust that if N matches and cache exists, it's valid
-            # (blocks/r/p changes would require new BlockStructure instance)
-            return  # Already cached and valid
-        else:
-            # N changed - invalidate cache
-            block_structure.clear_cache()
-    
-    blocks = block_structure.blocks
-    r = block_structure.r
-    p_plus_one = block_structure.p_plus_one
-    n_blocks = len(r)
-    R_mat = block_structure.R_mat
-    q = block_structure.q
-    n_clock_freq = block_structure.n_clock_freq
-    idio_indicator = block_structure.idio_indicator
-    
-    _validate_blocks_shape(blocks, N)
-    
-    block_tuples = [tuple(row) for row in blocks]
-    unique_blocks = []
-    unique_indices = []
-    seen = set()
-    for i, bt in enumerate(block_tuples):
-        if bt not in seen:
-            unique_blocks.append(blocks[i].copy())
-            unique_indices.append(i)
-            seen.add(bt)
-    
-    # Build block indices for clock-frequency and slower-frequency factors
-    bl_idxM = []
-    bl_idxQ = []
-    R_con = None
-    q_con = None
-    
-    # Calculate total factor state dimension
-    total_factor_dim = int(np.sum(r) * p_plus_one)
-    
-    if R_mat is not None and q is not None:
-        from scipy.linalg import block_diag
-        R_con_blocks = []
-        q_con_blocks = []
-        
-        # Build indices for each unique block pattern
-        for bl_row in unique_blocks:
-            bl_idxQ_row = []
-            bl_idxM_row = []
-            
-            for block_idx in range(n_blocks):
-                if bl_row[block_idx] > 0:
-                    bl_idxM_row.extend([True] * int(r[block_idx]))
-                    bl_idxM_row.extend([False] * (int(r[block_idx]) * (p_plus_one - 1)))
-                    bl_idxQ_row.extend([True] * (int(r[block_idx]) * p_plus_one))
-                else:
-                    bl_idxM_row.extend([False] * (int(r[block_idx]) * p_plus_one))
-                    bl_idxQ_row.extend([False] * (int(r[block_idx]) * p_plus_one))
-            
-            bl_idxM.append(bl_idxM_row)
-            bl_idxQ.append(bl_idxQ_row)
-            
-            # Build constraint matrix for blocks used in this pattern
-            pattern_blocks = [block_idx for block_idx in range(n_blocks) if bl_row[block_idx] > 0]
-            if pattern_blocks:
-                for block_idx in pattern_blocks:
-                    R_con_blocks.append(np.kron(R_mat, create_scaled_identity(int(r[block_idx]), DEFAULT_IDENTITY_SCALE)))
-                    q_con_blocks.append(np.zeros(R_mat.shape[0] * int(r[block_idx])))
-        
-        if R_con_blocks:
-            R_con = block_diag(*R_con_blocks)
-            q_con = np.concatenate(q_con_blocks)
-    else:
-        # No constraints - simpler indexing
-        for bl_row in unique_blocks:
-            bl_idxM_row = []
-            bl_idxQ_row = []
-            for block_idx in range(n_blocks):
-                if bl_row[block_idx] > 0:
-                    bl_idxM_row.extend([True] * int(r[block_idx]))
-                    bl_idxM_row.extend([False] * (int(r[block_idx]) * (p_plus_one - 1)))
-                    bl_idxQ_row.extend([True] * (int(r[block_idx]) * p_plus_one))
-                else:
-                    bl_idxM_row.extend([False] * (int(r[block_idx]) * p_plus_one))
-                    bl_idxQ_row.extend([False] * (int(r[block_idx]) * p_plus_one))
-            bl_idxM.append(bl_idxM_row)
-            bl_idxQ.append(bl_idxQ_row)
-    
-    # Convert to boolean arrays
-    bl_idxM = [np.array(row, dtype=bool) for row in bl_idxM] if bl_idxM else []
-    bl_idxQ = [np.array(row, dtype=bool) for row in bl_idxQ] if bl_idxQ else []
-    
-    # Idiosyncratic component indices
-    idio_indicator_M = idio_indicator[:n_clock_freq]
-    n_idio_M = int(np.sum(idio_indicator_M))
-    c_idio_indicator = np.cumsum(idio_indicator)
-    rp1 = int(np.sum(r) * p_plus_one)  # Start of idiosyncratic components
-    
-    # Cache all computed indices
-    block_structure._cached_unique_blocks = unique_blocks
-    block_structure._cached_unique_indices = unique_indices
-    block_structure._cached_bl_idxM = bl_idxM
-    block_structure._cached_bl_idxQ = bl_idxQ
-    block_structure._cached_R_con = R_con
-    block_structure._cached_q_con = q_con
-    block_structure._cached_total_factor_dim = total_factor_dim
-    block_structure._cached_idio_indicator_M = idio_indicator_M
-    block_structure._cached_n_idio_M = n_idio_M
-    block_structure._cached_c_idio_indicator = c_idio_indicator
-    block_structure._cached_rp1 = rp1
-    block_structure._cached_N = N  # Store N value used for caching
 
 
 def _update_transition_matrix_blocked(
@@ -407,9 +250,9 @@ def _update_transition_matrix_blocked(
     the lag-one smoothed covariance in ``S10``. The chain shift states (identity
     rows, zero process noise) are kept fixed, as in FRBNY's code.
 
-    ``V_0`` is set to ``V_smooth[0]`` (the maximizer; see ``_initial_covariance_update``).
-    Everything is float64, with no caps, clips or regularization; a singular
-    moment matrix raises ``NumericalError``.
+    ``V_0`` is set to ``V_smooth[0]`` (see ``_initial_covariance_update``). No
+    caps, clips or regularization; a singular moment matrix raises
+    ``NumericalError``.
     """
     EZ = np.asarray(EZ, dtype=np.float64)
     V_smooth = np.asarray(V_smooth, dtype=np.float64)
@@ -459,7 +302,7 @@ def _update_transition_matrix_blocked(
 
 
 def _second_moments(EZ: np.ndarray, V_smooth: np.ndarray) -> np.ndarray:
-    """``E[x_t x_t' | Y] = EZ_t EZ_t' + V_smooth_t`` for every row (T x m x m), float64."""
+    """``E[x_t x_t' | Y] = EZ_t EZ_t' + V_smooth_t`` for every row, (T x m x m)."""
     EZ = np.asarray(EZ, dtype=np.float64)
     return np.asarray(V_smooth, dtype=np.float64) + EZ[:, :, np.newaxis] * EZ[:, np.newaxis, :]
 
@@ -475,7 +318,7 @@ def _update_loading_row(
     R_con: Optional[np.ndarray] = None,
     q_con: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Loadings of series ``j`` on the state columns ``cols`` (BM14 C update, one row).
+    """BM14 loadings of series ``j`` on the state columns ``cols`` (one row of C).
 
     The other entries of the row (idiosyncratic loadings, lag columns the
     series does not load on) are held fixed and their contribution is
@@ -508,7 +351,6 @@ def _update_observation_matrix_blocked(
     V_smooth: np.ndarray,
     state: DFMModelState,
     config: EMConfig,
-    block_structure: Optional[BlockStructure] = None
 ) -> DFMModelState:
     """M-step for C (Banbura-Modugno 2014), one series at a time.
 
@@ -566,11 +408,11 @@ def _update_observation_matrix_blocked(
 
 
 def _observation_noise_floor(state: DFMModelState, N: int, config: EMConfig) -> np.ndarray:
-    """Lower bound of each R_ii: ``MIN_OBSERVATION_NOISE`` for series with an idiosyncratic state.
+    """Lower bound of each ``R_ii``.
 
-    Clock-frequency series with an AR(1) idiosyncratic state and all
-    slower-frequency series (tent chain) have ``R_ii >= MIN_OBSERVATION_NOISE``
-    (part of the model, as in BM14); other series ``R_ii >= config.min_variance``.
+    ``MIN_OBSERVATION_NOISE`` for clock-frequency series with an AR(1)
+    idiosyncratic state and for all slower-frequency series (tent chain), as in
+    BM14; ``config.min_variance`` for the other series.
     """
     floor = np.full(N, float(config.min_variance))
     n_slower = int(state.n_slower_freq or 0)
@@ -602,7 +444,7 @@ def _update_observation_noise_blocked(
     C = np.asarray(state.C, dtype=np.float64)
     R_old = np.diag(np.asarray(state.R, dtype=np.float64))
     W = ~np.isnan(X)
-    resid = np.where(W, np.where(W, X, 0.0) - EZ @ C.T, 0.0)
+    resid = np.where(W, X - EZ @ C.T, 0.0)
     CVC = np.einsum('ij,tjk,ik->ti', C, V_smooth, C, optimize=True)
     total = (np.sum(resid ** 2, axis=0) + np.sum(np.where(W, CVC, 0.0), axis=0)
              + np.sum(~W, axis=0) * R_old)
@@ -649,6 +491,11 @@ def _update_unstructured(
     return _update_observation_noise_blocked(X, EZ, V_smooth, state, config)
 
 
+def _max_abs(M: np.ndarray) -> float:
+    """``max |M|`` for the iteration log; NaN if ``M`` is not finite."""
+    return np.max(np.abs(M)) if np.isfinite(M).all() else np.nan
+
+
 def em_step(
     X: np.ndarray,
     state: DFMModelState,
@@ -657,38 +504,34 @@ def em_step(
     block_structure: Optional[BlockStructure] = None,
     num_iter: int = 0
 ) -> Tuple[DFMModelState, float, Optional[DFMKalmanFilter]]:
-    """Perform one EM step: E-step (Kalman filter/smoother) + M-step (parameter updates).
-    
-    E-step: DFMKalmanFilter.filter_and_smooth on X with NaN (exact moments and
-    loglik at ``state``). M-step uses custom constrained updates
-    that preserve block structure, mixed-frequency constraints, and idiosyncratic components.
-    If block_structure is provided, uses blocked updates; otherwise uses unconstrained updates.
-    
-    GUARDRAILS:
-    - Time budgets enforced (E-step, M-step, total iteration)
-    - Numerical health checks before expensive operations
-    - First iteration must be fast (diagnostic check)
-    - An M-step that cannot be computed (singular moment matrix) raises
-      ``_MStepError`` (a ``NumericalError``) carrying the loglik of ``state``
+    """One EM iteration: the E-step at ``state``, then the M-step.
+
+    Returns ``(new_state, loglik, kalman_filter)``, ``loglik`` being the exact
+    log-likelihood of ``state``. The M-step keeps the block structure, the tent
+    restrictions and the idiosyncratic states when ``block_structure`` (built
+    from ``state.blocks`` if None) is valid; otherwise it is unstructured.
+
+    Raises
+    ------
+    NumericalError
+        If the E-step fails, or an E-step, M-step or iteration exceeds its time
+        budget (``MAX_*_SECONDS``).
+    _MStepError
+        A ``NumericalError`` carrying the loglik of ``state``, if the M-step
+        cannot be computed (e.g. a singular moment matrix).
     """
     if config is None:
         config = _DEFAULT_EM_CONFIG
-    
-    A = state.A
-    C = state.C
-    Q = state.Q
-    R = state.R
-    Z_0 = state.Z_0
-    V_0 = state.V_0
+
     if kalman_filter is None:
         kalman_filter = DFMKalmanFilter(
-            transition_matrices=A, observation_matrices=C,
-            transition_covariance=Q, observation_covariance=R,
-            initial_state_mean=Z_0, initial_state_covariance=V_0
+            transition_matrices=state.A, observation_matrices=state.C,
+            transition_covariance=state.Q, observation_covariance=state.R,
+            initial_state_mean=state.Z_0, initial_state_covariance=state.V_0
         )
     else:
-        kalman_filter.update_parameters(A, C, Q, R, Z_0, V_0)
-    
+        kalman_filter.update_parameters(state.A, state.C, state.Q, state.R, state.Z_0, state.V_0)
+
     if block_structure is None and state.blocks is not None:
         block_structure = BlockStructure(
             blocks=state.blocks,
@@ -703,64 +546,47 @@ def em_step(
             tent_weights_dict=state.tent_weights_dict
         )
     
-    # E-step: Kalman filter and Durbin-Koopman smoother on X with NaN (per-element missing data)
-    import time as time_module
     e_step_start = time_module.time()
-
     verbose_iterations = num_iter < 5
     if verbose_iterations:
-        T, m, N = X.shape[0], A.shape[0], X.shape[1]
+        T, m, N = X.shape[0], state.A.shape[0], X.shape[1]
         _logger.info(f"    E-step: Running Kalman filter + smoother (T={T}, N={N}, m={m})...")
 
     EZ, V_smooth, VVsmooth, loglik = kalman_filter.filter_and_smooth(X)
     kalman_filter._cached_smoothed_factors = EZ.copy()
-
     e_step_time = time_module.time() - e_step_start
-    
-    # GUARDRAIL: Time budget check for E-step
-    # Time-budget invariants (non-negotiable)
-    # Single constraint: 10 minutes for all datasets
+
     max_e_step_time = MAX_FIRST_ITERATION_SECONDS if num_iter == 0 else MAX_ESTEP_SECONDS
-    
     if e_step_time > max_e_step_time:
         raise NumericalError(
             f"E-step exceeded time budget ({e_step_time:.2f}s > {max_e_step_time:.2f}s). "
             f"Likely numerical instability or missing preprocessing. "
-            f"Iteration {num_iter + 1}, T={X.shape[0]}, m={EZ.shape[1] if EZ.shape else 0}.",
+            f"Iteration {num_iter + 1}, T={X.shape[0]}, m={EZ.shape[1]}.",
             details=f"E-step time: {e_step_time:.2f}s, budget: {max_e_step_time:.2f}s. "
                    f"This indicates pathological regime - check data scaling and model configuration."
         )
-    
+
     _logger.info(f"    E-step: Completed in {e_step_time:.1f}s, log-likelihood={loglik:.2e}")
-    
+
     m_step_start = time_module.time()
-    
-    if block_structure is not None and block_structure.is_valid():
-        if not block_structure.has_cached_indices():
-            N = X.shape[1]
-            _compute_and_cache_block_indices(block_structure, N)
-        n_blocks = len(block_structure.r) if block_structure.r is not None else 0
-    else:
-        n_blocks = 0
-    
+    blocked = block_structure is not None and block_structure.is_valid()
     if verbose_iterations:
-        if block_structure is not None and block_structure.is_valid():
-            _logger.info(f"    M-step: Updating parameters (block structure: {n_blocks} blocks)...")
+        if blocked:
+            _logger.info(f"    M-step: Updating parameters (block structure: {len(block_structure.r)} blocks)...")
         else:
             _logger.info("    M-step: Updating parameters (unconstrained)...")
-    
-    # M-step: closed-form conditional maximizers of the expected complete-data
-    # log-likelihood (BM14), each from the moments of this E-step. A failure
-    # (singular moment matrix, non-finite update) is reported with the loglik of
-    # the parameters this iteration started from.
+
+    # Closed-form conditional maximizers of the expected complete-data
+    # log-likelihood (BM14), each from the moments of this E-step. A failure is
+    # reported with the loglik of the parameters this iteration started from.
     try:
-        if block_structure is not None and block_structure.is_valid():
+        if blocked:
             if verbose_iterations:
                 _logger.info("      → Updating transition matrix A and process noise Q...")
             state = _update_transition_matrix_blocked(EZ, V_smooth, VVsmooth, state, config)
             if verbose_iterations:
                 _logger.info("      → Updating observation matrix C...")
-            state = _update_observation_matrix_blocked(X, EZ, V_smooth, state, config, block_structure=block_structure)
+            state = _update_observation_matrix_blocked(X, EZ, V_smooth, state, config)
             if verbose_iterations:
                 _logger.info("      → Updating observation noise R...")
             state = _update_observation_noise_blocked(X, EZ, V_smooth, state, config)
@@ -769,70 +595,53 @@ def em_step(
     except (NumericalError, np.linalg.LinAlgError) as e:
         raise _MStepError(f"M-step failed at iteration {num_iter + 1}: {e}", loglik=loglik) from e
 
-    # Initial state: Z_0 = E[x_0 | Y], V_0 = Cov(x_0 | Y) (the maximizers; V_0 projected to PSD).
+    # The maximizers Z_0 = E[x_0 | Y] and V_0 = Cov(x_0 | Y) (projected to PSD).
     state = replace(state, Z_0=np.array(EZ[0], dtype=np.float64), V_0=_initial_covariance_update(V_smooth[0]))
-    
+
     if config.ar_clip is not None:
         A_new, clip_stats = apply_ar_clipping(state.A, config)
         if clip_stats['n_clipped'] > 0:
             _logger.debug(f"AR clipping: {clip_stats['n_clipped']}/{clip_stats['n_total']} coefficients clipped")
         state = replace(state, A=A_new)
-    
+
     m_step_time = time_module.time() - m_step_start
-    
-    # GUARDRAIL: Time budget check for M-step
-    # Single constraint: 10 minutes for all datasets
-    max_m_step_time = MAX_MSTEP_SECONDS
-    
-    if m_step_time > max_m_step_time:
+    if m_step_time > MAX_MSTEP_SECONDS:
         raise NumericalError(
-            f"M-step exceeded time budget ({m_step_time:.2f}s > {max_m_step_time:.2f}s). "
+            f"M-step exceeded time budget ({m_step_time:.2f}s > {MAX_MSTEP_SECONDS:.2f}s). "
             f"Likely numerical instability or excessive fallbacks. "
             f"Iteration {num_iter + 1}.",
-            details=f"M-step time: {m_step_time:.2f}s, budget: {max_m_step_time:.2f}s. "
+            details=f"M-step time: {m_step_time:.2f}s, budget: {MAX_MSTEP_SECONDS:.2f}s. "
                    f"This indicates pathological regime - check data scaling and model configuration."
         )
-    
-    # GUARDRAIL: Total iteration time check
-    # Single constraint: 20 minutes for all datasets
-    total_iter_time = e_step_time + m_step_time
-    max_total_time = MAX_EM_ITERATION_SECONDS
-    
-    if total_iter_time > max_total_time:
+
+    total_time = e_step_time + m_step_time
+    if total_time > MAX_EM_ITERATION_SECONDS:
         raise NumericalError(
-            f"EM iteration exceeded total time budget ({total_iter_time:.2f}s > {max_total_time:.2f}s). "
+            f"EM iteration exceeded total time budget ({total_time:.2f}s > {MAX_EM_ITERATION_SECONDS:.2f}s). "
             f"Likely numerical instability. Iteration {num_iter + 1}.",
-            details=f"Total iteration time: {total_iter_time:.2f}s, budget: {max_total_time:.2f}s. "
+            details=f"Total iteration time: {total_time:.2f}s, budget: {MAX_EM_ITERATION_SECONDS:.2f}s. "
                    f"E-step: {e_step_time:.2f}s, M-step: {m_step_time:.2f}s."
         )
-    
-    if num_iter < 5:
-        A_max = np.max(np.abs(state.A)) if state.A is not None and np.isfinite(state.A).all() else np.nan
-        C_max = np.max(np.abs(state.C)) if state.C is not None and np.isfinite(state.C).all() else np.nan
-        Q_max_elem = np.max(np.abs(state.Q)) if state.Q is not None and np.isfinite(state.Q).all() else np.nan
+
+    if verbose_iterations:
+        # After the M-step A, C, Q and R are arrays; only their finiteness is checked.
         try:
-            if state.Q is not None and np.isfinite(state.Q).all() and state.Q.size > 0:
-                Q_eigenvals = np.linalg.eigvalsh(state.Q)
-                Q_max_eigval = np.max(np.abs(Q_eigenvals))
-            else:
-                Q_max_eigval = np.nan
+            Q_max_eigval = (np.max(np.abs(np.linalg.eigvalsh(state.Q)))
+                            if np.isfinite(state.Q).all() and state.Q.size > 0 else np.nan)
         except (np.linalg.LinAlgError, ValueError):
             Q_max_eigval = np.nan
-        R_diag_max = np.max(np.abs(np.diag(state.R))) if state.R is not None and np.isfinite(state.R).all() else np.nan
+        R_diag_max = np.max(np.abs(np.diag(state.R))) if np.isfinite(state.R).all() else np.nan
         _logger.info(f"    M-step: Completed in {m_step_time:.1f}s | "
-                    f"Max values: |A|={A_max:.3f}, |C|={C_max:.3f}, |Q|={Q_max_elem:.3f} (max_eig={Q_max_eigval:.3f}), |R_diag|={R_diag_max:.3f}")
-    
-    total_time = e_step_time + m_step_time
-    should_log_timing = (num_iter < 3) or (num_iter % 5 == 0) or (total_time > 30.0)
-    
-    if should_log_timing:
-        T, m_dim = X.shape[0], EZ.shape[1] if EZ.shape else 0
+                     f"Max values: |A|={_max_abs(state.A):.3f}, |C|={_max_abs(state.C):.3f}, "
+                     f"|Q|={_max_abs(state.Q):.3f} (max_eig={Q_max_eigval:.3f}), |R_diag|={R_diag_max:.3f}")
+
+    if num_iter < 3 or num_iter % 5 == 0 or total_time > 30.0:
         e_step_pct = 100*e_step_time/total_time if total_time > 0 else 0
         m_step_pct = 100*m_step_time/total_time if total_time > 0 else 0
         _logger.info(f"  Iteration {num_iter + 1} timing: E-step={e_step_time:.2f}s ({e_step_pct:.1f}%), "
-                    f"M-step={m_step_time:.2f}s ({m_step_pct:.1f}%), "
-                    f"Total={total_time:.2f}s (T={T}, m={m_dim})")
-    
+                     f"M-step={m_step_time:.2f}s ({m_step_pct:.1f}%), "
+                     f"Total={total_time:.2f}s (T={X.shape[0]}, m={EZ.shape[1]})")
+
     return state, loglik, kalman_filter
 
 
@@ -871,55 +680,49 @@ def run_em_algorithm(
     config: Optional[EMConfig] = None,
     checkpoint_callback: Optional[Callable[[int, DFMModelState], None]] = None
 ) -> Tuple[DFMModelState, Dict[str, Any]]:
-    """Run the EM algorithm; return the fitted state and its metadata.
+    """Run EM from ``initial_state``; return the fitted state and its metadata.
 
-    Iteration ``k`` (``k = 0, 1, ...``) runs the E-step at ``theta_k`` (exact
-    smoothed moments and exact log-likelihood ``L_k``, from
-    ``DFMKalmanFilter``), then the M-step to ``theta_{k+1}`` (closed-form
-    Banbura-Modugno 2014 update, see ``em_step``). With the exact E-step every
-    M-step block is a conditional maximizer of the expected complete-data
-    log-likelihood, so ``L_k`` does not decrease.
-
-    Convergence: from ``k = config.min_iterations_for_convergence_check`` on,
-    EM stops when ``|L_k - L_{k-1}| / |L_{k-1}| < threshold`` (both finite).
-    It then returns ``theta_{k+1}``. Otherwise it stops after ``max_iter``
-    iterations and returns the last M-step output.
+    Iteration ``k`` runs the E-step at ``theta_k`` (exact smoothed moments and
+    log-likelihood ``L_k``) and the M-step to ``theta_{k+1}`` (``em_step``);
+    with the exact E-step ``L_k`` does not decrease. From
+    ``k = config.min_iterations_for_convergence_check`` on, EM stops when
+    ``|L_k - L_{k-1}| / |L_{k-1}| < threshold`` and returns ``theta_{k+1}``;
+    otherwise it returns the last M-step output after ``max_iter`` iterations.
 
     Guards (each stops EM with ``converged=False`` and returns the parameters
-    with the best exact log-likelihood seen, ``theta_best``):
+    with the best exact log-likelihood seen):
 
     - ``L_k`` is not finite, or ``L_k < L_best - EM_MONOTONICITY_RTOL * |L_best|``
       (a decrease, which an exact EM cannot produce; a warning is logged);
     - the E-step fails (non-finite filter, an innovation covariance that is not
       positive definite) or the M-step cannot be computed (singular moment
-      matrix) after the first iteration. In the first iteration either raises
+      matrix) after the first iteration; in the first iteration either raises
       ``RuntimeError``;
     - the parameters to be returned fail the same checks in the final pass.
 
-    Reporting: the returned parameters go through one more filter/smoother
-    pass, after the optional likelihood-invariant factor rescaling
-    (``config.normalize_C``, ``_normalize_C_with_invariance``). ``loglik`` in the
-    metadata is the exact log-likelihood of the RETURNED parameters from that
-    pass, and ``smoothed_factors`` are its smoothed states. ``num_iter`` is the
-    number of EM iterations that ran (E-step and M-step).
-
-    The opt-in ``config.damping_factor`` and ``config.ar_clip`` change the
-    M-step output and can break monotonicity; the guard applies to them too.
+    The returned parameters get one more filter/smoother pass, after the
+    optional likelihood-invariant factor rescaling (``config.normalize_C``).
+    Metadata: ``loglik`` (of the returned parameters, from that pass),
+    ``smoothed_factors`` (its smoothed states), ``num_iter`` (iterations run),
+    ``converged``, ``change``, ``stop_reason`` (None unless a guard stopped EM)
+    and ``best_loglik``. ``checkpoint_callback(num_iter, state)`` runs every 5
+    iterations; its exceptions are logged and ignored. The opt-in
+    ``config.damping_factor`` and ``config.ar_clip`` can break monotonicity;
+    the guard applies to them too.
     """
-
     if config is None:
         config = _DEFAULT_EM_CONFIG
-    
+
     if config.data_clip is not None and config.data_clip > 0:
         X_mean = np.nanmean(X, axis=0, keepdims=True)
         X_std = np.nanstd(X, axis=0, keepdims=True)
-        X_std = np.where(X_std < 1e-10, 1.0, X_std)  # Avoid division by zero
+        X_std = np.where(X_std < 1e-10, 1.0, X_std)
         X_clipped = np.clip(X, X_mean - config.data_clip * X_std, X_mean + config.data_clip * X_std)
         n_clipped = np.sum((X != X_clipped) & np.isfinite(X))
         if n_clipped > 0:
             _logger.warning(f"Data clipping applied: {n_clipped}/{X.size} values clipped to ±{config.data_clip} std devs")
         X = X_clipped
-    
+
     state = initial_state
     kalman_filter = DFMKalmanFilter(
         transition_matrices=state.A,
@@ -947,8 +750,8 @@ def run_em_algorithm(
             tent_weights_dict=state.tent_weights_dict
         )
     
-    min_iterations = get_config_attr(config, 'min_iterations_for_convergence_check', 1)
-    progress_interval = get_config_attr(config, 'progress_log_interval', 1)
+    min_iterations = config.min_iterations_for_convergence_check
+    progress_interval = config.progress_log_interval
     best_state: Optional[DFMModelState] = None
     best_loglik = float('-inf')
     previous_loglik = float('-inf')
@@ -962,8 +765,7 @@ def run_em_algorithm(
     
     _logger.info(f"Starting EM algorithm: max_iter={max_iter}, threshold={threshold:.2e}")
     if block_structure is not None:
-        total_factors = int(np.sum(state.r)) if state.r is not None else 0
-        _logger.info(f"  Block structure: {state.blocks.shape[1] if state.blocks is not None else 0} blocks, {total_factors} factors")
+        _logger.info(f"  Block structure: {state.blocks.shape[1]} blocks, {int(np.sum(state.r))} factors")
     if state.constraint_matrix is not None:
         _logger.info(f"  Mixed-frequency: tent kernel constraints enabled (R_mat shape: {state.constraint_matrix.shape})")
     
@@ -1083,7 +885,7 @@ def run_em_algorithm(
             break
 
     def _final(candidate: DFMModelState) -> Tuple[DFMModelState, float, np.ndarray]:
-        """Rescale (if configured) and run the final filter/smoother pass at ``candidate``."""
+        """Rescale (if configured), then the final filter/smoother pass at ``candidate``."""
         if config.normalize_C and candidate.C is not None and candidate.r is not None:
             _, candidate = _normalize_C_with_invariance(candidate.C, candidate, config, log_prefix="EM: ")
         kalman_filter.update_parameters(candidate.A, candidate.C, candidate.Q, candidate.R,
@@ -1121,7 +923,6 @@ def run_em_algorithm(
                           f"no smoothed factors are cached.")
             result = (best_state, best_loglik, None)
     state, final_loglik, EZ_final = result
-    kalman_filter._cached_smoothed_factors = EZ_final
 
     log_convergence(
         converged=converged,

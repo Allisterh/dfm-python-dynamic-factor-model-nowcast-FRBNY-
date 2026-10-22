@@ -35,7 +35,7 @@ __all__ = ["DFMStateLayout", "bm14_idio_indicator"]
 
 
 def bm14_idio_indicator(n_clock: int, n_slower: int) -> np.ndarray:
-    """``idio_indicator`` of the BM14 layout: 1 for clock-frequency series, 0 for slower ones."""
+    """BM14 ``idio_indicator``: 1 for clock-frequency series, 0 for slower ones."""
     return np.concatenate([np.ones(int(n_clock), dtype=np.int32), np.zeros(int(n_slower), dtype=np.int32)])
 
 
@@ -72,7 +72,7 @@ class DFMStateLayout:
     @classmethod
     def build(cls, r: Sequence[int], p: int, L: int, n_series: int, n_clock: int,
               chain_length: int) -> DFMStateLayout:
-        """The BM14 layout: AR(1) states for the clock series, chains of ``chain_length`` for the others."""
+        """BM14 layout: AR(1) states for the clock series, chains for the others."""
         n_slower = int(n_series) - int(n_clock)
         return cls(
             r=tuple(int(x) for x in np.asarray(r).ravel()),
@@ -86,7 +86,7 @@ class DFMStateLayout:
 
     @classmethod
     def from_state(cls, state: Any, n_series: Optional[int] = None) -> DFMStateLayout:
-        """The layout of a ``DFMModelState`` (structure fields and the size of ``A``).
+        """Layout of a ``DFMModelState`` (its structure fields and the size of ``A``).
 
         The AR(1) idiosyncratic states are those of ``state.idio_indicator``;
         the states after them are split into one chain per slower-frequency
@@ -109,7 +109,6 @@ class DFMStateLayout:
         return cls(r=tuple(int(x) for x in r), p=p, L=L, n_series=int(n_series), n_clock=n_clock,
                    idio_series=idio, chain_length=int(k))
 
-    # ------------------------------------------------------------ sizes
     @property
     def n_slower(self) -> int:
         return self.n_series - self.n_clock
@@ -137,7 +136,6 @@ class DFMStateLayout:
         out[list(self.idio_series)] = 1
         return out
 
-    # ---------------------------------------------------------- factors
     @property
     def factor_offsets(self) -> np.ndarray:
         """State index where each factor block starts."""
@@ -150,11 +148,10 @@ class DFMStateLayout:
         return np.arange(start, start + self.r[b])
 
     def factor_lags(self, b: int, n_lags: int) -> np.ndarray:
-        """The first ``n_lags`` lag copies of block ``b``'s factors (``r_b * n_lags`` states)."""
+        """First ``n_lags`` lag copies of block ``b``'s factors (``r_b * n_lags`` states)."""
         start = int(self.factor_offsets[b])
         return np.arange(start, start + self.r[b] * int(n_lags))
 
-    # ------------------------------------------------------------- idio
     @property
     def idio_states(self) -> np.ndarray:
         """AR(1) idiosyncratic states (one per series in ``idio_series``)."""
@@ -165,7 +162,7 @@ class DFMStateLayout:
         return self.n_factor_states + self.n_idio
 
     def chain_states(self, j: int) -> np.ndarray:
-        """The ``k`` chain states of slower-frequency series ``j`` (a column index ``>= n_clock``)."""
+        """Chain states of slower-frequency series ``j`` (a column index ``>= n_clock``)."""
         s = int(j) - self.n_clock
         if not (0 <= s < self.n_slower) or self.chain_length == 0:
             raise IndexError(f"series {j} has no idiosyncratic chain")
@@ -181,10 +178,10 @@ class DFMStateLayout:
 
     @property
     def ar1_states(self) -> np.ndarray:
-        """States with an estimated AR(1) coefficient and variance: clock idio states and chain heads."""
+        """States with an estimated AR(1) coefficient: clock idio states, chain heads."""
         return np.concatenate([self.idio_states, self.chain_heads]).astype(int)
 
     def is_bm14(self) -> bool:
-        """True if this is the BM14 layout: AR(1) states exactly for the clock series, chains for the others."""
+        """Whether exactly the clock series have AR(1) states and the others chains."""
         chains_ok = self.n_slower == 0 or self.chain_length > 0
         return self.idio_series == tuple(range(self.n_clock)) and chains_ok

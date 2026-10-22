@@ -1,36 +1,16 @@
-""" Compute a Krylov function efficiently. (S3 renames the Krylov function to a "state space kernel")
-
-original code from Spacetime paper
-
-A : (N, N)
-b : (N,)
-c : (N,)
-Return: [c^T A^i b for i in [L]]
-"""
-
+"""Krylov sequences ``c' A^l b`` (S3's "state space kernel"), from Spacetime."""
 
 import torch
-import torch.nn.functional as F
-from einops import rearrange, repeat
+from einops import rearrange
+
 
 def krylov_sequential(L, A, b, c=None):
-    """ Constant matrix A
+    """Krylov sequence by ``L`` matrix-vector products.
 
-    A : (..., N, N)
-    b : (..., N)
-    c : (..., N)
-
-    Returns
-    if c:
-    x : (..., L)
-    x[i, l] = c[i] @ A^l @ b[i]
-
-    else:
-    x : (..., N, L)
-    x[i, l] = A^l @ b[i]
+    A : (..., N, N), b : (..., N), c : (..., N). Returns ``x[..., l] = c @ A^l @ b``,
+    shape (..., L), or without ``c`` ``x[..., :, l] = A^l @ b``, shape (..., N, L).
     """
-
-    # Check which of dim b and c is smaller to save memory
+    # Iterate on the smaller of b and c to save memory.
     if c is not None and c.numel() < b.numel():
         return krylov_sequential(L, A.transpose(-1, -2), c, b)
 
@@ -38,7 +18,7 @@ def krylov_sequential(L, A, b, c=None):
     x = []
     for _ in range(L):
         if c is not None:
-            x_ = torch.sum(c*b_, dim=-1) # (...) # could be faster with matmul or einsum?
+            x_ = torch.sum(c*b_, dim=-1)
         else:
             x_ = b_
         x.append(x_)
@@ -49,13 +29,12 @@ def krylov_sequential(L, A, b, c=None):
 
 
 def krylov(L, A, b, c=None, return_power=False):
-    """
-    Compute the Krylov matrix (b, Ab, A^2b, ...) using the squaring trick.
+    """Krylov matrix ``(b, A b, ..., A^{L-1} b)`` by repeated squaring.
 
-    If return_power=True, return A^{L-1} as well
+    Shape (..., N, L); with ``c`` returns ``c @ x``, shape (..., L); with
+    ``return_power`` also ``A^{L-1}``. For ``L == 1`` the result is
+    ``b[..., None]``, not broadcast against the batch dimensions of ``A``.
     """
-    # TODO There is an edge case if L=1 where output doesn't get broadcasted, which might be an issue if caller is expecting broadcasting semantics... can deal with it if it arises
-
     x = b.unsqueeze(-1) # (..., N, 1)
     A_ = A
 
@@ -71,7 +50,7 @@ def krylov(L, A, b, c=None, return_power=False):
             if _L % 2 == 1: AL = A_ @ AL
             _L //= 2
 
-        # Save memory on last iteration
+        # The last iteration only needs the first L - l new columns.
         l = x.shape[-1]
         if L - l <= l:
             done = True
@@ -79,27 +58,26 @@ def krylov(L, A, b, c=None, return_power=False):
         else: _x = x
 
         _x = A_ @ _x
-        x = torch.cat([x, _x], dim=-1) # there might be a more efficient way of ordering axes
+        x = torch.cat([x, _x], dim=-1)
         if not done: A_ = A_ @ A_
 
     assert x.shape[-1] == L, f"krylov: expected last dim {L}, got x.shape={tuple(x.shape)}"
 
     if c is not None:
         x = torch.einsum('...nl, ...n -> ...l', x, c)
-    x = x.contiguous() # WOW!!
+    x = x.contiguous()
     if return_power:
         return x, AL
     else:
         return x
 
 def power(L, A, v=None):
-    """ Compute A^L and the scan sum_i A^i v_i
+    """``A^L``, and with ``v`` also the scan ``sum_i A^i v[..., i]``.
 
-    A: (..., N, N)
-    v: (..., N, L)
+    A : (..., N, N), v : (..., N, L).
     """
 
-    I = torch.eye(A.shape[-1]).to(A) # , dtype=A.dtype, device=A.device)
+    I = torch.eye(A.shape[-1]).to(A)
 
     powers = [A]
     l = 1
@@ -116,21 +94,17 @@ def power(L, A, v=None):
     # powers[-1] := A^l
     # l := largest po2 at most L
 
-    # Note that an alternative divide and conquer to compute the reduction is possible and can be embedded into the above loop without caching intermediate powers of A
-    # We do this reverse divide-and-conquer for efficiency reasons:
-    # 1) it involves fewer padding steps for non-po2 L
-    # 2) it involves more contiguous arrays
+    # A reverse divide-and-conquer reduction: fewer padding steps for non-po2 L
+    # and more contiguous arrays than the forward one.
 
-    # Take care of edge case for non-po2 arrays
-    # Note that this initial step is a no-op for the case of power of 2 (l == L)
+    # Fold the columns past the largest power of 2 (a no-op when L is a power of 2).
     k = v.size(-1) - l
     v_ = powers.pop() @ v[..., l:]
     v = v[..., :l]
     v[..., :k] = v[..., :k] + v_
 
-    # Handle reduction for power of 2
+    # Reduction for a power of 2.
     while v.size(-1) > 1:
         v = rearrange(v, '... (z l) -> ... z l', z=2)
         v = v[..., 0, :] + powers.pop() @ v[..., 1, :]
     return I, v.squeeze(-1)
-

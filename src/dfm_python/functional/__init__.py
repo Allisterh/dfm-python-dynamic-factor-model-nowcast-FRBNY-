@@ -1,11 +1,7 @@
-"""Functional modules for DFM and DDFM.
+"""DFM EM algorithm, its state layout and Krylov kernels.
 
-This package provides functional utilities for DFM:
-- EM algorithm implementation
-- Block initialization and management
+Import from the submodules ``em``, ``state_layout`` and ``krylov``; the
+package exports nothing.
 """
-
-# This module currently only contains EM and block functionality
-# No public exports needed - all functionality is imported directly from submodules
 
 __all__ = []
