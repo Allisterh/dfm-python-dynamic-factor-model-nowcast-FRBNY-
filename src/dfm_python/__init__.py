@@ -29,7 +29,7 @@ in ``exog``, then ``predict(h)`` and ``predict_factors(h)``. And ``DFM``:
 ``DFM(n_factors=1, clock="m", tent_weights={"q:m": [1, 2, 3, 2, 1]},
 scaler="standard").fit(PanelData(y=df, freq={"gdp": "q"}))``, then
 ``predict(h)`` (series in the user's column order) and ``predict_factors(h)``;
-see README.md for complete examples of every model.
+see docs/models.md for complete examples of every model.
 """
 
 import logging as _logging
