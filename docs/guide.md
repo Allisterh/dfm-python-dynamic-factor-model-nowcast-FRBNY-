@@ -169,8 +169,8 @@ without data. `save(path, overwrite=True)` replaces whatever is at `path`.
 | `scaler.pkl`     | any other scaler                                                      |
 
 Nothing is pickled by default: arrays are read with `allow_pickle=False` and
-weights with `torch.load(..., weights_only=True)`, which is why torch 2.10 is
-the floor (older releases have published flaws in that loader). A scaler
+weights with `torch.load(..., weights_only=True)`; torch 2.10 is the floor
+because it fixes CVE-2026-24747 in that loader. A scaler
 outside the list above is written to `scaler.pkl`, and loading it needs
 `allow_pickle=True`, as does a `config.json` naming an estimator class other
 than the public classes of `sklearn.preprocessing`. **`allow_pickle=True` can

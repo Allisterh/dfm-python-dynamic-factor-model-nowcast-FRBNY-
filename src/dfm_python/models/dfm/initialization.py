@@ -461,8 +461,8 @@ def initialize_block_transition(
     the VAR is fitted by regularized OLS of ``f_t`` on its ``p`` lags over
     rows ``p:``. When ``T <= p``, ``p == 0`` or the fit is not finite (or
     raises), the VAR is ``default_transition_coef * I`` with process noise
-    ``default_process_noise * I``. ``factors``, ``T`` and
-    ``matrix_regularization`` are unused.
+    ``default_process_noise * I``. ``factors`` and ``matrix_regularization``
+    are unused.
 
     Returns
     -------
@@ -557,10 +557,16 @@ def initialize_block_factors(
         (N x n_blocks) membership.
     r : np.ndarray
         Factors per block.
+    n_blocks, n_clock_freq, tent_kernel_size, p, N, T : int
+        Blocks, clock-frequency series, tent kernel size, VAR lag order,
+        series and time steps.
+    R_mat, q : np.ndarray, optional
+        Tent kernel constraint matrix and vector.
     indNaN : np.ndarray
         (T x N) boolean, True where the data is missing.
     max_lag_size : int
         Lags per factor in the state.
+    dtype : type, default DEFAULT_DTYPE
     return_residuals : bool, default False
         Also return the residuals after every block.
 

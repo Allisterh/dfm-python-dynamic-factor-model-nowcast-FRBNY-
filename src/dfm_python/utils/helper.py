@@ -91,6 +91,9 @@ def interpolate_dataframe(
 ) -> pd.DataFrame:
     """Fill missing values with ``DataFrame.interpolate``; the result has no NaNs.
 
+    Gaps the interpolation leaves are forward/backward filled, then set to
+    the column mean (0 for all-NaN columns).
+
     Parameters
     ----------
     df : pd.DataFrame
@@ -101,9 +104,7 @@ def interpolate_dataframe(
     limit : int, optional, default 10
         Maximum consecutive NaNs to fill, which bounds extrapolation; None is unlimited.
     limit_direction : str, default 'both'
-
-    Gaps the interpolation leaves are forward/backward filled, then set to
-    the column mean (0 for all-NaN columns).
+        'forward', 'backward' or 'both'.
     """
     df_interpolated = df.copy()
 

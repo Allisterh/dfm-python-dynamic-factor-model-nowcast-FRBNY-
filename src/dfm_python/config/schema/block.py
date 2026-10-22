@@ -7,7 +7,7 @@ import numpy as np
 
 @dataclass
 class BlockStructure:
-    """Block structure of a DFM, with the indices the EM loop caches across iterations.
+    """Block structure of a DFM.
 
     Attributes
     ----------
@@ -31,9 +31,8 @@ class BlockStructure:
     tent_weights_dict : dict, optional
         Tent weights by frequency pair.
 
-    The ``_cached_*`` fields hold the unique block patterns, their loading
-    indices, the block-diagonal constraint, the factor state dimension and the
-    idiosyncratic layout; ``_cached_N`` is the N they were computed for.
+    The ``_cached_*`` fields, ``has_cached_indices`` and ``clear_cache`` are
+    an index cache slot that nothing in the package fills or reads.
     """
     blocks: np.ndarray
     r: np.ndarray

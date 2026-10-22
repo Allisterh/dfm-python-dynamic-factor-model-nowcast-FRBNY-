@@ -22,8 +22,9 @@ with `twine check`.
 
 | Location | Contents |
 |----------|----------|
-| `src/test/contract/` | `dfm_python.testing.check_estimator(model)` on every entry of `dfm_python.registry.all_estimators()`: tags, pure construction, `get_params`/`set_params`/`clone`, config round-trips, unfitted errors, deterministic `fit`, output shapes, purity of `predict`, capability errors, device, silence |
+| `src/test/contract/` | `dfm_python.testing.check_estimator(model)` on every entry of `dfm_python.registry.all_estimators()`: tags, pure construction, `get_params`/`set_params`/`clone`, config round-trips, unfitted errors, deterministic `fit`, output shapes, purity of `predict`, capability errors, device, silence, `update`, save/load round-trip (a run saved on CUDA loads on CPU) |
 | `src/test/parity/` | golden tests (below) |
+| `src/test/ssm/test_estep_oracle.py`, `src/test/functional/test_em_oracle.py`, `src/test/functional/test_mstep_qfunction.py` | DFM E-step, EM monotonicity and M-step against a reference Kalman filter that does not import the package (`src/test/ssm/_reference_kf.py`), and against statsmodels' `KalmanSmoother` when installed |
 | `src/test/test_readme.py` | runs every Python code block of `README.md` and `docs/*.md` (except `docs/design/`) |
 | the rest of `src/test/` | unit tests by subpackage |
 

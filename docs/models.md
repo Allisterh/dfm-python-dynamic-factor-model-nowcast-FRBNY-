@@ -78,9 +78,7 @@ Notes:
   If, after the first iteration, the log-likelihood falls or a parameter or
   the filter becomes non-finite, EM stops early and returns the best
   parameters it saw, with `converged_=False` (in the first iteration it
-  raises). The test suite checks the E-step, EM monotonicity and the M-step
-  against a reference Kalman filter that does not import the package, and
-  against statsmodels' `KalmanSmoother` when it is installed.
+  raises).
 - Stationarity: the transition matrix `A` is not capped. On non-stationary
   inputs (trending levels, unit roots) the maximum-likelihood `A` can be
   explosive, and long-horizon forecasts then grow geometrically. Difference
