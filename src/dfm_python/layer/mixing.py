@@ -1,7 +1,4 @@
-"""Post-factor mixing layer for iVDFM.
-
-Global linear map f -> M f (r -> r) before decode when mixing=True. Identity init; no bias.
-"""
+"""Post-factor mixing layer of iVDFM: f -> M f (r -> r) before the decoder when ``mixing=True``."""
 
 from typing import Optional
 import torch
@@ -9,7 +6,7 @@ import torch.nn as nn
 
 
 class FactorMixer(nn.Module):
-    """Linear mixing of factors before decoder: mixed = M @ f. Identity init by default."""
+    """Bias-free linear map ``M`` of the factors; ``init="identity"`` starts it at the identity."""
 
     def __init__(self, r: int, init: str = "identity", device: Optional[torch.device] = None):
         super().__init__()
@@ -21,7 +18,7 @@ class FactorMixer(nn.Module):
             self.to(device)
 
     def forward(self, f: torch.Tensor) -> torch.Tensor:
-        """Apply mixing: (..., r) -> (..., r)."""
+        """``(..., r)`` to ``(..., r)``."""
         return self.M(f)
 
 
@@ -30,7 +27,7 @@ def build_factor_mixing(
     device: Optional[torch.device] = None,
     dtype: Optional[torch.dtype] = None,
 ) -> FactorMixer:
-    """Build global mixing module (single M, identity init). Used when config mixing=True."""
+    """An identity-initialized ``FactorMixer`` on ``device``, cast to ``dtype`` when given."""
     module = FactorMixer(r=r, init="identity", device=device)
     if dtype is not None:
         module = module.to(dtype=dtype)
