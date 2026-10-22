@@ -1,12 +1,10 @@
 """Tests for dataset.ddfm_dataset module."""
 
-import pytest
 import numpy as np
 import pandas as pd
 import torch
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.preprocessing import StandardScaler
 from dfm_python.dataset.ddfm_dataset import DDFMDataset, AutoencoderDataset
-from dfm_python.config.constants import DEFAULT_TORCH_DTYPE
 
 
 class TestDDFMDataset:

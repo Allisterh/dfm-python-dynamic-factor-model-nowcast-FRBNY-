@@ -269,8 +269,6 @@ class TestDFMKalmanFilter:
             initial_state_covariance=V0
         )
         
-        observations = np.random.randn(10, 5)
-        
         # Manually set cache to simulate it being set during EM
         kf._cached_smoothed_factors = np.random.randn(10, m)
         

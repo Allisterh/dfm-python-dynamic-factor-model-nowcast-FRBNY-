@@ -1,6 +1,5 @@
 """Tests for models.ddfm.sampling module."""
 
-import pytest
 import numpy as np
 import torch
 import pandas as pd
@@ -13,7 +12,6 @@ from dfm_python.models.ddfm.sampling import (
 )
 from dfm_python.dataset.ddfm_dataset import DDFMDataset, AutoencoderDataset
 from dfm_python.models.ddfm.encoder import SimpleAutoencoder
-from sklearn.preprocessing import StandardScaler
 
 
 class TestDenoiseTargets:

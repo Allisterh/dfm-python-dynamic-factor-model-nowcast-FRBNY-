@@ -3,11 +3,8 @@
 These tests verify mathematical correctness of Kalman filter operations.
 """
 
-import pytest
 import numpy as np
 from dfm_python.ssm.kalman import DFMKalmanFilter
-from dfm_python.numeric.stability import create_scaled_identity
-from dfm_python.config.constants import DEFAULT_PROCESS_NOISE, DEFAULT_TRANSITION_COEF, DEFAULT_IDENTITY_SCALE
 
 
 class TestKalmanMathematicalCorrectness:

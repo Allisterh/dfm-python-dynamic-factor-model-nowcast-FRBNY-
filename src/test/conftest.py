@@ -1,10 +1,8 @@
 """Pytest configuration and shared fixtures for dfm_python tests."""
 
 import pytest
-import warnings
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, Optional
 
 from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.config.constants import DEFAULT_CONVERGENCE_THRESHOLD

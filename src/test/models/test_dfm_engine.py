@@ -23,7 +23,6 @@ import pandas as pd
 import pytest
 from sklearn.preprocessing import StandardScaler
 
-import dfm_python
 from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.dataset.dfm_dataset import DFMDataset
 from dfm_python.config.schema.results import DFMResult

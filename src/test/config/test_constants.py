@@ -1,6 +1,5 @@
 """Tests for config.constants module."""
 
-import pytest
 from dfm_python.config.constants import (
     DEFAULT_CLOCK_FREQUENCY,
     PERIODS_PER_YEAR,

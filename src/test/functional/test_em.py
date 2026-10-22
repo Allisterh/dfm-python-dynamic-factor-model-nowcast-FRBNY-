@@ -2,9 +2,7 @@
 
 import pytest
 import numpy as np
-import time
 from dfm_python.functional.em import em_step, run_em_algorithm, EMConfig
-from dfm_python.ssm.kalman import DFMKalmanFilter
 from dfm_python.numeric.stability import create_scaled_identity
 from dfm_python.config.constants import (
     DEFAULT_TRANSITION_COEF,
@@ -146,7 +144,6 @@ class TestEMFunctions:
         p_plus_one = p + 1  # Should be 2, not 1
         
         np.random.seed(42)
-        X = np.random.randn(T, N).astype(DEFAULT_DTYPE)
         
         blocks = np.ones((N, n_blocks), dtype=DEFAULT_DTYPE)
         r = np.array([num_factors], dtype=DEFAULT_DTYPE)

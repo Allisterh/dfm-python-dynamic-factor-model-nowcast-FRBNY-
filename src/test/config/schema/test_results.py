@@ -1,6 +1,5 @@
 """Tests for config.schema.results module."""
 
-import pytest
 import numpy as np
 from dfm_python.config.schema.results import (
     BaseResult,

@@ -4,8 +4,6 @@ import importlib.util
 
 import pytest
 import numpy as np
-import yaml
-from pathlib import Path
 from dfm_python import DFMConfig
 from dfm_python.config.schema.model import _DFMEngineConfig
 from dfm_python.dataset.dfm_dataset import DFMDataset

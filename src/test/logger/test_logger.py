@@ -1,9 +1,6 @@
 """Tests for logger.logger module."""
 
-import pytest
 import logging
-import tempfile
-from pathlib import Path
 from dfm_python.logger.logger import get_logger, configure_logging
 
 
@@ -139,8 +136,6 @@ class TestLogger:
         logger = get_logger(__name__)
         logger.info("Test log message")
         
-        # Check for log files matching the pattern
-        log_files = list(log_dfm_dir.glob("dfm_core_*.log"))
-        # Note: Files may exist but be empty, so we just verify the directory structure
+        # Files may exist but be empty, so only verify the directory structure
         assert log_dfm_dir.exists()
 

@@ -27,8 +27,7 @@ from sklearn.base import clone
 import dfm_python
 from dfm_python import PanelData
 from dfm_python.models.afm import (AFM, AttentionFactors, PCAFactors,
-                                   LongConv1d, residuals, ridge_loadings,
-                                   avellaneda_lee_weights)
+                                   LongConv1d, residuals, ridge_loadings)
 from dfm_python.models.afm._engine import AFMEngine
 from dfm_python.dataset.afm_dataset import AFMDataset
 from dfm_python.config.schema.model import AFMConfig

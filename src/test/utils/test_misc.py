@@ -1,6 +1,5 @@
 """Tests for utils.misc module."""
 
-import pytest
 from dfm_python.utils.misc import resolve_param, resolve_named_param, get_clock_frequency
 from dfm_python.config.constants import DEFAULT_CLOCK_FREQUENCY
 

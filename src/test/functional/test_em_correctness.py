@@ -6,7 +6,7 @@ Based on falsifiable criteria for DFM implementation correctness.
 
 import pytest
 import numpy as np
-from dfm_python.functional.em import em_step, run_em_algorithm, EMConfig, _update_transition_matrix_blocked
+from dfm_python.functional.em import em_step, run_em_algorithm, EMConfig
 from dfm_python.ssm.kalman import DFMKalmanFilter
 from dfm_python.numeric.stability import create_scaled_identity
 from dfm_python.config.constants import (
@@ -33,14 +33,6 @@ class TestKalmanIdentities:
         R = create_scaled_identity(N, DEFAULT_PROCESS_NOISE, dtype=DEFAULT_DTYPE)
         Z_0 = np.zeros(m, dtype=DEFAULT_DTYPE)
         V_0 = create_scaled_identity(m, DEFAULT_PROCESS_NOISE, dtype=DEFAULT_DTYPE)
-        
-        state = DFMModelState(
-            num_factors=m,
-            r=np.array([m]),
-            p=1,
-            blocks=np.ones((N, 1)),
-            A=A, C=C, Q=Q, R=R, Z_0=Z_0, V_0=V_0
-        )
         
         kf = DFMKalmanFilter(
             transition_matrices=A,
@@ -106,7 +98,6 @@ class TestEMSufficientStatistics:
     def test_blocked_unblocked_consistency(self):
         """Blocked and unblocked paths must produce identical sufficient statistics."""
         T, N = 50, 10
-        n_blocks = 1
         num_factors = 2
         p = 1
         p_plus_one = p + 1
@@ -114,8 +105,6 @@ class TestEMSufficientStatistics:
         np.random.seed(42)
         X = np.random.randn(T, N).astype(DEFAULT_DTYPE)
         
-        blocks = np.ones((N, n_blocks), dtype=DEFAULT_DTYPE)
-        r = np.array([num_factors], dtype=DEFAULT_DTYPE)
         m = num_factors * p_plus_one
         
         A = create_scaled_identity(m, DEFAULT_TRANSITION_COEF, dtype=DEFAULT_DTYPE)
@@ -124,18 +113,6 @@ class TestEMSufficientStatistics:
         R = create_scaled_identity(N, DEFAULT_PROCESS_NOISE, dtype=DEFAULT_DTYPE)
         Z_0 = np.zeros(m, dtype=DEFAULT_DTYPE)
         V_0 = create_scaled_identity(m, DEFAULT_PROCESS_NOISE, dtype=DEFAULT_DTYPE)
-        
-        state = DFMModelState(
-            num_factors=num_factors,
-            r=r,
-            p=p,
-            blocks=blocks,
-            n_clock_freq=N,
-            n_slower_freq=0,
-            idio_indicator=np.zeros(N, dtype=DEFAULT_DTYPE),
-            max_lag_size=p_plus_one,
-            A=A, C=C, Q=Q, R=R, Z_0=Z_0, V_0=V_0
-        )
         
         # Run E-step to get sufficient statistics
         kf = DFMKalmanFilter(
@@ -188,22 +165,6 @@ class TestScaleInvariance:
         C_scaled = C * alpha
         Z_0_scaled = Z_0 / alpha
         Q_scaled = Q / (alpha ** 2)
-        
-        state1 = DFMModelState(
-            num_factors=m,
-            r=np.array([m]),
-            p=1,
-            blocks=np.ones((N, 1)),
-            A=A, C=C, Q=Q, R=R, Z_0=Z_0, V_0=V_0
-        )
-        
-        state2 = DFMModelState(
-            num_factors=m,
-            r=np.array([m]),
-            p=1,
-            blocks=np.ones((N, 1)),
-            A=A, C=C_scaled, Q=Q_scaled, R=R, Z_0=Z_0_scaled, V_0=V_0
-        )
         
         kf1 = DFMKalmanFilter(
             transition_matrices=A,
@@ -279,7 +240,7 @@ class TestStateLayout:
     
     def test_state_dimension_correctness(self):
         """Verify state_dim == sum(r) * (p+1) + n_clock_idio + n_slower_freq * tent_kernel_size."""
-        T, N = 50, 10
+        N = 10
         n_blocks = 1
         num_factors = 2
         p = 1
@@ -289,7 +250,6 @@ class TestStateLayout:
         tent_kernel_size = 1
         
         np.random.seed(42)
-        X = np.random.randn(T, N).astype(DEFAULT_DTYPE)
         
         blocks = np.ones((N, n_blocks), dtype=DEFAULT_DTYPE)
         r = np.array([num_factors], dtype=DEFAULT_DTYPE)
@@ -467,7 +427,7 @@ class TestCacheInvalidation:
     
     def test_cache_cleared_on_structure_change(self):
         """Cache should be cleared when blocks, r, p, idio_indicator change."""
-        T, N = 50, 10
+        N = 10
         n_blocks = 1
         num_factors = 2
         p = 1

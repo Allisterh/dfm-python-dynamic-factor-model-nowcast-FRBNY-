@@ -11,7 +11,6 @@ from dfm_python.numeric.validator import (
     validate_dfm_initialization,
 )
 from dfm_python.utils.errors import DataValidationError, ModelNotInitializedError, ConfigurationError, NumericalError
-from dfm_python.config.constants import DEFAULT_MIN_DELTA
 
 
 class TestValidator:

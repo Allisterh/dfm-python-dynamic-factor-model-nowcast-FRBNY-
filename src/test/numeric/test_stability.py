@@ -12,19 +12,12 @@ from dfm_python.numeric.stability import (
     compute_var_safe,
     stabilize_innovation_covariance,
     convergence_checker,
-    solve_regularized_ols,
-    ensure_process_noise_stable,
 )
-from dfm_python.utils.errors import DataValidationError, DataError, NumericalError
+from dfm_python.utils.errors import DataError
 from dfm_python.config.constants import (
-    DEFAULT_TORCH_DTYPE,
     DEFAULT_DTYPE,
-    DEFAULT_VARIANCE_FALLBACK,
-    CHOLESKY_LOG_DET_FACTOR,
     SYMMETRY_AVERAGE_FACTOR,
     DEFAULT_IDENTITY_SCALE,
-    DEFAULT_ZERO_VALUE,
-    MIN_EIGENVALUE,
 )
 
 

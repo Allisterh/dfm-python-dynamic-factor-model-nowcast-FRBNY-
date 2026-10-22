@@ -1,6 +1,5 @@
 """Tests for numeric.estimator module."""
 
-import pytest
 import numpy as np
 from dfm_python.config.constants import DEFAULT_DTYPE
 

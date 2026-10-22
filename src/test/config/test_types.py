@@ -1,6 +1,5 @@
 """Tests for config schema module."""
 
-import pytest
 from dfm_python.config import (
     DFMConfig,
     DDFMConfig,

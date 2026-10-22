@@ -6,7 +6,7 @@ from dfm_python.utils.errors import DataValidationError
 
 # Check if sktime is available
 try:
-    import sktime
+    import sktime  # noqa: F401 -- availability probe for the optional dependency
     from dfm_python.utils.metric import calculate_rmse
     _has_sktime = True
 except ImportError:

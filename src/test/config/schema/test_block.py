@@ -1,6 +1,5 @@
 """Tests for config.schema.block module."""
 
-import pytest
 
 
 class TestBlockSchema:

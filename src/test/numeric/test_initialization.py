@@ -9,8 +9,6 @@ This module tests the initialization logic, especially:
 
 import pytest
 import numpy as np
-import pandas as pd
-from typing import Tuple
 
 # Import initialization functions
 from dfm_python.models.dfm.initialization import (
@@ -23,7 +21,6 @@ from dfm_python.models.dfm.initialization import (
 from dfm_python.config.constants import (
     DEFAULT_DTYPE,
     DEFAULT_REGULARIZATION,
-    MIN_EIGENVALUE,
 )
 from dfm_python.models.dfm.tent import generate_R_mat
 

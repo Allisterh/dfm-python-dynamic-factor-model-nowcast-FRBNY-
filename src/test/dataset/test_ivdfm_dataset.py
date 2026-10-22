@@ -1,6 +1,5 @@
 """Tests for dataset.ivdfm_dataset module."""
 
-import pytest
 import numpy as np
 import pandas as pd
 import torch
