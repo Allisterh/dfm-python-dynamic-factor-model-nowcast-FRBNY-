@@ -66,16 +66,16 @@ def validate_no_nan_inf(data: Union[np.ndarray, Tensor], name: str = "data") -> 
 def validate_horizon(horizon: int, min_horizon: int = 1, max_horizon: int = 100) -> int:
     """Return ``horizon`` after checking it is an int >= ``min_horizon``; warn above ``max_horizon``.
 
-    Setting ``DFM_SUPPRESS_HORIZON_WARNING=1`` skips all checks (long-horizon
-    benchmarks such as ETT 192/336/720 would otherwise warn on every call).
+    Setting ``DFM_SUPPRESS_HORIZON_WARNING=1`` silences the warning only
+    (long-horizon benchmarks such as ETT 192/336/720 would otherwise warn on
+    every call); the checks still apply.
     """
-    if os.environ.get("DFM_SUPPRESS_HORIZON_WARNING", "").strip().lower() in ("1", "true", "yes"):
-        return int(horizon)
     if not isinstance(horizon, int):
         raise ConfigurationError(f"horizon must be an integer, got {type(horizon).__name__}")
     if horizon < min_horizon:
         raise ConfigurationError(f"horizon must be >= {min_horizon}, got {horizon}")
-    if horizon > max_horizon:
+    suppressed = os.environ.get("DFM_SUPPRESS_HORIZON_WARNING", "").strip().lower() in ("1", "true", "yes")
+    if horizon > max_horizon and not suppressed:
         _logger.warning(
             f"horizon {horizon} is very large (> {max_horizon}). Forecast accuracy may degrade significantly."
         )

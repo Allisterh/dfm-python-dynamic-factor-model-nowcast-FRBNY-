@@ -244,3 +244,9 @@ def test_stabilize_innovation_covariance_floor_keeps_off_diagonals():
     out = stabilize_innovation_covariance(Q, min_eigenval=1e-6, min_floor=0.01, dtype=np.float64)
     assert out[1, 1] >= 0.01
     assert out[0, 1] < 0 and out[0, 1] == out[1, 0]
+
+
+def test_cap_max_eigenval_rejects_scalar_input():
+    """A 0-d array is a shape error, not an IndexError."""
+    with pytest.raises(ValueError, match="2D"):
+        cap_max_eigenval(np.array(3.0))

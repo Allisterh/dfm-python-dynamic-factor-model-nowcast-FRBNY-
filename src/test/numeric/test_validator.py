@@ -119,3 +119,16 @@ class TestValidator:
         A_nan = np.array([[1.0, np.nan], [0.0, 1.0]])
         with pytest.raises(NumericalError):
             validate_dfm_initialization(A_nan, C, Q, R, Z_0, V_0)
+
+
+def test_validate_horizon_env_var_only_silences_the_warning(monkeypatch):
+    """DFM_SUPPRESS_HORIZON_WARNING must not disable the type and range checks."""
+    from dfm_python.numeric.validator import validate_horizon
+    from dfm_python.utils.errors import ConfigurationError
+
+    monkeypatch.setenv("DFM_SUPPRESS_HORIZON_WARNING", "1")
+    assert validate_horizon(720) == 720
+    with pytest.raises(ConfigurationError):
+        validate_horizon(0)
+    with pytest.raises(ConfigurationError):
+        validate_horizon("6")

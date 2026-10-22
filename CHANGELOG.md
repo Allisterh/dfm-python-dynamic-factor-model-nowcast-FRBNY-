@@ -4,6 +4,11 @@
 
 ### Bug fixes
 
+- `validate_horizon`: the `DFM_SUPPRESS_HORIZON_WARNING` environment variable
+  skipped the integer and `>= 1` checks as well as the long-horizon warning;
+  it now silences only the warning.
+- `cap_max_eigenval` raised `IndexError` for a 0-d array instead of the
+  documented `ValueError`.
 - DFM: the innovation-covariance floor applied in the M-step and in the
   initialisation (`stabilize_innovation_covariance(min_floor=...)`) raised
   the diagonal of Q with `np.maximum(Q, floor * I)`, which also clipped

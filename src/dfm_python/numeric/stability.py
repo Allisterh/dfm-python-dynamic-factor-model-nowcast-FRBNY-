@@ -62,9 +62,6 @@ def cap_max_eigenval(
     ValueError
         If ``M`` is not a 2-D square matrix.
     """
-    if M.size == 0 or M.shape[0] == 0:
-        return M
-
     if M.ndim != 2:
         raise ValueError(
             f"cap_max_eigenval requires 2D matrix, got ndim={M.ndim}, shape={M.shape}. "
@@ -76,7 +73,9 @@ def cap_max_eigenval(
             f"This indicates a bug: eigenvalue capping should only be applied to square matrices. "
             f"Check that you're not calling this on non-square slices or vectors."
         )
-    
+    if M.size == 0:
+        return M
+
     def _cap_max_eigenvalue():
         if symmetric:
             eigenvals = np.linalg.eigvalsh(M)
