@@ -1,12 +1,9 @@
 """Optuna hyperparameter search for the iVDFM estimator (needs the ``tune`` extra).
 
-Trials train on a subset of the latest windows of the data. The subset size is
-controlled by train_window_ratio (proportion of available windows to use;
-1.0 = full data). The last `horizon` steps are held out for the forecasting
-objective (sMSE, sMAE or MSE), computed, as before, on the targets scaled by the
-estimator's scaler fitted on the full series (data units without a scaler).
-
-optuna is imported lazily, when a search function runs.
+Trials train on the latest windows of the data (``train_window_ratio`` of the
+available windows; 1.0 = all) and are scored on the last ``horizon`` steps
+(sMSE, sMAE or MSE) in the units of the estimator's scaler fitted on the full
+series (data units without a scaler). optuna is imported when a search runs.
 """
 
 from __future__ import annotations
@@ -29,173 +26,12 @@ if TYPE_CHECKING:
 
 _logger = get_logger(__name__)
 
-
-def _require_optuna():
-    """Import optuna, or raise an ImportError naming the extra that provides it."""
-    try:
-        import optuna
-    except ImportError as e:
-        raise ImportError(
-            "optuna is required for iVDFM hyperparameter search (dfm_python.tuning). "
-            "Install it with: pip install 'dfm-python[tune]'"
-        ) from e
-    return optuna
-
-
-# -----------------------------------------------------------------------------
-# Subset sampling (latest windows)
-# -----------------------------------------------------------------------------
-
-def get_optuna_subset(
-    data: Union[np.ndarray, pd.DataFrame],
-    max_window: int,
-    min_stride: int,
-    horizon: int,
-    *,
-    train_window_ratio: float = 1.0,
-    subset_ratio: Optional[float] = None,
-    subset_max_steps: Optional[int] = None,
-) -> Tuple[Union[np.ndarray, pd.DataFrame], np.ndarray]:
-    """Take the latest chunk of data and split into train / holdout for forecast metric.
-
-    Uses train_window_ratio (proportion of available windows) to decide how many samples:
-    num_windows = (T_total - max_window) // min_stride + 1; use last floor(num_windows * train_window_ratio)
-    windows. Default 1.0 = use full windows (same as real training). Pure Optuna param, not searchable.
-
-    Parameters
-    ----------
-    data : np.ndarray (T, N) or pd.DataFrame
-        Full time series.
-    max_window : int
-        Upper bound on window size (used to size the subset).
-    min_stride : int
-        Minimum stride (used to size the subset).
-    horizon : int
-        Forecast horizon for holdout (last horizon steps = test).
-    train_window_ratio : float, default 1.0
-        Proportion of available windows to use (0 < ratio <= 1). 1.0 = use all (same as real training).
-    subset_ratio : float, optional
-        If set in (0, 1], use at least this fraction of T_total for the subset (larger subset, slower trials).
-    subset_max_steps : int, optional
-        If set, use at least this many time steps for the subset (capped by T_total).
-
-    Returns
-    -------
-    train_data : same type as data, shape (T_subset - horizon, N)
-        Training portion (all but last horizon steps of the subset).
-    test_true : np.ndarray, shape (horizon, N)
-        Last horizon steps (ground truth for forecast metric).
-    """
-    if isinstance(data, pd.DataFrame):
-        # Use only numeric columns (same as iVDFMDataset: exclude time index from variable set)
-        numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
-        if not numeric_cols:
-            numeric_cols = list(data.columns)
-        arr = data[numeric_cols].values
-        is_df = True
-        columns = numeric_cols
-    else:
-        arr = np.asarray(data)
-        is_df = False
-        columns = None
-
-    T_total, N = arr.shape[0], arr.shape[1]
-    min_stride = max(10, min_stride)
-    horizon = max(1, horizon)
-    ratio = max(0.01, min(1.0, float(train_window_ratio)))
-
-    # Available windows with max_window and min_stride
-    num_windows = (T_total - max_window) // min_stride + 1
-    num_windows = max(1, num_windows)
-    n_use = max(1, int(num_windows * ratio))
-    T_subset = (n_use - 1) * min_stride + max_window + horizon
-    if subset_ratio is not None and 0 < subset_ratio <= 1:
-        T_subset = max(T_subset, min(T_total, int(T_total * subset_ratio)))
-    if subset_max_steps is not None and subset_max_steps > 0:
-        T_subset = max(T_subset, min(T_total, subset_max_steps))
-    T_subset = min(T_subset, T_total)
-    if T_subset < horizon + 2:
-        raise ValueError(
-            f"Data too short: T_total={T_total}, T_subset={T_subset}; need at least horizon+2."
-        )
-
-    # Last T_subset time steps
-    subset_arr = arr[-T_subset:, :]
-    train_end = T_subset - horizon
-    train_arr = subset_arr[:train_end, :]
-    test_true = np.asarray(subset_arr[train_end:, :], dtype=np.float64)
-
-    if is_df and columns is not None:
-        train_data = pd.DataFrame(train_arr, columns=columns)
-    else:
-        train_data = train_arr
-
-    return train_data, test_true
-
-
-# -----------------------------------------------------------------------------
-# Forecast metrics (sMSE / sMAE)
-# -----------------------------------------------------------------------------
-
-def compute_forecast_metric(
-    preds: np.ndarray,
-    trues: np.ndarray,
-    metric: str = "sMSE",
-) -> float:
-    """Compute multivariate forecast metric: MSE, sMSE, or sMAE.
-
-    MSE: mean squared error over all (pred, true) pairs (one scalar).
-    sMSE/sMAE: per-variable normalized then averaged (scale-invariant).
-    preds, trues: (horizon, N) or (n_origins, horizon, N); flattened to (n_points, N).
-    """
-    preds = np.asarray(preds, dtype=np.float64)
-    trues = np.asarray(trues, dtype=np.float64)
-    preds_flat = preds.reshape(-1, preds.shape[-1])
-    trues_flat = trues.reshape(-1, trues.shape[-1])
-    n = preds_flat.shape[1]
-    if n == 0:
-        return float("nan")
-
-    metric_upper = metric.upper()
-    if metric_upper == "MSE":
-        return float(np.mean((preds_flat - trues_flat) ** 2))
-
-    out_per_var: List[float] = []
-    for j in range(n):
-        p_j = preds_flat[:, j]
-        t_j = trues_flat[:, j]
-        var_j = float(np.var(t_j))
-        std_j = float(np.std(t_j)) if var_j >= 1e-20 else float("nan")
-        if metric_upper == "SMSE":
-            if np.isfinite(var_j) and var_j >= 1e-10:
-                mse_j = float(np.mean((p_j - t_j) ** 2))
-                out_per_var.append(mse_j / var_j)
-            else:
-                out_per_var.append(float("nan"))
-        elif metric_upper == "SMAE":
-            if np.isfinite(std_j) and std_j >= 1e-10:
-                mae_j = float(np.mean(np.abs(p_j - t_j)))
-                out_per_var.append(mae_j / std_j)
-            else:
-                out_per_var.append(float("nan"))
-        else:
-            raise ValueError(f"Unknown metric: {metric}. Use 'MSE', 'sMSE', or 'sMAE'.")
-
-    return float(np.nanmean(out_per_var)) if out_per_var else float("nan")
-
-
-# -----------------------------------------------------------------------------
-# Optuna suggest (hyperparameters)
-# -----------------------------------------------------------------------------
-
-# Structural / causal parameters that MUST NOT be tuned (model selection, not hyperparameters).
-# Fix to ground truth in synthetic experiments; change only via ablation elsewhere.
-def _aligned_high(low: int, high: int, step: int) -> int:
-    """The largest ``low + k * step`` <= ``high``: the upper bound optuna falls back to, with a warning,
-    when ``high - low`` is not a multiple of ``step``. Passing it keeps the same search space, silently."""
-    return low + (high - low) // step * step
-
-
+# Search settings that are not iVDFM hyperparameters (never passed to the estimator).
+_META_KEYS = {"max_regimes", "max_window", "min_window", "train_window_ratio", "min_stride"}
+# Suggested (it keeps the sampler's draw sequence) but not an iVDFM parameter.
+_NOT_PARAMS = {"dropout"}
+_METRICS = ("MSE", "SMSE", "SMAE")
+# Model-class choices the causal search never tunes.
 _STRUCTURAL_PARAMS = frozenset({
     "n_factors",
     "factor_order",
@@ -209,25 +45,156 @@ _STRUCTURAL_PARAMS = frozenset({
 })
 
 
+def _require_optuna():
+    """Import optuna, or raise an ImportError naming the extra that provides it."""
+    try:
+        import optuna
+    except ImportError as e:
+        raise ImportError(
+            "optuna is required for iVDFM hyperparameter search (dfm_python.tuning). "
+            "Install it with: pip install 'dfm-python[tune]'"
+        ) from e
+    return optuna
+
+
+def get_optuna_subset(
+    data: Union[np.ndarray, pd.DataFrame],
+    max_window: int,
+    min_stride: int,
+    horizon: int,
+    *,
+    train_window_ratio: float = 1.0,
+    subset_ratio: Optional[float] = None,
+    subset_max_steps: Optional[int] = None,
+) -> Tuple[Union[np.ndarray, pd.DataFrame], np.ndarray]:
+    """The latest chunk of ``data`` split into training rows and a holdout of the last ``horizon`` steps.
+
+    The chunk holds the last ``floor(num_windows * train_window_ratio)`` of
+    the ``(T - max_window) // min_stride + 1`` windows (``min_stride`` at
+    least 10), plus the holdout; ``subset_ratio`` (a fraction of T) and
+    ``subset_max_steps`` raise it to at least that many rows.
+
+    Parameters
+    ----------
+    data : ndarray (T, N) or DataFrame
+        A DataFrame contributes its numeric columns.
+    max_window : int
+    min_stride : int
+    horizon : int
+    train_window_ratio : float, default 1.0
+        Proportion of the windows to use, in (0, 1].
+    subset_ratio : float, optional
+    subset_max_steps : int, optional
+
+    Returns
+    -------
+    train_data : same type as data, shape (T_subset - horizon, N)
+    test_true : ndarray, shape (horizon, N)
+    """
+    if isinstance(data, pd.DataFrame):
+        numeric_cols = data.select_dtypes(include=[np.number]).columns.tolist()
+        if not numeric_cols:
+            numeric_cols = list(data.columns)
+        arr = data[numeric_cols].values
+        is_df = True
+        columns = numeric_cols
+    else:
+        arr = np.asarray(data)
+        is_df = False
+
+    T_total = arr.shape[0]
+    min_stride = max(10, min_stride)
+    horizon = max(1, horizon)
+    ratio = max(0.01, min(1.0, float(train_window_ratio)))
+
+    num_windows = max(1, (T_total - max_window) // min_stride + 1)
+    n_use = max(1, int(num_windows * ratio))
+    T_subset = (n_use - 1) * min_stride + max_window + horizon
+    if subset_ratio is not None and 0 < subset_ratio <= 1:
+        T_subset = max(T_subset, min(T_total, int(T_total * subset_ratio)))
+    if subset_max_steps is not None and subset_max_steps > 0:
+        T_subset = max(T_subset, min(T_total, subset_max_steps))
+    T_subset = min(T_subset, T_total)
+    if T_subset < horizon + 2:
+        raise ValueError(
+            f"Data too short: T_total={T_total}, T_subset={T_subset}; need at least horizon+2."
+        )
+
+    subset_arr = arr[-T_subset:, :]
+    train_end = T_subset - horizon
+    train_arr = subset_arr[:train_end, :]
+    test_true = np.asarray(subset_arr[train_end:, :], dtype=np.float64)
+
+    train_data = pd.DataFrame(train_arr, columns=columns) if is_df else train_arr
+    return train_data, test_true
+
+
+def compute_forecast_metric(
+    preds: np.ndarray,
+    trues: np.ndarray,
+    metric: str = "sMSE",
+) -> float:
+    """MSE over all points, or sMSE / sMAE: the per-variable error over its variance / std, averaged.
+
+    ``preds`` and ``trues`` are (horizon, N) or (n_origins, horizon, N) and are
+    flattened to (n_points, N). Variables with (near) zero variance are NaN
+    and skipped by the average; N = 0 gives NaN.
+    """
+    preds = np.asarray(preds, dtype=np.float64)
+    trues = np.asarray(trues, dtype=np.float64)
+    preds_flat = preds.reshape(-1, preds.shape[-1])
+    trues_flat = trues.reshape(-1, trues.shape[-1])
+    n = preds_flat.shape[1]
+    if n == 0:
+        return float("nan")
+
+    metric_upper = metric.upper()
+    if metric_upper == "MSE":
+        return float(np.mean((preds_flat - trues_flat) ** 2))
+    if metric_upper not in ("SMSE", "SMAE"):
+        raise ValueError(f"Unknown metric: {metric}. Use 'MSE', 'sMSE', or 'sMAE'.")
+
+    out_per_var: List[float] = []
+    for j in range(n):
+        p_j = preds_flat[:, j]
+        t_j = trues_flat[:, j]
+        var_j = float(np.var(t_j))
+        if metric_upper == "SMSE":
+            if np.isfinite(var_j) and var_j >= 1e-10:
+                out_per_var.append(float(np.mean((p_j - t_j) ** 2)) / var_j)
+            else:
+                out_per_var.append(float("nan"))
+        else:
+            std_j = float(np.std(t_j)) if var_j >= 1e-20 else float("nan")
+            if np.isfinite(std_j) and std_j >= 1e-10:
+                out_per_var.append(float(np.mean(np.abs(p_j - t_j))) / std_j)
+            else:
+                out_per_var.append(float("nan"))
+
+    return float(np.nanmean(out_per_var))
+
+
+def _aligned_high(low: int, high: int, step: int) -> int:
+    """The largest ``low + k * step`` <= ``high``: the upper bound optuna falls back to, with a warning,
+    when ``high - low`` is not a multiple of ``step``. Passing it keeps the same search space, silently."""
+    return low + (high - low) // step * step
+
+
 def suggest_ivdfm_hyperparameters_causal(
     trial: optuna.Trial,
     fixed: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Suggest only non-structural iVDFM hyperparameters for causal / IRF experiments.
+    """Suggest only the non-structural iVDFM hyperparameters (optimization, capacity, regularization).
 
-    Tunes optimization and network capacity only. Does NOT suggest:
-    n_factors, factor_order, n_regimes, mixing, innovation_distribution,
-    context, time_context, window, stride (these define the causal model class).
-
-    Caller must merge the returned dict with fixed structural config (e.g. from base model).
+    For causal / IRF experiments: nothing in ``_STRUCTURAL_PARAMS`` is
+    suggested, and the caller merges the result with its structural config.
+    Fixed non-structural keys pass through.
     """
-    optuna = _require_optuna()
+    _require_optuna()
 
     fixed = dict(fixed or {})
-
     params: Dict[str, Any] = {}
 
-    # Optimization (safe)
     params["learning_rate"] = trial.suggest_float("learning_rate", 1e-4, 2e-3, log=True)
     params["batch_size"] = trial.suggest_categorical("batch_size", [32, 64, 128])
     params["max_epochs"] = trial.suggest_int("max_epochs", 30, 80, step=10)
@@ -236,7 +203,6 @@ def suggest_ivdfm_hyperparameters_causal(
     )
     params["patience"] = trial.suggest_int("patience", 10, 20)
 
-    # Encoder / decoder / prior capacity (safe)
     params["encoder_hidden_dim"] = trial.suggest_categorical(
         "encoder_hidden_dim", [64, 128, 256]
     )
@@ -250,12 +216,10 @@ def suggest_ivdfm_hyperparameters_causal(
     )
     params["prior_n_hidden_layers"] = trial.suggest_int("prior_n_hidden_layers", 1, 2)
 
-    # Regularization and KL (safe; beta_kl constrained)
     params["dropout"] = trial.suggest_float("dropout", 0.0, 0.2)
     params["use_layer_norm"] = trial.suggest_categorical("use_layer_norm", [True, False])
     params["beta_kl"] = trial.suggest_float("beta_kl", 0.5, 1.2)
 
-    # Pass through any fixed non-structural keys not already suggested
     for k, v in fixed.items():
         if k not in params and k not in _STRUCTURAL_PARAMS:
             params[k] = v
@@ -274,154 +238,78 @@ def suggest_ivdfm_hyperparameters(
     search_scope: Optional[str] = None,
     min_stride: int = 10,
 ) -> Dict[str, Any]:
-    """Suggest iVDFM hyperparameters for a trial, under the iVDFM estimator's parameter names.
+    """Suggest iVDFM hyperparameters for a trial, under the estimator's parameter names.
 
-    ``dropout`` is suggested too (it keeps the sampler's draw sequence) but is
-    not an iVDFM parameter; tune_hyperparameters drops it.
-
-    If a key is in fixed, that value is used (structural design); otherwise the param is suggested (study-able).
-    max_hidden_dim: if <= 200 use small-dataset space (encoder/decoder max 200); if None or > 200 use large (max 512).
-    search_scope: "focused" = narrower lr/epochs for already-optimized datasets (ETT); None/"full" = wider for others.
-    For causal/IRF experiments use suggest_ivdfm_hyperparameters_causal instead.
+    A key in ``fixed`` is used instead of suggested; other fixed keys (except
+    the search settings) pass through. ``dropout`` is suggested too (it keeps
+    the sampler's draw sequence) but is not an iVDFM parameter;
+    tune_hyperparameters drops it. ``max_hidden_dim <= 200`` selects the
+    small hidden-width space (up to 200), else widths go up to 512;
+    ``search_scope="focused"`` narrows learning rate, epochs and decoder
+    variance. ``metric`` is unused. For causal/IRF experiments use
+    suggest_ivdfm_hyperparameters_causal.
     """
-    optuna = _require_optuna()
+    _require_optuna()
 
     fixed = dict(fixed or {})
-    _exclude = {"max_regimes", "max_window", "min_window", "train_window_ratio", "min_stride"}
-
     params: Dict[str, Any] = {}
     window_high = max(min_window, max_window)
 
-    # Structural: use fixed value when provided, else suggest
-    if "n_factors" in fixed:
-        params["n_factors"] = fixed["n_factors"]
-    else:
-        params["n_factors"] = trial.suggest_int("n_factors", 2, min(8, max(2, window_high // 50)), step=1)
-    if "window" in fixed:
-        params["window"] = fixed["window"]
-    else:
-        # window and stride step by 10; their upper bounds are aligned down to the step (see _aligned_high).
-        params["window"] = trial.suggest_int("window", min_window, _aligned_high(min_window, window_high, 10), step=10)
-    if "stride" in fixed:
-        params["stride"] = fixed["stride"]
-    else:
-        # Min stride at least 10; when window fixed, at least half window
-        stride_low = max(min_stride, (fixed.get("window") or 0) // 2) if fixed.get("window") else min_stride
-        stride_low = max(10, stride_low)
-        params["stride"] = trial.suggest_int("stride", stride_low, _aligned_high(stride_low, 1000, 10), step=10)
-    if "n_regimes" in fixed:
-        params["n_regimes"] = fixed["n_regimes"]
-    else:
-        params["n_regimes"] = trial.suggest_int("n_regimes", 1, max(1, max_regimes), step=1)
-    if "regime_temperature" in fixed:
-        params["regime_temperature"] = fixed["regime_temperature"]
-    else:
-        params["regime_temperature"] = trial.suggest_float("regime_temperature", 0.1, 1.0)
-    if "mixing" in fixed:
-        params["mixing"] = fixed["mixing"]
-    else:
-        params["mixing"] = trial.suggest_categorical("mixing", [True, False])
-    if "factor_order" in fixed:
-        params["factor_order"] = fixed["factor_order"]
-    else:
-        params["factor_order"] = trial.suggest_int("factor_order", 1, 5, step=1)
+    def pick(name: str, suggest: Callable[[], Any]) -> None:
+        params[name] = fixed[name] if name in fixed else suggest()
 
-    # Encoder / decoder / prior: dataset-specific. Small (max 200) = scrutinize; large = up to 512
-    small = max_hidden_dim is not None and max_hidden_dim <= 200
-    if small:
+    # Structural
+    pick("n_factors", lambda: trial.suggest_int("n_factors", 2, min(8, max(2, window_high // 50)), step=1))
+    # window and stride step by 10; their upper bounds are aligned down to the step (see _aligned_high).
+    pick("window", lambda: trial.suggest_int("window", min_window, _aligned_high(min_window, window_high, 10), step=10))
+    # The stride is at least 10 and, with a fixed window, at least half of it.
+    stride_low = max(10, min_stride, (fixed.get("window") or 0) // 2)
+    pick("stride", lambda: trial.suggest_int("stride", stride_low, _aligned_high(stride_low, 1000, 10), step=10))
+    pick("n_regimes", lambda: trial.suggest_int("n_regimes", 1, max(1, max_regimes), step=1))
+    pick("regime_temperature", lambda: trial.suggest_float("regime_temperature", 0.1, 1.0))
+    pick("mixing", lambda: trial.suggest_categorical("mixing", [True, False]))
+    pick("factor_order", lambda: trial.suggest_int("factor_order", 1, 5, step=1))
+
+    # Encoder / decoder / prior capacity
+    if max_hidden_dim is not None and max_hidden_dim <= 200:
         encoder_decoder_cats = [64, 96, 128, 160, 200]
         prior_cats = [32, 64, 96, 128]
     else:
         encoder_decoder_cats = [64, 128, 200, 256, 384, 512]
         prior_cats = [32, 64, 96, 128, 160, 192]
+    pick("encoder_hidden_dim", lambda: trial.suggest_categorical("encoder_hidden_dim", encoder_decoder_cats))
+    pick("encoder_n_hidden_layers", lambda: trial.suggest_int("encoder_n_hidden_layers", 1, 3))
+    pick("decoder_hidden_dim", lambda: trial.suggest_categorical("decoder_hidden_dim", encoder_decoder_cats))
+    pick("decoder_n_hidden_layers", lambda: trial.suggest_int("decoder_n_hidden_layers", 1, 3))
+    pick("prior_hidden_dim", lambda: trial.suggest_categorical("prior_hidden_dim", prior_cats))
+    pick("prior_n_hidden_layers", lambda: trial.suggest_int("prior_n_hidden_layers", 1, 3))
 
-    if "encoder_hidden_dim" in fixed:
-        params["encoder_hidden_dim"] = fixed["encoder_hidden_dim"]
-    else:
-        params["encoder_hidden_dim"] = trial.suggest_categorical("encoder_hidden_dim", encoder_decoder_cats)
-    if "encoder_n_hidden_layers" in fixed:
-        params["encoder_n_hidden_layers"] = fixed["encoder_n_hidden_layers"]
-    else:
-        params["encoder_n_hidden_layers"] = trial.suggest_int("encoder_n_hidden_layers", 1, 3)
-    if "decoder_hidden_dim" in fixed:
-        params["decoder_hidden_dim"] = fixed["decoder_hidden_dim"]
-    else:
-        params["decoder_hidden_dim"] = trial.suggest_categorical("decoder_hidden_dim", encoder_decoder_cats)
-    if "decoder_n_hidden_layers" in fixed:
-        params["decoder_n_hidden_layers"] = fixed["decoder_n_hidden_layers"]
-    else:
-        params["decoder_n_hidden_layers"] = trial.suggest_int("decoder_n_hidden_layers", 1, 3)
-    if "prior_hidden_dim" in fixed:
-        params["prior_hidden_dim"] = fixed["prior_hidden_dim"]
-    else:
-        params["prior_hidden_dim"] = trial.suggest_categorical("prior_hidden_dim", prior_cats)
-    if "prior_n_hidden_layers" in fixed:
-        params["prior_n_hidden_layers"] = fixed["prior_n_hidden_layers"]
-    else:
-        params["prior_n_hidden_layers"] = trial.suggest_int("prior_n_hidden_layers", 1, 3)
-
-    # Training & regularization: focused (ETT, already optimized) vs full (others, need more search)
+    # Training and regularization
     focused = search_scope == "focused"
-    if "learning_rate" in fixed:
-        params["learning_rate"] = fixed["learning_rate"]
+    if focused:
+        pick("learning_rate", lambda: trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True))
+        pick("max_epochs", lambda: trial.suggest_int("max_epochs", 50, 95, step=5))
+        pick("decoder_var", lambda: trial.suggest_float("decoder_var", 0.01, 0.08))
     else:
-        if focused:
-            params["learning_rate"] = trial.suggest_float("learning_rate", 1e-4, 5e-3, log=True)
-        else:
-            params["learning_rate"] = trial.suggest_float("learning_rate", 3e-5, 2e-2, log=True)
-    if "max_epochs" in fixed:
-        params["max_epochs"] = fixed["max_epochs"]
-    else:
-        if focused:
-            params["max_epochs"] = trial.suggest_int("max_epochs", 50, 95, step=5)
-        else:
-            params["max_epochs"] = trial.suggest_int("max_epochs", 60, 130, step=5)
-    if "decoder_var" in fixed:
-        params["decoder_var"] = fixed["decoder_var"]
-    else:
-        if focused:
-            params["decoder_var"] = trial.suggest_float("decoder_var", 0.01, 0.08)
-        else:
-            params["decoder_var"] = trial.suggest_float("decoder_var", 0.003, 0.15)
-    if "beta_kl" in fixed:
-        params["beta_kl"] = fixed["beta_kl"]
-    else:
-        params["beta_kl"] = trial.suggest_float("beta_kl", 0.5, 1.4)
-    if "dropout" in fixed:
-        params["dropout"] = fixed["dropout"]
-    else:
-        if focused:
-            params["dropout"] = trial.suggest_float("dropout", 0.0, 0.2)
-        else:
-            params["dropout"] = trial.suggest_float("dropout", 0.0, 0.35)
+        pick("learning_rate", lambda: trial.suggest_float("learning_rate", 3e-5, 2e-2, log=True))
+        pick("max_epochs", lambda: trial.suggest_int("max_epochs", 60, 130, step=5))
+        pick("decoder_var", lambda: trial.suggest_float("decoder_var", 0.003, 0.15))
+    pick("beta_kl", lambda: trial.suggest_float("beta_kl", 0.5, 1.4))
+    pick("dropout", lambda: trial.suggest_float("dropout", 0.0, 0.2 if focused else 0.35))
 
-    # Any other fixed keys (e.g. time_context, decoder_type) not in suggest set
     for k, v in fixed.items():
-        if k not in params and k not in _exclude:
+        if k not in params and k not in _META_KEYS:
             params[k] = v
 
     return params
 
 
-# -----------------------------------------------------------------------------
-# Objective and study
-# -----------------------------------------------------------------------------
-
-# Meta keys: used for Optuna/subsets only, not passed to iVDFM
-_META_KEYS = {"max_regimes", "max_window", "min_window", "train_window_ratio", "min_stride"}
-# Suggested (it keeps the sampler's draw sequence) but not an iVDFM parameter.
-_NOT_PARAMS = {"dropout"}
-_METRICS = ("MSE", "SMSE", "SMAE")
-
-
 def _imputed_arrays(estimator: iVDFM, panel: PanelData) -> Tuple[np.ndarray, Optional[np.ndarray]]:
     """Targets (T, N) and exog (T, K) or None, gap-filled as ``fit`` fills them.
 
-    Built through the estimator's dataset adapter: linear interpolation, then
-    forward/backward fill, then zeros. The targets are scaled by (a clone of)
-    the estimator's scaler fitted on the whole series, as the old
-    ``hyperparameter_optimization`` took them from its dataset; the exog is
-    never scaled.
+    Built through the estimator's dataset adapter: the targets are scaled by
+    (a clone of) the estimator's scaler fitted on the whole series; the exog
+    is never scaled.
     """
     dataset = clone(estimator)._adapter(panel, torch.device("cpu"))
     targets = np.asarray(dataset.target, dtype=np.float64)
@@ -445,7 +333,7 @@ def _make_objective(
     max_hidden_dim: Optional[int],
     search_scope: Optional[str],
 ) -> Callable[[optuna.Trial], float]:
-    """Build an Optuna objective: suggest params, fit a clone of ``estimator``, forecast the holdout, score it."""
+    """An Optuna objective: suggest params, fit a clone of ``estimator``, forecast the holdout, score it."""
     T_train = train_panel.n_timesteps
     horizon = test_true.shape[0]
 
@@ -468,15 +356,10 @@ def _make_objective(
             _logger.warning(f"Suggest failed: {e}")
             raise optuna.TrialPruned()
 
-        window = min(int(params.pop("window")), T_train - 1)
-        window = max(2, window)
-        stride = max(10, int(params.pop("stride")))
-        stride = min(stride, window)
-        max_epochs = (
-            max_epochs_per_trial if max_epochs_per_trial is not None else params.get("max_epochs", estimator.max_epochs)
-        )
+        window = max(2, min(int(params.pop("window")), T_train - 1))
+        stride = min(max(10, int(params.pop("stride"))), window)
+        max_epochs = max_epochs_per_trial if max_epochs_per_trial is not None else params["max_epochs"]
 
-        # Drop meta keys and dropout so the estimator does not receive them
         model_params = {k: v for k, v in params.items() if k not in _META_KEYS and k not in _NOT_PARAMS}
         # The targets are already scaled (see _imputed_arrays), so the trials fit no scaler of their own.
         model_params.update(window=window, stride=stride, max_epochs=max_epochs, scaler=None, verbose=0)
@@ -544,35 +427,31 @@ def tune_hyperparameters(
     NaN are pruned. ``estimator`` and ``data`` are not changed and nothing is
     fitted in place: refit with ``estimator.set_params(**best).fit(data)``.
 
-    Missing values are filled once, as ``fit`` fills them (linear
-    interpolation, then forward/backward fill, then zeros), in targets and
-    exog. As in the old ``hyperparameter_optimization``, the targets are then
-    scaled once by the estimator's ``scaler`` (or ``fixed["scaler"]``) fitted
-    on the whole series; the trials train on these scaled targets without a
-    scaler of their own, and the metric compares forecasts and holdout in
-    these scaled units (data units when the scaler is None). The trial
-    estimators inherit every other hyperparameter of ``estimator`` that is
-    not suggested or fixed, including ``batch_size``, ``random_state`` and
-    ``device``; ``verbose`` is 0.
+    Missing values are filled once, as ``fit`` fills them, in targets and
+    exog. The targets are then scaled once by the estimator's ``scaler`` (or
+    ``fixed["scaler"]``) fitted on the whole series; the trials train on
+    these scaled targets without a scaler of their own, and the metric
+    compares forecasts and holdout in these scaled units (data units when
+    the scaler is None). The trial estimators inherit every other
+    hyperparameter of ``estimator`` that is not suggested or fixed,
+    including ``batch_size``, ``random_state`` and ``device``; ``verbose``
+    is 0.
 
-    The search is reproducible: the trials' ``random_state``
-    (``fixed["random_state"]`` if given, else ``estimator.random_state``)
-    also seeds optuna's default sampler, ``TPESampler(seed=random_state)``,
-    so two calls with the same seed, data and arguments draw the same
-    trials and, on CPU, return the same ``best``; different seeds draw
-    different trials. ``random_state=None`` leaves the sampler unseeded, as
-    before. A ``timeout`` can stop runs after different numbers of trials.
-    A study resumed from ``storage`` (``load_if_exists=True``) that already
-    has ``n`` trials is sampled with seed ``random_state + n`` (modulo
-    2**32), so the resumed run draws new trials rather than replaying the
-    first run's.
+    The trials' ``random_state`` (``fixed["random_state"]`` if given, else
+    ``estimator.random_state``) also seeds optuna's default sampler,
+    ``TPESampler(seed=random_state)``, so two calls with the same seed, data
+    and arguments draw the same trials and, on CPU, return the same
+    ``best``; ``random_state=None`` leaves the sampler unseeded. A
+    ``timeout`` can stop runs after different numbers of trials. A study
+    resumed from ``storage`` (``load_if_exists=True``) that already has
+    ``n`` trials is sampled with seed ``random_state + n`` (modulo 2**32),
+    so it draws new trials rather than replaying the first run's.
 
     ``window`` and ``stride`` are suggested in steps of 10. When the range
     is not a multiple of 10 (``max_window - min_window``, or ``1000`` minus
     the lowest stride), its upper bound is lowered to the last step (e.g.
     ``min_window=10, max_window=25`` searches 10 and 20), the range optuna
-    itself fell back to with a warning; ranges that are multiples of 10 are
-    unchanged.
+    itself fell back to with a warning.
 
     Parameters
     ----------
@@ -581,26 +460,22 @@ def tune_hyperparameters(
     data : PanelData, DataFrame or 2-D array
         Targets in ``y`` and, optionally, context variables in ``exog``.
     n_trials : int, default 30
-        Number of trials.
     timeout : float, optional
         Total time budget in seconds.
     max_window : int, optional
         Upper bound on the window (and used to size the subset). None or <= 0
         uses the series length.
     min_window : int, default 500
-        Lower bound on the suggested window (step 10; the upper bound is
-        lowered to ``min_window`` plus a multiple of 10).
+        Lower bound on the suggested window (step 10).
     max_regimes : int, default 7
         Upper bound on the suggested ``n_regimes``.
     train_window_ratio : float, default 1.0
-        Proportion of available windows to use (0 < ratio <= 1). 1.0 = full
-        data; e.g. 0.5 = the latest 50%.
+        Proportion of available windows to use, in (0, 1]; 0.5 = the latest 50%.
     min_stride : int, default 10
         Minimum stride (at least 10), for subset sizing.
     horizon : int, default 96
         Forecast horizon of the holdout.
     metric : {"sMSE", "sMAE", "MSE"}, default "sMSE"
-        Holdout metric to minimize.
     max_epochs_per_trial : int, optional
         Epochs of every trial; None uses the suggested ``max_epochs``.
     fixed : dict, optional
@@ -718,8 +593,7 @@ def tune_hyperparameters(
         search_scope=search_scope,
     )
 
-    # The trials' random_state (fixed["random_state"], else the estimator's) also seeds optuna's
-    # default TPE sampler, so a search is reproducible; None leaves it unseeded.
+    # The trials' random_state also seeds optuna's default TPE sampler, so a search is reproducible.
     seed = fixed.get("random_state", estimator.random_state)
     study = optuna.create_study(
         direction="minimize",
@@ -731,8 +605,7 @@ def tune_hyperparameters(
     )
     n_existing = len(study.trials)
     if seed is not None and n_existing:
-        # A study resumed from storage (load_if_exists) already holds trials; reseeding with the same
-        # seed would replay the earlier run's draws, so the seed is offset by the number of trials.
+        # A resumed study already holds trials; the same seed would replay the earlier run's draws.
         study.sampler = optuna.samplers.TPESampler(seed=(int(seed) + n_existing) % 2**32)
     if initial_params:
         study.enqueue_trial(initial_params)
@@ -741,7 +614,7 @@ def tune_hyperparameters(
     try:
         best_params = {k: v for k, v in study.best_params.items() if k not in _NOT_PARAMS}
     except ValueError:
-        # No completed trials (all pruned or failed)
+        # No completed trial (all pruned or failed).
         warnings.warn(
             "tune_hyperparameters: no trial completed (all were pruned or failed); returning empty best params.",
             UserWarning,
