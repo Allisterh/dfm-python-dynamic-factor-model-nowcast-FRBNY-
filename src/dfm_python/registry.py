@@ -23,7 +23,5 @@ _ESTIMATORS: tuple[tuple[str, str, str], ...] = (
 
 def all_estimators() -> list[tuple[str, type]]:
     """Return ``(name, class)`` for every migrated estimator, sorted by name."""
-    out = []
-    for name, module, attr in _ESTIMATORS:
-        out.append((name, getattr(import_module(module), attr)))
+    out = [(name, getattr(import_module(module), attr)) for name, module, attr in _ESTIMATORS]
     return sorted(out, key=lambda item: item[0])

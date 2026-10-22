@@ -49,29 +49,14 @@ if not any(isinstance(h, _logging.NullHandler) for h in _package_logger.handlers
     _package_logger.addHandler(_logging.NullHandler())
 del _package_logger
 
-# Configuration
 from .config import DFMConfig, DDFMConfig, iVDFMConfig, AFMConfig
-
-# Results
 from .config import DFMResult, DDFMResult, BaseResult
-
-# Utilities
 from .utils.metric import calculate_rmse
-
-# Errors
 from .utils.errors import NotFittedError, UnsupportedInputError
-
-# Logging
 from .logger import set_verbosity, get_verbosity
 from .logger.logger import _apply_env_verbosity
-
-# Data container
 from .dataset.panel import PanelData
-
-# Saved runs
 from .io.loading import load
-
-# Models (BaseFactorModel is the estimator base class of all four)
 from .base import BaseFactorModel
 from .models.dfm import DFM
 from .models.ddfm.estimator import DDFM
