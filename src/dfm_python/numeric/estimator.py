@@ -155,8 +155,9 @@ def get_idio(eps: np.ndarray, idx_no_missings: np.ndarray, min_obs: int = 5) -> 
         this_eps = eps[to_select, j]
         mu_eps[j] = np.mean(this_eps)
         std_eps[j] = np.std(this_eps)
-        cov1_eps = np.cov(this_eps[1:], this_eps[:-1])[0][1]
-        Phi[j, j] = cov1_eps / (std_eps[j] ** 2)
+        if std_eps[j] > 0:  # a constant series has no AR(1) coefficient
+            cov1_eps = np.cov(this_eps[1:], this_eps[:-1])[0][1]
+            Phi[j, j] = cov1_eps / (std_eps[j] ** 2)
     return Phi, mu_eps, std_eps
 
 

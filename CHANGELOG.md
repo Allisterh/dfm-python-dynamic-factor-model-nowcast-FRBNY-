@@ -4,6 +4,16 @@
 
 ### Bug fixes
 
+- DFM: the innovation-covariance floor applied in the M-step and in the
+  initialisation (`stabilize_innovation_covariance(min_floor=...)`) raised
+  the diagonal of Q with `np.maximum(Q, floor * I)`, which also clipped
+  negative off-diagonal covariances between factors to zero. Only the
+  diagonal is floored now. Fits with more than one factor per block change
+  slightly (the `dfm_synthetic` and `dfm_macro_weekly_monthly` golden cases
+  were recaptured); single-factor blocks are unaffected.
+- `get_idio` (DDFM residual AR(1) statistics) returned inf or NaN with a
+  RuntimeWarning for a constant residual series; such a series now gets an
+  AR coefficient of 0.
 - The optimizer builders (`build_ddfm_optimizer`, `build_ivdfm_optimizer`,
   `build_afm_optimizer`) raise `ConfigurationError` for an unknown optimizer
   name, and `build_ivdfm_optimizer` for an unknown `scheduler_type`, instead

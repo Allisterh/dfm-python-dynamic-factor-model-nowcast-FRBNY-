@@ -236,3 +236,11 @@ class TestStability:
         assert isinstance(delta, float)
         assert isinstance(loss_now, float)
         assert loss_now >= 0
+
+
+def test_stabilize_innovation_covariance_floor_keeps_off_diagonals():
+    """``min_floor`` raises only the diagonal; negative covariances are kept."""
+    Q = np.array([[0.5, -0.2], [-0.2, 0.001]])
+    out = stabilize_innovation_covariance(Q, min_eigenval=1e-6, min_floor=0.01, dtype=np.float64)
+    assert out[1, 1] >= 0.01
+    assert out[0, 1] < 0 and out[0, 1] == out[1, 0]

@@ -187,14 +187,16 @@ def stabilize_innovation_covariance(
 ) -> np.ndarray:
     """:func:`ensure_process_noise_stable` (silent) for VAR innovation covariances, with an optional floor.
 
-    With ``min_floor`` the result is ``maximum(Q, min_floor * I)``: the
-    diagonal is floored and negative off-diagonal entries are clipped to zero.
+    With ``min_floor`` the diagonal is raised to at least ``min_floor``;
+    off-diagonal covariances are left as they are.
     """
     if Q.size == 0 or Q.shape[0] == 0:
         return Q
     Q = ensure_process_noise_stable(Q, min_eigenval=min_eigenval, max_eigenval=max_eigenval, warn=False, dtype=dtype)
     if min_floor is not None:
-        Q = np.maximum(Q, create_scaled_identity(Q.shape[0], min_floor, dtype))
+        Q = Q.copy()
+        diag = np.diag_indices(Q.shape[0])
+        Q[diag] = np.maximum(Q[diag], min_floor)
     return Q.astype(dtype)
 
 

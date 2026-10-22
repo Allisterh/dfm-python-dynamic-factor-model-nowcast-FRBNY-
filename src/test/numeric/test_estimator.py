@@ -60,3 +60,17 @@ class TestEstimator:
         # Diagonal elements should be non-negative
         assert np.all(np.diag(R) >= 0)
 
+
+
+def test_get_idio_constant_residual_has_zero_ar_coefficient():
+    """A constant residual series (std 0) gets Phi = 0 instead of a division by zero."""
+    import warnings
+    from dfm_python.numeric.estimator import get_idio
+
+    eps = np.column_stack([np.full(20, 0.5), np.linspace(-1, 1, 20)])
+    observed = np.ones_like(eps, dtype=bool)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        Phi, mu, std = get_idio(eps, observed)
+    assert Phi[0, 0] == 0.0 and np.isfinite(Phi).all()
+    assert mu[0] == 0.5 and std[0] == 0.0
