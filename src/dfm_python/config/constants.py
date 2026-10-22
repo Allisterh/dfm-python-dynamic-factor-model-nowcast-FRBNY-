@@ -1,454 +1,341 @@
-"""Common constants used across the dfm-python package.
+"""Numeric constants, thresholds and default values shared across the package."""
 
-This module centralizes numeric constants, thresholds, and default values
-to reduce hardcoded values and improve maintainability.
-"""
-
-from typing import Dict, Tuple
+from typing import Dict
 from datetime import datetime
 import numpy as np
+import torch
 
-# ============================================================================
-# Convergence and Tolerance Constants
-# ============================================================================
+# Convergence
+DEFAULT_CONVERGENCE_THRESHOLD = 1e-4  # EM (general)
+DEFAULT_EM_THRESHOLD = 1e-5  # EM (DFM)
+DEFAULT_TOLERANCE = 0.0005  # MCMC/denoising
+DEFAULT_MIN_DELTA = 1e-6  # minimum change counted as an improvement
 
-# Default convergence thresholds
-DEFAULT_CONVERGENCE_THRESHOLD = 1e-4  # EM algorithm convergence (general)
-DEFAULT_EM_THRESHOLD = 1e-5  # EM algorithm convergence threshold (DFM-specific)
-DEFAULT_TOLERANCE = 0.0005  # MCMC/denoising convergence
-DEFAULT_MIN_DELTA = 1e-6  # Minimum change for improvement
+# Numerical stability
+MIN_EIGENVALUE = 1e-6  # floor for positive definite matrices
+MIN_DIAGONAL_VARIANCE = 1e-8
+MIN_OBSERVATION_NOISE = 1e-4  # floor on measurement error in EM updates
+DEFAULT_DDFM_OBSERVATION_NOISE = 1e-15  # DDFM state space (matches the TensorFlow reference)
+MIN_FACTOR_VARIANCE = 1e-10
+MIN_STD = 1e-8
+MIN_STD_FOR_SCALE_CHECK = 1e-10  # more lenient than MIN_STD, for scale ratios
+DEFAULT_VARIANCE_FALLBACK = 1.0
+MAX_EIGENVALUE = 1e3  # cap; with MIN_EIGENVALUE the condition number stays at 1e9
 
-# ============================================================================
-# Numerical Stability Constants
-# ============================================================================
+# Time budgets of the EM steps (hard limits on pathological runs)
+MAX_ESTEP_SECONDS = 600.0
+MAX_MSTEP_SECONDS = 600.0
+MAX_EM_ITERATION_SECONDS = 1200.0
+MAX_FIRST_ITERATION_SECONDS = 600.0
 
-# Minimum eigenvalues and variances
-MIN_EIGENVALUE = 1e-6  # Minimum eigenvalue for positive definite matrices (increased from 1e-8 for better conditioning)
-MIN_DIAGONAL_VARIANCE = 1e-8  # Minimum variance for diagonal elements
-MIN_OBSERVATION_NOISE = 1e-4  # Minimum observation noise for measurement error (used in EM updates)
-DEFAULT_DDFM_OBSERVATION_NOISE = 1e-15  # Default observation noise for DDFM state-space (matches original TensorFlow)
-MIN_FACTOR_VARIANCE = 1e-10  # Minimum variance for factors
-MIN_STD = 1e-8  # Minimum standard deviation
-MIN_STD_FOR_SCALE_CHECK = 1e-10  # Minimum standard deviation for scale ratio computation (more lenient than MIN_STD)
-DEFAULT_VARIANCE_FALLBACK = 1.0  # Default variance fallback value for numerical stability
+# Numerical health thresholds (fail fast on pathological regimes); the
+# initialization (first iteration) limits are more lenient.
+MAX_CONDITION_NUMBER_SMOOTHER = 1e8
+MAX_CONDITION_NUMBER_INIT = 1e10
+MAX_STABILIZATION_AMOUNT = 1e-3  # diagonal loading before error
+MAX_STABILIZATION_AMOUNT_INIT = 5e-3
+MAX_STD_UNSCALED = 100.0  # above this the data look unpreprocessed
+MIN_STD_SCALED = 1e-4  # below this a scaled series is degenerate
+MAX_FALLBACKS_PER_ITERATION = 0  # 0 = fail on any fallback
 
-# Maximum eigenvalues
-MAX_EIGENVALUE = 1e3  # Maximum eigenvalue cap (reduced to 1e3 to improve condition number: 1e3/1e-6 = 1e9)
+# Eigenvalue stability
+DEFAULT_EIGENVALUE_MAX_MAGNITUDE = 1.0
+DEFAULT_EIGENVALUE_WARN_THRESHOLD = 0.99
 
-# ============================================================================
-# Performance and Numerical Health Guardrails
-# ============================================================================
+# clean_matrix replacements
+DEFAULT_CLEAN_NAN = 0.0
+DEFAULT_CLEAN_INF = MAX_EIGENVALUE
 
-# Time budgets (hard limits to prevent pathological runs)
-# Single constraint: 10 minutes for all datasets
-MAX_ESTEP_SECONDS = 600.0  # Maximum E-step time (Kalman filter + smoother) - 10 minutes
-MAX_MSTEP_SECONDS = 600.0  # Maximum M-step time (parameter updates) - 10 minutes
-MAX_EM_ITERATION_SECONDS = 1200.0  # Maximum total EM iteration time - 20 minutes
-MAX_FIRST_ITERATION_SECONDS = 600.0  # Maximum first iteration E-step time (diagnostic) - 10 minutes
+DEFAULT_IDENTITY_SCALE = 1.0  # create_scaled_identity(n, 1.0)
+DEFAULT_ZERO_VALUE = 0.0
+# Xavier gains: GlorotNormal (gain 1) for every layer, including the output
+# layer, as in the TensorFlow DDFM; a smaller output gain made the encoder
+# weights too small and the factors near zero.
+DEFAULT_XAVIER_GAIN = 1.0
+DEFAULT_OUTPUT_LAYER_GAIN = 1.0
 
-# Numerical health thresholds (fail fast on pathological regimes)
-# Note: Condition number check is more lenient during initialization (first iteration)
-MAX_CONDITION_NUMBER_SMOOTHER = 1e8  # Maximum condition number before refusing to smooth (increased from 1e7)
-MAX_CONDITION_NUMBER_INIT = 1e10  # Maximum condition number during initialization (more lenient)
-MAX_STABILIZATION_AMOUNT = 1e-3  # Maximum stabilization amount before error (increased from 1e-4 to 0.1% diagonal loading)
-MAX_STABILIZATION_AMOUNT_INIT = 5e-3  # Maximum stabilization during initialization (more lenient)
-MAX_STD_UNSCALED = 100.0  # Maximum standard deviation for unscaled data (indicates missing preprocessing)
-MIN_STD_SCALED = 1e-4  # Minimum standard deviation for scaled data (indicates degenerate series)
+# Companion matrix initialization
+DEFAULT_INIT_SCALE = 0.01  # B and C matrices
+DEFAULT_KERNEL_INIT_SCALE = 0.1  # coefficient matrices
 
-# Fallback tracking
-MAX_FALLBACKS_PER_ITERATION = 0  # Maximum allowed fallbacks per iteration (0 = fail on any fallback)
+# Regularization
+DEFAULT_REGULARIZATION_SCALE = 1e-5  # ridge
+DEFAULT_REGULARIZATION = 1e-6
 
-# Eigenvalue stability thresholds
-DEFAULT_EIGENVALUE_MAX_MAGNITUDE = 1.0  # Default maximum eigenvalue magnitude for stability checks
-DEFAULT_EIGENVALUE_WARN_THRESHOLD = 0.99  # Default warning threshold for near-unstable eigenvalues
+# Clipping (in standard deviations)
+DEFAULT_CLIP_THRESHOLD = 10.0
+DEFAULT_DATA_CLIP_THRESHOLD = 100.0
 
-# Matrix cleaning defaults
-DEFAULT_CLEAN_NAN = 0.0  # Default value for NaN replacement in clean_matrix
-DEFAULT_CLEAN_INF = MAX_EIGENVALUE  # Default value for Inf replacement in clean_matrix (uses MAX_EIGENVALUE)
+# DDFM scale alignment checks (prediction std / data std, and standardized data)
+DEFAULT_SCALE_RATIO_MAX = 10.0
+DEFAULT_SCALE_RATIO_MIN = 0.1
+DEFAULT_STANDARDIZATION_MEAN_THRESHOLD = 0.1  # |mean| of standardized data
+DEFAULT_STANDARDIZATION_STD_MIN = 0.1
+DEFAULT_STANDARDIZATION_STD_MAX = 10.0
+DEFAULT_STANDARDIZED_TARGET_STD = 1.0
 
-# Identity matrix defaults
-DEFAULT_IDENTITY_SCALE = 1.0  # Default scale for create_scaled_identity(n, 1.0)
-DEFAULT_ZERO_VALUE = 0.0  # Default zero value for explicit zero assignments
-DEFAULT_XAVIER_GAIN = 1.0  # Default gain for Xavier initialization (matches TensorFlow GlorotNormal)
-DEFAULT_OUTPUT_LAYER_GAIN = 1.0  # Default gain for output layer Xavier initialization (matches original TensorFlow DDFM GlorotNormal for all layers)
-# NOTE: Original TensorFlow DDFM uses GlorotNormal (gain=1.0) for all layers including output layer.
-# Updated to match original TensorFlow behavior to address training divergence (encoder weights too small, near-zero factors).
+# DDFM variance collapse diagnostics
+DEFAULT_VARIANCE_COLLAPSE_THRESHOLD = 0.1  # prediction std below this is a collapse
+DEFAULT_FACTOR_COLLAPSE_THRESHOLD = 0.01  # |factor mean| below this is a collapse
+DEFAULT_BATCHNORM_SUPPRESSION_THRESHOLD = 0.01  # BatchNorm running_var below this suppresses the signal
+DEFAULT_TIMESTEP_COLLAPSE_THRESHOLD = 0.1  # per-time-step std
+DEFAULT_TIMESTEP_COLLAPSE_RATIO_THRESHOLD = 0.5  # share of collapsed time steps that counts as widespread
+DEFAULT_EXPECTED_FACTOR_MAGNITUDE_MIN = 0.1  # for warning messages
+DEFAULT_EXPECTED_FACTOR_MAGNITUDE_MAX = 1.0
 
-# Companion matrix initialization defaults
-DEFAULT_INIT_SCALE = 0.01  # Default initialization scale for companion matrix B and C matrices
-DEFAULT_KERNEL_INIT_SCALE = 0.1  # Default initialization scale for companion matrix coefficient matrices
+# DDFM reproduction targets (diagnostics only; exchange_rate dataset, TensorFlow reference)
+DEFAULT_TARGET_PREDICTION_STD = 1.0
+DEFAULT_VARIANCE_COLLAPSE_STD = 0.03  # observed collapse std vs target 1.0
+DEFAULT_TARGET_CONVERGENCE_ITERATIONS = 10
+DEFAULT_TARGET_DDFM_LOSS = 0.56
+DEFAULT_DDFM_LOSS_MULTIPLIER = 1.8  # observed loss / target loss
 
-# Regularization scales
-DEFAULT_REGULARIZATION_SCALE = 1e-5  # Default ridge regularization scale
-DEFAULT_REGULARIZATION = 1e-6  # Default regularization value
+# Logging format precisions (digits after the point)
+DEFAULT_SCALE_LOG_PRECISION = 6
+DEFAULT_TIME_LOG_PRECISION = 2
+DEFAULT_LOSS_LOG_PRECISION = 6
 
-# Clipping thresholds
-DEFAULT_CLIP_THRESHOLD = 10.0  # Default clipping threshold (in standard deviations)
-DEFAULT_DATA_CLIP_THRESHOLD = 100.0  # Default data clipping threshold
+SECONDS_PER_MINUTE = 60
 
-# Scale validation thresholds (for DDFM scale alignment checks)
-DEFAULT_SCALE_RATIO_MAX = 10.0  # Maximum acceptable scale ratio (prediction std / data std)
-DEFAULT_SCALE_RATIO_MIN = 0.1  # Minimum acceptable scale ratio (prediction std / data std)
-DEFAULT_STANDARDIZATION_MEAN_THRESHOLD = 0.1  # Maximum acceptable absolute mean for standardized data (mean should be ≈0)
-DEFAULT_STANDARDIZATION_STD_MIN = 0.1  # Minimum acceptable std for standardized data (std should be ≈1)
-DEFAULT_STANDARDIZATION_STD_MAX = 10.0  # Maximum acceptable std for standardized data (std should be ≈1)
-DEFAULT_STANDARDIZED_TARGET_STD = 1.0  # Target std for standardized data (std should be ≈1.0 for StandardScaler)
+# Iterations and epochs
+DEFAULT_MAX_ITER = 100  # EM (general)
+DEFAULT_EM_MAX_ITER = 5000  # EM (DFM)
+DEFAULT_MAX_EPOCHS = 100
+DEFAULT_MAX_MCMC_ITER = 200
+DEFAULT_N_MC_SAMPLES = 10  # MC samples per MCMC iteration (TensorFlow DDFM epochs=10)
+DEFAULT_FACTOR_ORDER = 1  # DDFM factors follow an AR(1)
+DEFAULT_AR_ORDER_2 = 2  # DDFM forecast AR(2)
 
-# Variance collapse diagnostics thresholds (for DDFM variance collapse detection)
-DEFAULT_VARIANCE_COLLAPSE_THRESHOLD = 0.1  # Prediction std threshold for variance collapse detection (std < 0.1 indicates collapse)
-DEFAULT_FACTOR_COLLAPSE_THRESHOLD = 0.01  # Factor magnitude threshold for factor collapse detection (|mean| < 0.01 indicates collapse)
-DEFAULT_BATCHNORM_SUPPRESSION_THRESHOLD = 0.01  # BatchNorm running_var threshold for signal suppression detection (var < 0.01 indicates suppression)
-DEFAULT_TIMESTEP_COLLAPSE_THRESHOLD = 0.1  # Per-time-step std threshold for localized collapse detection (std < 0.1 indicates collapse)
-DEFAULT_TIMESTEP_COLLAPSE_RATIO_THRESHOLD = 0.5  # Ratio threshold for localized collapse (ratio > 0.5 indicates widespread collapse)
-DEFAULT_EXPECTED_FACTOR_MAGNITUDE_MIN = 0.1  # Expected minimum factor magnitude (for warning messages)
-DEFAULT_EXPECTED_FACTOR_MAGNITUDE_MAX = 1.0  # Expected maximum factor magnitude (for warning messages)
+# Batch sizes
+DEFAULT_BATCH_SIZE = 32
+DEFAULT_DDFM_WINDOW_SIZE = 100  # time-step batch size
+DEFAULT_DDFM_BATCH_SIZE = 100  # TensorFlow DDFM batch_size
 
-# DDFM reproduction target values (for debugging and diagnostics)
-DEFAULT_TARGET_PREDICTION_STD = 1.0  # Target prediction std for standardized data (should be ~1.0 for StandardScaler)
-DEFAULT_VARIANCE_COLLAPSE_STD = 0.03  # Observed variance collapse std (std ~0.03 vs target ~1.0)
-DEFAULT_TARGET_CONVERGENCE_ITERATIONS = 10  # Target convergence iterations for exchange_rate dataset (TensorFlow reference)
-DEFAULT_TARGET_DDFM_LOSS = 0.56  # Target DDFM training loss for exchange_rate dataset (TensorFlow reference)
-DEFAULT_DDFM_LOSS_MULTIPLIER = 1.8  # Current loss multiplier vs target (1.00 vs 0.56 = 1.8x)
+DEFAULT_MIN_TARGET_INTERPOLATE_RATIO = 0.3  # DDFM skips interpolation above this missing ratio
 
-# Logging precision constants
-DEFAULT_SCALE_LOG_PRECISION = 6  # Default precision for scale logging format strings (e.g., .6f)
-DEFAULT_TIME_LOG_PRECISION = 2  # Default precision for time logging format strings (e.g., .2f)
-DEFAULT_LOSS_LOG_PRECISION = 6  # Default precision for loss/delta logging format strings (e.g., .6f)
+# DDFM sequential MC training: one epoch per MC sample
+DEFAULT_MCMC_EPOCHS = 1
 
-# Time conversion constants
-SECONDS_PER_MINUTE = 60  # Seconds per minute (for time conversion)
+# DDFM placeholder dataset (replaced after on_train_start)
+DEFAULT_PLACEHOLDER_MC_SAMPLES = 1
+DEFAULT_PLACEHOLDER_DATA_SHAPE_T = 100
+DEFAULT_PLACEHOLDER_DATA_SHAPE_N = 10
+DEFAULT_PLACEHOLDER_SEED = 42
+DEFAULT_NUM_WORKERS = 0  # DataLoader, single-threaded
+DEFAULT_CUDA_DEVICE_INDEX = 0
 
-# Logging level constants
-LOGGING_DEBUG_LEVEL = 10  # logging.DEBUG level for conditional checks
+# Learning rates
+DEFAULT_LEARNING_RATE = 0.001
+DEFAULT_DDFM_LEARNING_RATE = 0.005
 
-# ============================================================================
-# Training Defaults
-# ============================================================================
+# Autoencoder training (TensorFlow pattern: one silent epoch per autoencoder.fit() call)
+DEFAULT_AUTOENCODER_FIT_EPOCHS = 1
+DEFAULT_AUTOENCODER_FIT_VERBOSE = 0
 
-# Iteration and epoch defaults
-DEFAULT_MAX_ITER = 100  # Default maximum EM iterations (general)
-DEFAULT_EM_MAX_ITER = 5000  # Default maximum EM iterations (DFM-specific)
-DEFAULT_MAX_EPOCHS = 100  # Default maximum training epochs
-DEFAULT_MAX_MCMC_ITER = 200  # Default maximum MCMC iterations
-DEFAULT_N_MC_SAMPLES = 10  # Default number of MC samples per MCMC iteration for DDFM denoising training (matches original TensorFlow epochs=10 default, per experiment/config/model/ddfm.yaml)
-DEFAULT_FACTOR_ORDER = 1  # Default factor order for DDFM (AR(1) dynamics)
-DEFAULT_AR_ORDER_2 = 2  # Default AR order 2 for DDFM forecast (AR(2) dynamics)
+DEFAULT_GRAD_CLIP_VAL = 1.0
+DEFAULT_WEIGHT_DECAY = 0.0  # L2
+DEFAULT_LR_DECAY_RATE = 0.96  # exponential
 
-# Batch size defaults
-DEFAULT_BATCH_SIZE = 32  # Default batch size for neural networks
-DEFAULT_DDFM_WINDOW_SIZE = 100  # Default window size (time-step batch size) for DDFM
-DEFAULT_DDFM_BATCH_SIZE = 100  # Default batch size for DDFM (matches original TensorFlow batch_size=100)
+VALID_OPTIMIZERS = {'Adam', 'AdamW', 'SGD'}
 
-# DDFM target interpolation defaults
-DEFAULT_MIN_TARGET_INTERPOLATE_RATIO = 0.3  # Default minimum target interpolate ratio threshold for DDFM (ratio of missing target values above which interpolation is skipped)
+# Adam
+DEFAULT_ADAM_BETA1 = 0.9
+DEFAULT_ADAM_BETA2 = 0.999
+DEFAULT_ADAM_EPS = 1e-7  # TensorFlow default (PyTorch's is 1e-8), for DDFM compatibility
 
-# MCMC training defaults (for DDFM sequential MC processing)
-DEFAULT_MCMC_EPOCHS = 1  # Default epochs per MC sample (MCMC training pattern: one epoch per MC sample)
-DEFAULT_MCMC_VERBOSE = 0  # Default verbosity for MCMC training (silent training)
+# Batch normalization (TensorFlow/Keras defaults)
+DEFAULT_BATCH_NORM_MOMENTUM = 0.99
+DEFAULT_BATCH_NORM_EPS = 1e-3
 
-# Placeholder defaults (for DDFM placeholder MC dataset)
-DEFAULT_PLACEHOLDER_MC_SAMPLES = 1  # Minimal MC samples for placeholder dataset (replaced after on_train_start)
-DEFAULT_PLACEHOLDER_DATA_SHAPE_T = 100  # Default time steps for placeholder data shape
-DEFAULT_PLACEHOLDER_DATA_SHAPE_N = 10  # Default number of series for placeholder data shape
-DEFAULT_PLACEHOLDER_SEED = 42  # Seed for placeholder random state (common test value, placeholder gets replaced)
-DEFAULT_NUM_WORKERS = 0  # Default number of workers for DataLoader (0 = single-threaded)
-DEFAULT_CUDA_DEVICE_INDEX = 0  # Default CUDA device index for GPU operations (0 = first GPU)
+DEFAULT_RANDOM_SEED_MAX = 2**31  # 32-bit signed integer range
 
-# Learning rate defaults
-DEFAULT_LEARNING_RATE = 0.001  # Default learning rate
-DEFAULT_DDFM_LEARNING_RATE = 0.005  # Default learning rate for DDFM
+# Huber loss
+DEFAULT_HUBER_DELTA = 1.0
+HUBER_QUADRATIC_COEFF = 0.5  # the 0.5 * a^2 term
 
-# Autoencoder training defaults (matches original TensorFlow pattern)
-DEFAULT_AUTOENCODER_FIT_EPOCHS = 1  # Number of epochs per MC sample (matches original TensorFlow: epochs=1 per autoencoder.fit() call)
-DEFAULT_AUTOENCODER_FIT_VERBOSE = 0  # Verbosity level for autoencoder.fit() (0 = silent, matches original TensorFlow verbose=0)
+SYMMETRY_AVERAGE_FACTOR = 0.5  # 0.5 * (M + M.T)
 
-# Gradient clipping
-DEFAULT_GRAD_CLIP_VAL = 1.0  # Default gradient clipping value
+# DDFM data clipping range by depth
+DEFAULT_DDFM_CLIP_RANGE_DEEP = 8.0  # more than 2 layers
+DEFAULT_DDFM_CLIP_RANGE_SHALLOW = 10.0
 
-# Weight decay defaults
-DEFAULT_WEIGHT_DECAY = 0.0  # Default weight decay (L2 regularization)
+DEFAULT_EPSILON = 1e-8  # division guard
 
-# Learning rate decay
-DEFAULT_LR_DECAY_RATE = 0.96  # Default exponential decay rate for learning rate
+DEFAULT_SEED = 3
 
-# Optimizer defaults
-VALID_OPTIMIZERS = {'Adam', 'AdamW', 'SGD'}  # Valid optimizer types for DDFM
+# Structural identification
+DEFAULT_STRUCTURAL_REG_WEIGHT = 0.1
+DEFAULT_STRUCTURAL_INIT_SCALE = 0.1
+DEFAULT_STRUCTURAL_DIAG_SCALE = 1.0  # 0.1 made S near-singular
+DEFAULT_CHOLESKY_EPS = 1e-6
+CHOLESKY_LOG_DET_FACTOR = 2.0  # log det = 2 * sum(log(diag(L)))
 
-# Adam optimizer defaults
-DEFAULT_ADAM_BETA1 = 0.9  # Default beta1 (momentum decay) for Adam optimizer
-DEFAULT_ADAM_BETA2 = 0.999  # Default beta2 (squared gradient decay) for Adam optimizer
-DEFAULT_ADAM_EPS = 1e-7  # Default epsilon for Adam optimizer (matches TensorFlow default for DDFM compatibility)
-DEFAULT_PYTORCH_ADAM_EPS = 1e-8  # PyTorch default epsilon for Adam optimizer (for reference)
-
-# Batch normalization defaults (matching TensorFlow/Keras defaults)
-DEFAULT_BATCH_NORM_MOMENTUM = 0.99  # TensorFlow/Keras BatchNormalization default momentum
-DEFAULT_BATCH_NORM_EPS = 1e-3  # TensorFlow/Keras BatchNormalization default epsilon
-
-# Random seed defaults
-DEFAULT_RANDOM_SEED_MAX = 2**31  # Maximum value for random seed generation (2147483647, 32-bit signed integer max)
-
-# Loss function defaults
-DEFAULT_HUBER_DELTA = 1.0  # Default delta parameter for Huber loss
-HUBER_QUADRATIC_COEFF = 0.5  # Quadratic coefficient for Huber loss (0.5 * a^2 term)
-
-# Matrix computation defaults
-SYMMETRY_AVERAGE_FACTOR = 0.5  # Averaging factor for symmetric matrix computation (0.5 * (M + M.T))
-
-# Data clipping defaults
-DEFAULT_DDFM_CLIP_RANGE_DEEP = 8.0  # Clipping range for deep networks (>2 layers)
-DEFAULT_DDFM_CLIP_RANGE_SHALLOW = 10.0  # Clipping range for shallow networks (<=2 layers)
-
-# Numerical stability for division
-DEFAULT_EPSILON = 1e-8  # Default epsilon for division operations to prevent division by zero
-
-# Random seed defaults
-DEFAULT_SEED = 3  # Default random seed for reproducibility
-
-# Structural identification defaults
-DEFAULT_STRUCTURAL_REG_WEIGHT = 0.1  # Default weight for structural regularization loss
-DEFAULT_STRUCTURAL_INIT_SCALE = 0.1  # Default initialization scale for structural matrices
-DEFAULT_STRUCTURAL_DIAG_SCALE = 1.0  # Default diagonal scale for structural matrices (0.1 caused near-singular S)
-DEFAULT_CHOLESKY_EPS = 1e-6  # Default epsilon for Cholesky decomposition stability
-CHOLESKY_LOG_DET_FACTOR = 2.0  # Factor for log determinant computation from Cholesky decomposition (log det = 2.0 * sum(log(diag(L))))
-
-# ============================================================================
-# Network Architecture Defaults
-# ============================================================================
-
-# Encoder layer defaults
-DEFAULT_ENCODER_LAYERS = [16, 4]  # Default encoder layer sizes (matches experiment config and ddfm.py default parameter)
-DEFAULT_NUM_FACTORS = 3  # Default number of factors for DDFM
-DEFAULT_ACTIVATION = 'relu'  # Default activation function for DDFM
-DEFAULT_DECODER = 'linear'  # Default decoder type for DDFM
-DEFAULT_USE_BATCH_NORM = True  # Default batch normalization setting for DDFM
-
-# ============================================================================
-# Data Processing Defaults
-# ============================================================================
+# DDFM network architecture
+DEFAULT_ENCODER_LAYERS = [16, 4]
+DEFAULT_NUM_FACTORS = 3
+DEFAULT_ACTIVATION = 'relu'
+DEFAULT_DECODER = 'linear'
+DEFAULT_USE_BATCH_NORM = True
 
 # Missing data handling
-DEFAULT_NAN_METHOD = 2  # Default missing data method
-DEFAULT_NAN_K = 3  # Default spline interpolation order
+DEFAULT_NAN_METHOD = 2
+DEFAULT_NAN_K = 3  # spline interpolation order
 
-# Default date for synthetic time indices
-DEFAULT_START_DATE = datetime(2000, 1, 1)
+DEFAULT_START_DATE = datetime(2000, 1, 1)  # synthetic time indices
 
-# Default window size for DDFM
-DEFAULT_WINDOW_SIZE = 100
-DEFAULT_TENT_KERNEL_SIZE = 5  # Default tent kernel size for slower-frequency series aggregation
-DEFAULT_TENT_KERNEL_REGULARIZATION_MULTIPLIER = 100.0  # Regularization multiplier for tent kernel series (handles ill-conditioning)
-# Note: DEFAULT_BATCH_SIZE is defined above (line 88) as 32 for general neural networks
-# Use DEFAULT_DDFM_WINDOW_SIZE (100) for DDFM-specific window size (time-step batch size)
+DEFAULT_WINDOW_SIZE = 100  # DDFM
+DEFAULT_TENT_KERNEL_SIZE = 5  # slower-frequency aggregation
+DEFAULT_TENT_KERNEL_REGULARIZATION_MULTIPLIER = 100.0  # tent kernel series are ill-conditioned
 
-# Warning/display limits
-MAX_WARNING_ITEMS = 5  # Maximum number of items to show in warning messages
-MAX_ERROR_ITEMS = 20  # Maximum number of items to show in error message details
+# Items shown in warning and error messages
+MAX_WARNING_ITEMS = 5
+MAX_ERROR_ITEMS = 20
 
 # Minimum observations
-DEFAULT_MIN_OBS = 5  # Default minimum observations for estimation
-DEFAULT_MIN_OBS_IDIO = 5  # Default minimum observations for idio estimation
-DEFAULT_MIN_OBS_VAR = 7  # Minimum observations for VAR estimation (order + 5)
-DEFAULT_MIN_OBS_PRETRAIN = 50  # Minimum observations for DDFM pre-training without interpolation
-DEFAULT_MULT_EPOCH_PRETRAIN = 1  # Multiplier for DDFM pre-training epochs
-DEFAULT_PRETRAIN_EPOCHS = 200  # Default number of epochs for DDFM pre-training (matching original paper)
+DEFAULT_MIN_OBS = 5
+DEFAULT_MIN_OBS_IDIO = 5
+DEFAULT_MIN_OBS_VAR = 7  # order + 5
+DEFAULT_MIN_OBS_PRETRAIN = 50  # DDFM pre-training without interpolation
+DEFAULT_MULT_EPOCH_PRETRAIN = 1  # DDFM pre-training epoch multiplier
+DEFAULT_PRETRAIN_EPOCHS = 200  # DDFM pre-training (the paper's value)
 
-# Dimension validation bounds
-MIN_TIME_STEPS = 1  # Minimum number of time steps (T) required for data
-MIN_VARIABLES = 1  # Minimum number of variables (N) required for data
-MIN_DDFM_TIME_STEPS = 2  # Minimum number of time steps (T) required for DDFM training (DDFM-specific, different from general MIN_TIME_STEPS=1)
-MIN_DDFM_DATASET_SIZE_WARNING = 10  # Minimum dataset size (T) below which DDFM denoising training warns about potential instability
-MIN_ITER_FOR_DELTA_COMPUTATION = 1  # Minimum iteration count required before computing delta (MSE change) in DDFM denoising training
-DEFAULT_MIN_ITER_FOR_CONVERGENCE_CHECK = 2  # Minimum iteration count required before checking convergence in DDFM (check from iteration 3 onwards)
-MIN_EPS_SHAPE_FOR_IDIO = 1  # Minimum eps shape dimension required for idiosyncratic component processing in DDFM
-MIN_SHAPE_FOR_AR2 = 2  # Minimum shape dimension for AR(2) forecast (need at least 2 previous time steps)
+# Dimension bounds
+MIN_TIME_STEPS = 1
+MIN_VARIABLES = 1
+MIN_DDFM_TIME_STEPS = 2
+MIN_DDFM_DATASET_SIZE_WARNING = 10  # below this DDFM warns about instability
+MIN_ITER_FOR_DELTA_COMPUTATION = 1  # DDFM computes the MSE delta after this many iterations
+DEFAULT_MIN_ITER_FOR_CONVERGENCE_CHECK = 2  # DDFM checks convergence from iteration 3 on
+MIN_EPS_SHAPE_FOR_IDIO = 1  # DDFM idiosyncratic processing needs eps.shape[0] above this
+MIN_SHAPE_FOR_AR2 = 2  # an AR(2) forecast needs two previous steps
 
-# Idiosyncratic component defaults
-DEFAULT_IDIO_STD = 0.1  # Default idiosyncratic standard deviation (when estimation fails)
-DEFAULT_IDIO_RHO0 = 0.1  # Default initial AR coefficient for idiosyncratic components
-DEFAULT_AR_COEF = 0.5  # Default AR coefficient for initialization (conservative, used in DDFM)
-DEFAULT_PROCESS_NOISE = 0.1  # Default process noise for initialization
-DEFAULT_TRANSITION_COEF = 0.9  # Default transition coefficient for DFM initialization
-
-# Standardization defaults removed - now using sklearn scalers directly
+# Idiosyncratic components and initialization
+DEFAULT_IDIO_STD = 0.1  # when estimation fails
+DEFAULT_IDIO_RHO0 = 0.1  # initial AR coefficient
+DEFAULT_AR_COEF = 0.5  # DDFM
+DEFAULT_PROCESS_NOISE = 0.1
+DEFAULT_TRANSITION_COEF = 0.9  # DFM
 
 # VAR stability and clipping
-VAR_STABILITY_THRESHOLD = 0.99  # Maximum eigenvalue for VAR stability
-AR_CLIP_MIN = -0.99  # Minimum AR coefficient clipping value
-AR_CLIP_MAX = 0.99  # Maximum AR coefficient clipping value
-MIN_Q_FLOOR = 0.01  # Minimum floor for innovation covariance Q
+VAR_STABILITY_THRESHOLD = 0.99  # maximum eigenvalue
+AR_CLIP_MIN = -0.99
+AR_CLIP_MAX = 0.99
+MIN_Q_FLOOR = 0.01  # innovation covariance
 
-# EM algorithm specific constants
-DEFAULT_SLOWER_FREQ_AR_COEF = 0.1  # AR coefficient for slower-frequency idiosyncratic components
-DEFAULT_SLOWER_FREQ_VARIANCE_DENOMINATOR = 19.0  # Variance denominator for slower-frequency series
-DEFAULT_EXTREME_FORECAST_THRESHOLD = 50.0  # Threshold for detecting extreme forecasts
-DEFAULT_MAX_VARIANCE = 1e4  # Maximum variance cap
+# EM
+DEFAULT_SLOWER_FREQ_AR_COEF = 0.1  # slower-frequency idiosyncratic components
+DEFAULT_SLOWER_FREQ_VARIANCE_DENOMINATOR = 19.0
+DEFAULT_EXTREME_FORECAST_THRESHOLD = 50.0
+DEFAULT_MAX_VARIANCE = 1e4
 
-# Correlation and validation thresholds
-PERFECT_CORR_THRESHOLD = 0.999  # Threshold for detecting perfect correlation between factors
-HIGH_CORR_THRESHOLD = 0.9  # Threshold for high correlation warnings
-DEFAULT_DAMPING_FACTOR = 0.5  # Default damping factor for parameter updates (used in utils/misc.py)
+# Correlation and validation
+PERFECT_CORR_THRESHOLD = 0.999  # between factors
+HIGH_CORR_THRESHOLD = 0.9
+DEFAULT_DAMPING_FACTOR = 0.5  # parameter updates (utils/misc.py)
 
-# Numerical thresholds
-MIN_CONDITION_NUMBER = 1e-12  # Minimum value for condition number calculations
-MAX_CONDITION_NUMBER = 1e8  # Maximum condition number threshold for regularization (ill-conditioned matrix threshold)
+# Condition numbers
+MIN_CONDITION_NUMBER = 1e-12
+MAX_CONDITION_NUMBER = 1e8  # ill-conditioned above this; regularize
 
-# ============================================================================
-# Display and Logging Defaults
-# ============================================================================
+# Display and logging
+DEFAULT_DISP = 10  # progress display interval
+DEFAULT_LOG_INTERVAL = 10  # log every num_epochs // DEFAULT_LOG_INTERVAL epochs
+DEFAULT_PROGRESS_LOG_INTERVAL = 5  # EM
 
-DEFAULT_DISP = 10  # Default display interval for progress
-DEFAULT_LOG_INTERVAL = 10  # Default logging interval divisor (log every num_epochs // DEFAULT_LOG_INTERVAL epochs)
-DEFAULT_PROGRESS_LOG_INTERVAL = 5  # Default progress logging interval for EM algorithm
+# Precision
+DEFAULT_DTYPE = np.float64
+DEFAULT_TORCH_DTYPE = torch.float32
 
-# ============================================================================
-# Precision Defaults
-# ============================================================================
+DEFAULT_IRF_HORIZON = 20
+DEFAULT_FORECAST_HORIZON = 6
 
-DEFAULT_DTYPE = np.float64  # Default numpy dtype for arrays (float64 for better numerical stability)
-
-# PyTorch dtype (matches DEFAULT_DTYPE)
-try:
-    import torch
-    DEFAULT_TORCH_DTYPE = torch.float32  # Default PyTorch dtype for tensors
-except ImportError:
-    DEFAULT_TORCH_DTYPE = None  # PyTorch not available
-
-# ============================================================================
-# IRF (Impulse Response Function) Defaults
-# ============================================================================
-
-DEFAULT_IRF_HORIZON = 20  # Default horizon for IRF computation
-
-# ============================================================================
-# Forecast Defaults
-# ============================================================================
-
-DEFAULT_FORECAST_HORIZON = 6  # Default horizon for forecast computation
-
-# ============================================================================
-# Error Handling Constants
-# ============================================================================
-
-# Common exception types for computation error handling
-# Used to consolidate duplicate exception handling patterns across models
+# Exception types the models catch around computations
 COMPUTATION_ERROR_TYPES = (RuntimeError, ValueError, TypeError, AttributeError, KeyError)
 
-# ============================================================================
-# iVDFM Defaults
-# ============================================================================
+# iVDFM dimensions
+DEFAULT_IVDFM_LATENT_DIM = 3
+DEFAULT_IVDFM_AUX_DIM = 1
 
-# iVDFM dimension defaults
-DEFAULT_IVDFM_LATENT_DIM = 3  # Default number of factors
-DEFAULT_IVDFM_AUX_DIM = 1  # Default auxiliary variable dimension
+# iVDFM regimes (K=1 is the baseline iVDFM without regime structure)
+DEFAULT_IVDFM_NUM_REGIMES = 1
+DEFAULT_IVDFM_REGIME_TEMPERATURE = 1.0  # softmax temperature of pi; below 1 sharpens (local commitment)
+DEFAULT_IVDFM_MIXING = False  # global post-factor mixing f -> M f (identity init) before decoding
 
-# iVDFM regime (K=1 = baseline iVDFM, no regime structure)
-DEFAULT_IVDFM_NUM_REGIMES = 1  # Number of discrete regimes; 1 = baseline iVDFM
-DEFAULT_IVDFM_REGIME_TEMPERATURE = 1.0  # Softmax temperature for π; τ < 1 sharpens (local commitment)
-DEFAULT_IVDFM_MIXING = False  # If True, apply global post-factor mixing f -> M f (identity init) before decode
+# iVDFM networks
+DEFAULT_IVDFM_ENCODER_HIDDEN_DIM = 200
+DEFAULT_IVDFM_ENCODER_N_HIDDEN_LAYERS = 2
+DEFAULT_IVDFM_DECODER_TYPE = "mlp"  # 'linear', 'residual' or 'mlp'
+DEFAULT_IVDFM_DECODER_HIDDEN_DIM = 200
+DEFAULT_IVDFM_DECODER_N_HIDDEN_LAYERS = 2
+DEFAULT_IVDFM_PRIOR_HIDDEN_DIM = 100
+DEFAULT_IVDFM_PRIOR_N_HIDDEN_LAYERS = 1
 
-# iVDFM network architecture defaults
-DEFAULT_IVDFM_ENCODER_HIDDEN_DIM = 200  # Default encoder hidden dimension
-DEFAULT_IVDFM_ENCODER_N_HIDDEN_LAYERS = 2  # Default encoder hidden layers
-DEFAULT_IVDFM_DECODER_TYPE = "mlp"  # Default: 'linear', 'residual', or 'mlp' (mlp = current behavior)
-DEFAULT_IVDFM_DECODER_HIDDEN_DIM = 200  # Default decoder hidden dimension
-DEFAULT_IVDFM_DECODER_N_HIDDEN_LAYERS = 2  # Default decoder hidden layers
-DEFAULT_IVDFM_PRIOR_HIDDEN_DIM = 100  # Default prior network hidden dimension
-DEFAULT_IVDFM_PRIOR_N_HIDDEN_LAYERS = 1  # Default prior network hidden layers
+# iVDFM dynamics and distributions
+DEFAULT_IVDFM_FACTOR_ORDER = 1
+DEFAULT_IVDFM_INNOVATION_DIST = 'laplace'
+DEFAULT_IVDFM_DECODER_VAR = 0.01
+DEFAULT_IVDFM_ACTIVATION = 'lrelu'
+DEFAULT_IVDFM_SLOPE = 0.1  # leaky ReLU
 
-# iVDFM dynamics and distribution defaults
-DEFAULT_IVDFM_FACTOR_ORDER = 1  # Default AR order for factors
-DEFAULT_IVDFM_INNOVATION_DIST = 'laplace'  # Default innovation distribution
-DEFAULT_IVDFM_DECODER_VAR = 0.01  # Default decoder variance
-DEFAULT_IVDFM_ACTIVATION = 'lrelu'  # Default activation function
-DEFAULT_IVDFM_SLOPE = 0.1  # Default leaky ReLU slope
+# iVDFM training
+DEFAULT_IVDFM_BATCH_SIZE = 32
+DEFAULT_IVDFM_MAX_EPOCHS = 100
+DEFAULT_IVDFM_AUX_VARIABLE_TYPE = 'time'
+DEFAULT_IVDFM_OPTIMIZER_WEIGHT_DECAY = 0.0
+DEFAULT_IVDFM_OPTIMIZER_MOMENTUM = 0.9  # SGD
 
-# iVDFM training defaults
-DEFAULT_IVDFM_BATCH_SIZE = 32  # Default batch size
-DEFAULT_IVDFM_MAX_EPOCHS = 100  # Default maximum epochs
-DEFAULT_IVDFM_AUX_VARIABLE_TYPE = 'time'  # Default auxiliary variable type
+# iVDFM schedulers
+DEFAULT_IVDFM_SCHEDULER_TYPE = 'step'  # 'step', 'plateau', 'cosine', 'exponential' or None
+DEFAULT_IVDFM_SCHEDULER_STEP_SIZE = None  # StepLR; None = max_epochs // 3
+DEFAULT_IVDFM_SCHEDULER_GAMMA = 0.5  # StepLR/ExponentialLR
+DEFAULT_IVDFM_SCHEDULER_PATIENCE = 10  # ReduceLROnPlateau
+DEFAULT_IVDFM_SCHEDULER_FACTOR = 0.1
+DEFAULT_IVDFM_SCHEDULER_MIN_LR = 0.0
+DEFAULT_IVDFM_EARLY_STOP_PATIENCE = 20  # epochs without improvement
 
-# iVDFM optimizer defaults
-DEFAULT_IVDFM_OPTIMIZER_WEIGHT_DECAY = 0.0  # Default weight decay for optimizer
-DEFAULT_IVDFM_OPTIMIZER_MOMENTUM = 0.9  # Default momentum for SGD
+# Tutorials (reduced for speed)
+TUTORIAL_MAX_PERIODS = 100
+TUTORIAL_MAX_EPOCHS = 10
 
-# iVDFM scheduler defaults
-DEFAULT_IVDFM_SCHEDULER_TYPE = 'step'  # Default scheduler type: 'step', 'plateau', 'cosine', 'exponential', None
-DEFAULT_IVDFM_SCHEDULER_STEP_SIZE = None  # Default step_size for StepLR (auto: max_epochs // 3)
-DEFAULT_IVDFM_SCHEDULER_GAMMA = 0.5  # Default gamma for StepLR/ExponentialLR
-DEFAULT_IVDFM_SCHEDULER_PATIENCE = 10  # Default patience for ReduceLROnPlateau
-DEFAULT_IVDFM_SCHEDULER_FACTOR = 0.1  # Default factor for ReduceLROnPlateau
-DEFAULT_IVDFM_SCHEDULER_MIN_LR = 0.0  # Default min_lr for ReduceLROnPlateau
-DEFAULT_IVDFM_EARLY_STOP_PATIENCE = 20  # Default patience for early stopping (epochs without improvement)
-
-# ============================================================================
-# Tutorial Defaults
-# ============================================================================
-
-TUTORIAL_MAX_PERIODS = 100  # Default maximum periods for tutorial data (reduced for faster execution)
-TUTORIAL_MAX_EPOCHS = 10  # Default maximum epochs for tutorial training (reduced for faster execution)
-
-# ============================================================================
-# Matrix Type Constants
-# ============================================================================
-
+# Matrix types
 MATRIX_TYPE_GENERAL = 'general'
 MATRIX_TYPE_COVARIANCE = 'covariance'
 MATRIX_TYPE_DIAGONAL = 'diagonal'
 MATRIX_TYPE_LOADING = 'loading'
 
-# ============================================================================
-# Log-Determinant Constants
-# ============================================================================
+MAX_LOG_DETERMINANT = 700.0  # exp(700) is near the float64 maximum
 
-MAX_LOG_DETERMINANT = 700.0  # Maximum log-determinant before overflow (exp(700) is near float64 max)
+# Frequencies
+DEFAULT_CLOCK_FREQUENCY = 'm'
+DEFAULT_HIERARCHY_VALUE = 3  # FREQUENCY_HIERARCHY of the default clock
 
-# ============================================================================
-# Default Frequency Constants
-# ============================================================================
+DEFAULT_BLOCK_NAME = 'Block_0'
 
-DEFAULT_CLOCK_FREQUENCY = 'm'  # Default clock frequency (monthly)
-DEFAULT_HIERARCHY_VALUE = 3  # Default hierarchy value (monthly = 3)
-
-# Block structure defaults
-DEFAULT_BLOCK_NAME = 'Block_0'  # Default block name for DFM blocks
-
-# Periods per year for each frequency
 PERIODS_PER_YEAR: Dict[str, int] = {
-    'd': 365,   # Daily (approximate)
-    'w': 52,    # Weekly (approximate)
-    'm': 12,    # Monthly
-    'q': 4,     # Quarterly
-    'sa': 2,    # Semi-annual
-    'a': 1      # Annual
+    'd': 365,
+    'w': 52,
+    'm': 12,
+    'q': 4,
+    'sa': 2,
+    'a': 1
 }
 
-# Valid frequency codes
 VALID_FREQUENCIES = {'d', 'w', 'm', 'q', 'sa', 'a'}
 
-# Valid transformation codes - REMOVED: transformations are handled by preprocessing pipeline, not in core package
-
-# ============================================================================
-# Frequency Hierarchy and Tent Kernel Constants
-# ============================================================================
-
-# Frequency hierarchy (from highest to lowest frequency)
-# Used to determine which frequencies are slower/faster than the clock
+# Highest to lowest frequency; decides which frequencies are slower than the clock.
 FREQUENCY_HIERARCHY: Dict[str, int] = {
-    'd': 1,   # Daily (highest frequency)
-    'w': 2,   # Weekly
-    'm': 3,   # Monthly
-    'q': 4,   # Quarterly
-    'sa': 5,  # Semi-annual
-    'a': 6    # Annual (lowest frequency)
+    'd': 1,
+    'w': 2,
+    'm': 3,
+    'q': 4,
+    'sa': 5,
+    'a': 6
 }
 
-# Maximum tent kernel size (number of periods)
-# For frequency gaps larger than this, the missing data approach is used instead
+# Largest tent kernel (periods); wider frequency gaps use the missing-data approach.
 MAX_TENT_SIZE: int = 12
 
-# ============================================================================
-# AFM (Attention Factor Model) defaults
-# ============================================================================
+# AFM (Attention Factor Model)
 DEFAULT_AFM_NUM_FACTORS = 5          # K latent factors
 DEFAULT_AFM_FACTOR_MODEL = 'attention'  # 'attention' | 'pca'
 DEFAULT_AFM_TRADING = 'longconv'     # 'longconv' | 'ou'
@@ -463,10 +350,6 @@ DEFAULT_AFM_LAMBDA_VAR = 0.1         # explained-variance regularizer weight
 DEFAULT_AFM_TURNOVER_COST = 5e-4     # 5bps per unit turnover (paper)
 DEFAULT_AFM_SHORT_COST = 1e-4        # 1bp shorting cost (paper)
 DEFAULT_AFM_MAX_EPOCHS = 50          # training epochs
-
-# ============================================================================
-# Export all constants
-# ============================================================================
 
 __all__ = [
     # AFM
@@ -525,15 +408,15 @@ __all__ = [
     'DEFAULT_MAX_EPOCHS',
     'DEFAULT_MAX_MCMC_ITER',
     'DEFAULT_N_MC_SAMPLES',
-    'DEFAULT_BATCH_SIZE',  # General neural network default (32)
-    'DEFAULT_DDFM_WINDOW_SIZE',  # DDFM-specific window size default (100)
-    'DEFAULT_DDFM_BATCH_SIZE',  # DDFM batch size default (100)
-    'DEFAULT_PLACEHOLDER_MC_SAMPLES',  # Placeholder MC samples default (1)
-    'DEFAULT_PLACEHOLDER_DATA_SHAPE_T',  # Placeholder data shape T default (100)
-    'DEFAULT_PLACEHOLDER_DATA_SHAPE_N',  # Placeholder data shape N default (10)
-    'DEFAULT_PLACEHOLDER_SEED',  # Placeholder random seed default (42)
-    'DEFAULT_NUM_WORKERS',  # DataLoader num_workers default (0)
-    'DEFAULT_CUDA_DEVICE_INDEX',  # CUDA device index default (0 = first GPU)
+    'DEFAULT_BATCH_SIZE',
+    'DEFAULT_DDFM_WINDOW_SIZE',
+    'DEFAULT_DDFM_BATCH_SIZE',
+    'DEFAULT_PLACEHOLDER_MC_SAMPLES',
+    'DEFAULT_PLACEHOLDER_DATA_SHAPE_T',
+    'DEFAULT_PLACEHOLDER_DATA_SHAPE_N',
+    'DEFAULT_PLACEHOLDER_SEED',
+    'DEFAULT_NUM_WORKERS',
+    'DEFAULT_CUDA_DEVICE_INDEX',
     'DEFAULT_LEARNING_RATE',
     'DEFAULT_DDFM_LEARNING_RATE',
     'DEFAULT_AUTOENCODER_FIT_EPOCHS',
@@ -596,7 +479,6 @@ __all__ = [
     'AR_CLIP_MIN',
     'AR_CLIP_MAX',
     'MIN_Q_FLOOR',
-    'MIN_CONDITION_NUMBER',
     # EM algorithm
     'DEFAULT_SLOWER_FREQ_AR_COEF',
     'DEFAULT_SLOWER_FREQ_VARIANCE_DENOMINATOR',
@@ -676,4 +558,3 @@ __all__ = [
     'MIN_STD_SCALED',
     'MAX_FALLBACKS_PER_ITERATION',
 ]
-

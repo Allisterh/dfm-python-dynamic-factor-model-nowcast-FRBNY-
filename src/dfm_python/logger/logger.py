@@ -1,8 +1,4 @@
-"""Custom logging configuration for dfm-python.
-
-This module provides standard Python logging setup and configuration utilities.
-All logging uses Python's standard logging module with hierarchical configuration.
-"""
+"""Logging configuration: the package logger, the opt-in verbosity and ``configure_logging``."""
 
 import logging
 import os
@@ -14,18 +10,13 @@ from datetime import datetime
 
 
 class CoreDebugFilter(logging.Filter):
-    """Filter to capture only core debugging information for log_dfm files.
-    
-    Captures:
-    - EM iterations and convergence
-    - Training start/end
-    - Initialization summaries
-    - Warnings and errors
-    - Key parameter updates
-    - Skips: DEBUG messages, verbose timing logs, detailed breakdowns
+    """Keep the core records for the ``log_dfm`` files.
+
+    Passes warnings and errors, INFO from the core loggers (minus detailed
+    timing breakdowns), INFO whose message holds a core keyword, and DEBUG
+    from the core loggers about errors or initialization.
     """
-    
-    # Keywords that indicate important/core messages
+
     CORE_KEYWORDS = [
         'training', 'iteration', 'converged', 'convergence',
         'initialization', 'initialized', 'initializing',
@@ -36,59 +27,37 @@ class CoreDebugFilter(logging.Filter):
         'eigenval', 'max |Q|', 'max |C|', 'max |A|',
         'e-step:', 'm-step:', 'completed in'
     ]
-    
-    # Logger names that should always be included (even DEBUG)
+
     CORE_LOGGERS = [
         'dfm_python.models.dfm',
         'dfm_python.ssm.kalman',
         'dfm_python.logger.progress'
     ]
-    
+
     def filter(self, record: logging.LogRecord) -> bool:
-        """Determine if record should be logged.
-        
-        Returns True if:
-        - Level is WARNING or higher
-        - Level is INFO and message contains core keywords
-        - Logger is in CORE_LOGGERS and level is INFO or higher
-        - Message starts with important patterns
-        """
-        # Always include warnings and errors
         if record.levelno >= logging.WARNING:
             return True
-        
-        # Skip DEBUG messages unless from core loggers
+
+        from_core = any(record.name.startswith(core) for core in self.CORE_LOGGERS)
         if record.levelno == logging.DEBUG:
-            # Allow DEBUG from core loggers if they're critical
-            logger_name = record.name
-            if any(logger_name.startswith(core) for core in self.CORE_LOGGERS):
-                # Only allow DEBUG for critical initialization/error messages
+            if from_core:
                 msg_lower = record.getMessage().lower()
                 if any(kw in msg_lower for kw in ['error', 'failed', 'exception', 'initialization']):
                     return True
             return False
-        
-        # For INFO messages, check if they contain core keywords
+
         if record.levelno == logging.INFO:
             msg_lower = record.getMessage().lower()
-            
-            # Check if from core logger
-            logger_name = record.name
-            if any(logger_name.startswith(core) for core in self.CORE_LOGGERS):
-                # Include INFO from core loggers, but filter verbose timing
-                # Skip very detailed breakdown logs
+            if from_core:
                 if any(skip in msg_lower for skip in [
                     'detailed breakdown', 'timing breakdown',
                     'smooth_pair', 'filter timing', 'smooth timing'
                 ]):
                     return False
-                # Include everything else from core loggers
                 return True
-            
-            # For other loggers, check keywords
             if any(kw in msg_lower for kw in self.CORE_KEYWORDS):
                 return True
-        
+
         return False
 
 
@@ -113,26 +82,11 @@ _VERBOSITY_HANDLER_MARK = "_dfm_python_verbosity_handler"
 
 
 def get_logger(name: str) -> logging.Logger:
-    """Get a logger instance for a module.
-    
-    This is the standard way to get a logger in the DFM package.
-    All modules should use: _logger = get_logger(__name__)
-    
-    The returned logger is a plain ``logging.getLogger(name)``. No handler is
-    attached and propagation is left untouched: records from module loggers
-    (e.g., ``'dfm_python.models.dfm'``) reach the package logger
-    ``'dfm_python'``, which only has a ``NullHandler`` until the user opts in
-    with :func:`set_verbosity` (or configures the ``logging`` module).
-    
-    Parameters
-    ----------
-    name : str
-        Logger name (typically __name__)
-        
-    Returns
-    -------
-    logging.Logger
-        Logger instance for the module
+    """``logging.getLogger(name)``, the module logger convention of the package.
+
+    No handler is attached and propagation is left untouched: records reach
+    the ``'dfm_python'`` logger, which only has a ``NullHandler`` until the
+    user opts in with :func:`set_verbosity` (or configures ``logging``).
     """
     return logging.getLogger(name)
 
@@ -172,16 +126,16 @@ def _verbosity_handler(package_logger: logging.Logger) -> Optional[logging.Handl
 
 def set_verbosity(level) -> None:
     """Show dfm_python log records on standard output from ``level`` upwards.
-    
+
     The package is silent by default. This is the opt-in: it installs one
     ``StreamHandler(sys.stdout)`` on the ``'dfm_python'`` logger (never more
     than one, however often it is called) and sets the logger's level.
-    
+
     Parameters
     ----------
     level : {'debug', 'info', 'warning', 'error'} or int
         Verbosity name (case-insensitive) or a ``logging`` level number.
-    
+
     Raises
     ------
     ConfigurationError
@@ -203,10 +157,7 @@ def get_verbosity() -> int:
 
 
 def _apply_env_verbosity() -> None:
-    """Call :func:`set_verbosity` with ``$DFM_PYTHON_VERBOSITY`` when it is set.
-    
-    An invalid value emits a ``UserWarning`` instead of failing the import.
-    """
+    """Call :func:`set_verbosity` with ``$DFM_PYTHON_VERBOSITY`` when it is set; an invalid value warns instead of failing the import."""
     value = os.environ.get(VERBOSITY_ENV_VAR)
     if value is None or not value.strip():
         return
@@ -220,17 +171,7 @@ def setup_logging(
     level: int = logging.INFO,
     format_string: Optional[str] = None
 ) -> None:
-    """Setup package-wide logging configuration.
-    
-    Alias for configure_logging().
-    
-    Parameters
-    ----------
-    level : int, default logging.INFO
-        Logging level
-    format_string : str, optional
-        Custom format string. If None, uses default format.
-    """
+    """Alias of :func:`configure_logging` with ``level`` and ``format_string``."""
     configure_logging(level=level, format_string=format_string)
 
 
@@ -243,98 +184,64 @@ def configure_logging(
     enable_core_log: bool = True,
     log_file_prefix: Optional[str] = None
 ) -> None:
-    """Configure package-wide logging.
-    
+    """Replace the ``'dfm_python'`` logger's handlers with a stdout handler and optional files.
+
+    Propagation to the root logger is switched off so records are not
+    printed twice.
+
     Parameters
     ----------
     level : int, default logging.INFO
-        Logging level for the package
     format_string : str, optional
-        Custom format string. If None, uses default format.
+        Record format; the default shows time, logger name, level and message.
     log_file : str, optional
-        Optional file path to write logs to. If provided, logs will be
-        written to both console and file.
+        Unfiltered log file, written in addition to the console.
     module_levels : dict, optional
-        Dictionary mapping module names to specific log levels.
-        Example: {'dfm_python.models': logging.DEBUG, 'dfm_python.trainer': logging.WARNING}
+        Levels per logger name, e.g. ``{'dfm_python.models': logging.DEBUG}``.
     log_dfm_dir : Path, optional
-        Directory for core debugging logs. If provided and enable_core_log=True,
-        creates a timestamped log file with filtered core debugging information.
+        Directory of the timestamped core log file (:class:`CoreDebugFilter`),
+        written when ``enable_core_log`` is True.
     enable_core_log : bool, default True
-        Whether to enable core debugging log file in log_dfm_dir.
     log_file_prefix : str, optional
-        Prefix for log file name. If None, defaults to "dfm_core" or infers from directory name.
+        Core log file name prefix; by default ``"ddfm_core"`` for a directory
+        named ``log_ddfm`` and ``"dfm_core"`` otherwise.
     """
     if format_string is None:
-        format_string = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    
-    formatter = logging.Formatter(format_string, datefmt='%Y-%m-%d %H:%M:%S')
-    
-    # Configure package logger
-    logger = logging.getLogger('dfm_python')
+        format_string = DEFAULT_FORMAT
+    formatter = logging.Formatter(format_string, datefmt=DEFAULT_DATEFMT)
+
+    logger = logging.getLogger(PACKAGE_LOGGER_NAME)
     logger.setLevel(level)
-    
-    # Remove existing handlers to avoid duplicates
     logger.handlers.clear()
-    # Clear the configuration flag so it can be reconfigured
-    if hasattr(logger, '_dfm_configured'):
-        delattr(logger, '_dfm_configured')
-    
-    # Disable propagation to root logger to prevent duplicate messages
-    # If root logger also has handlers, messages would be logged twice
     logger.propagate = False
-    
-    # Add console handler
+
     console_handler = logging.StreamHandler(sys.stdout)
     console_handler.setLevel(level)
     console_handler.setFormatter(formatter)
     logger.addHandler(console_handler)
-    
-    # Add file handler if specified (unfiltered)
+
     if log_file:
-        log_path = Path(log_file)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
+        Path(log_file).parent.mkdir(parents=True, exist_ok=True)
         file_handler = logging.FileHandler(log_file)
         file_handler.setLevel(level)
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
-    
-    # Add core debugging log file (filtered) in log_dfm_dir
+
     if enable_core_log and log_dfm_dir is not None:
         log_dfm_dir = Path(log_dfm_dir)
         log_dfm_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Determine log file prefix
         if log_file_prefix is None:
-            # Infer from directory name (log_dfm -> dfm_core, log_ddfm -> ddfm_core)
-            dir_name = log_dfm_dir.name
-            if dir_name == "log_ddfm":
-                log_file_prefix = "ddfm_core"
-            elif dir_name == "log_dfm":
-                log_file_prefix = "dfm_core"
-            else:
-                log_file_prefix = "dfm_core"  # Default fallback
-        
-        # Create timestamped log file
+            log_file_prefix = "ddfm_core" if log_dfm_dir.name == "log_ddfm" else "dfm_core"
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         core_log_file = log_dfm_dir / f"{log_file_prefix}_{timestamp}.log"
-        
+
         core_file_handler = logging.FileHandler(core_log_file)
-        core_file_handler.setLevel(logging.DEBUG)  # Set to DEBUG so filter can decide
+        core_file_handler.setLevel(logging.DEBUG)  # the filter decides
         core_file_handler.setFormatter(formatter)
-        
-        # Add filter to capture only core debugging info
-        core_filter = CoreDebugFilter()
-        core_file_handler.addFilter(core_filter)
-        
+        core_file_handler.addFilter(CoreDebugFilter())
         logger.addHandler(core_file_handler)
-        
-        # Log that core logging is enabled
         logger.info(f"Core debugging logs enabled: {core_log_file}")
-    
-    # Set module-specific log levels
+
     if module_levels:
         for module_name, module_level in module_levels.items():
-            module_logger = logging.getLogger(module_name)
-            module_logger.setLevel(module_level)
-
+            logging.getLogger(module_name).setLevel(module_level)

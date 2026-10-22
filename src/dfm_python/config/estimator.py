@@ -237,9 +237,9 @@ def _read_yaml(path: Path) -> Any:
     if OmegaConf is not None:
         try:
             return OmegaConf.to_container(OmegaConf.load(path), resolve=True)
+        except OSError:
+            raise
         except Exception as err:
-            if isinstance(err, OSError):
-                raise
             raise _configuration_error(f"Could not read YAML file {str(path)!r}: {err}") from err
     try:
         import yaml

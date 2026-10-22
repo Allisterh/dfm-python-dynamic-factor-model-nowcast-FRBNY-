@@ -1,50 +1,32 @@
-"""Result structures for Dynamic Factor Model estimation.
-
-This module contains model-specific result dataclasses:
-- DFMResult(BaseResult): Results for linear DFM
-- DDFMResult(BaseResult): Results for Deep DFM
-"""
+"""Result dataclasses: ``BaseResult`` and the per-model ``DFMResult``, ``DDFMResult``, ``iVDFMResult``, ``AFMResult``."""
 
 import numpy as np
-import warnings
 from abc import ABC
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any, Tuple, Union
-from datetime import datetime
+from typing import Optional, List, Dict, Any
 
 from .params import DDFMModelState
 
 
-
-# ============================================================================
-# Base Result Structure
-# ============================================================================
-
 @dataclass
 class BaseResult(ABC):
-    """Base class for factor model result structures (linear + deep).
-    
-    This is intentionally **minimal and model-agnostic**:
-    - Linear models (DFM) may populate state-space matrices A/C/Q/R, etc.
-    - Deep models (DDFM/iVDFM) may only populate factors and reconstructions.
-    
-    Common naming:
-    - `Z`: factors (T x r) or (T x m) depending on model
-    - `x_sm`: model-produced reconstruction/smoothed series in *model space*
+    """Model-agnostic result fields shared by the linear and deep models.
+
+    ``Z`` holds the factors (T x r, or the state T x m) and ``x_sm`` the
+    reconstruction or smoothed series (T x N), both in model space. The
+    state-space fields ``C``, ``R``, ``A``, ``Q``, ``Z_0``, ``V_0`` are set by
+    the linear models (DFM, DDFM) only.
     """
-    # Minimal shared outputs
-    x_sm: Optional[np.ndarray] = None      # (T, N) reconstruction / smoothed series (model space)
-    Z: Optional[np.ndarray] = None         # (T, r) factors (or state) in model space
-    r: Optional[np.ndarray] = None         # factors per block (or [num_factors] for single-block models)
-    p: Optional[int] = None                # AR order / factor order (if applicable)
-    target_scaler: Optional[Any] = None    # scaler for targets (for inverse transform convenience)
+    x_sm: Optional[np.ndarray] = None
+    Z: Optional[np.ndarray] = None
+    r: Optional[np.ndarray] = None         # factors per block, or [num_factors]
+    p: Optional[int] = None                # AR order / factor order
+    target_scaler: Optional[Any] = None    # scaler of the targets, for inverse transforms
     converged: bool = False
-    num_iter: int = 0                      # epochs / iterations (model-specific meaning)
-    objective: Optional[float] = None      # loglik/ELBO/loss summary (model-specific)
-    # Backward-compat: older code uses `loglik` naming.
+    num_iter: int = 0                      # epochs or iterations, model-specific
+    objective: Optional[float] = None      # loglik / ELBO / loss, model-specific
     loglik: Optional[float] = None
 
-    # Optional linear state-space fields (present for DFM/DDFM, absent for pure deep results)
     C: Optional[np.ndarray] = None
     R: Optional[np.ndarray] = None
     A: Optional[np.ndarray] = None
@@ -52,134 +34,88 @@ class BaseResult(ABC):
     Z_0: Optional[np.ndarray] = None
     V_0: Optional[np.ndarray] = None
 
-    # ----------------------------
-    # Convenience methods (OOP)
-    # ----------------------------
     @property
     def factors(self) -> Optional[np.ndarray]:
-        """Alias for factors/state in model space.
-        
-        Convention in this codebase:
-        - `Z` stores factors (or latent state) in model space
-        - Many callers naturally want `result.factors`
-        """
+        """Alias of ``Z``."""
         return self.Z
 
     @property
     def reconstructed(self) -> Optional[np.ndarray]:
-        """Alias for reconstruction/smoothed series in model space (`x_sm`)."""
+        """Alias of ``x_sm``."""
         return self.x_sm
 
     @property
     def x_hat(self) -> Optional[np.ndarray]:
-        """Alias for reconstruction/smoothed series in model space (`x_sm`)."""
+        """Alias of ``x_sm``."""
         return self.x_sm
 
     def num_series(self) -> int:
-        """Return number of series (columns in x_sm)."""
+        """Columns of ``x_sm``."""
         if self.x_sm is None:
             raise ValueError("x_sm is not available in this result")
         return int(self.x_sm.shape[1])
 
     def num_state(self) -> int:
-        """Return factor/state dimension (columns in Z)."""
+        """Columns of ``Z``."""
         if self.Z is None:
             raise ValueError("Z is not available in this result")
         return int(self.Z.shape[1])
 
     def num_periods(self) -> int:
-        """Return number of time periods (rows in Z/x_sm)."""
+        """Rows of ``Z`` (or of ``x_sm``)."""
         if self.Z is not None:
             return int(self.Z.shape[0])
         if self.x_sm is not None:
             return int(self.x_sm.shape[0])
         raise ValueError("Neither Z nor x_sm is available in this result")
-    
+
     def num_factors(self) -> int:
-        """Return number of primary factors (sum of r), fallback to Z dim."""
+        """``sum(r)``, or the state dimension when ``r`` is not set."""
         if self.r is not None:
             try:
                 return int(np.sum(self.r))
             except Exception:
                 pass
         return self.num_state()
-    
+
     def get_x_sm_original_scale(self, target_scaler: Optional[Any] = None) -> np.ndarray:
-        """Get smoothed data in original scale by inverse transforming target series.
-        
-        Note: DDFM trains and evaluates on scaled data. This method inverse transforms
-        the target series back to original scale for user convenience.
-        
-        Parameters
-        ----------
-        target_scaler : Any, optional
-            Sklearn scaler instance. If None, uses self.target_scaler.
-            If both are None, returns x_sm as-is (assumes already in original scale).
-        
-        Returns
-        -------
-        np.ndarray
-            Smoothed data with target series in original scale (T x N)
-        """
+        """``x_sm`` inverse-transformed by ``target_scaler`` (default ``self.target_scaler``), or as is when there is none."""
         if self.x_sm is None:
             raise ValueError("x_sm is not available in this result")
         scaler = target_scaler if target_scaler is not None else self.target_scaler
         if scaler is not None and hasattr(scaler, "inverse_transform"):
             return scaler.inverse_transform(self.x_sm)
         return self.x_sm
-    
+
     def to_pandas_factors(self, time_index: Optional[object] = None, factor_names: Optional[List[str]] = None):
-        """Return factors as pandas DataFrame."""
-        try:
-            import pandas as pd
-            cols = factor_names or [f"F{i+1}" for i in range(self.num_state())]
-            if self.Z is None:
-                raise ValueError("Z is not available in this result")
-            df_dict = {col: self.Z[:, i] for i, col in enumerate(cols)}
-            if time_index is not None:
-                if hasattr(time_index, '__iter__') and not isinstance(time_index, (str, bytes)):
-                    df_dict['time'] = list(time_index)
-            return pd.DataFrame(df_dict)
-        except ImportError:
-            return self.Z
-    
+        """``Z`` as a DataFrame (columns ``F1..``), with a ``time`` column when ``time_index`` is iterable."""
+        import pandas as pd
+        cols = factor_names or [f"F{i+1}" for i in range(self.num_state())]
+        if self.Z is None:
+            raise ValueError("Z is not available in this result")
+        df_dict = {col: self.Z[:, i] for i, col in enumerate(cols)}
+        if time_index is not None:
+            if hasattr(time_index, '__iter__') and not isinstance(time_index, (str, bytes)):
+                df_dict['time'] = list(time_index)
+        return pd.DataFrame(df_dict)
+
     def to_pandas_smoothed(self, time_index: Optional[object] = None, series_ids: Optional[List[str]] = None, target_scaler: Optional[Any] = None):
-        """Return smoothed data as pandas DataFrame."""
-        try:
-            import pandas as pd
-            x_sm_original = self.get_x_sm_original_scale(target_scaler)
-            cols = series_ids or [f"S{i+1}" for i in range(self.num_series())]
-            df_dict = {col: x_sm_original[:, i] for i, col in enumerate(cols)}
-            if time_index is not None:
-                if hasattr(time_index, '__iter__') and not isinstance(time_index, (str, bytes)):
-                    df_dict['time'] = list(time_index)
-            return pd.DataFrame(df_dict)
-        except ImportError:
-            return self.get_x_sm_original_scale(target_scaler)
-    
+        """``get_x_sm_original_scale`` as a DataFrame (columns ``S1..``), with a ``time`` column when ``time_index`` is iterable."""
+        import pandas as pd
+        x_sm_original = self.get_x_sm_original_scale(target_scaler)
+        cols = series_ids or [f"S{i+1}" for i in range(self.num_series())]
+        df_dict = {col: x_sm_original[:, i] for i, col in enumerate(cols)}
+        if time_index is not None:
+            if hasattr(time_index, '__iter__') and not isinstance(time_index, (str, bytes)):
+                df_dict['time'] = list(time_index)
+        return pd.DataFrame(df_dict)
+
     def summary(self) -> str:
-        """Return a formatted summary of the model results.
-        
-        Returns
-        -------
-        str
-            Formatted string containing model summary including:
-            - Model type and structure
-            - Data dimensions (series, factors, periods)
-            - Training diagnostics (convergence, iterations, log-likelihood)
-            - Factor structure (AR order, factors per block)
-        """
-        # Determine model type from class name
+        """Formatted summary: dimensions, factor structure and training diagnostics."""
         model_type = self.__class__.__name__.replace('Result', '')
-        
-        # Build summary lines
-        lines = []
-        lines.append("=" * 80)
-        lines.append(f"{model_type} Model Summary")
-        lines.append("=" * 80)
-        lines.append("")
-        
-        # Data dimensions
+
+        lines = ["=" * 80, f"{model_type} Model Summary", "=" * 80, ""]
+
         lines.append("Data Dimensions:")
         try:
             lines.append(f"  Series: {self.num_series()}")
@@ -194,8 +130,7 @@ class BaseResult(ABC):
         except Exception:
             lines.append("  Time periods: N/A")
         lines.append("")
-        
-        # Factor structure
+
         lines.append("Factor Structure:")
         if self.r is not None and hasattr(self.r, "__len__") and len(self.r) > 0:
             lines.append(f"  Factors per block: {self.r}")
@@ -206,8 +141,7 @@ class BaseResult(ABC):
                 lines.append("  Total factors: N/A")
         lines.append(f"  AR order: {self.p if self.p is not None else 'N/A'}")
         lines.append("")
-        
-        # Training diagnostics
+
         lines.append("Training Diagnostics:")
         lines.append(f"  Converged: {self.converged}")
         lines.append(f"  Iterations: {self.num_iter}")
@@ -216,77 +150,37 @@ class BaseResult(ABC):
         if self.loglik is not None:
             lines.append(f"  Log-likelihood: {self.loglik:.4f}")
         lines.append("")
-        
+
         lines.append("=" * 80)
-        
         return "\n".join(lines)
 
 
-
-# ============================================================================
-# Model-Specific Result Classes
-# ============================================================================
-# BaseResult is imported from base.py - no duplicate definition needed
-
 @dataclass
 class DFMResult(BaseResult):
-    """DFM estimation results structure.
-    
-    This dataclass contains all outputs from the DFM estimation procedure,
-    including estimated parameters, smoothed data, and factors.
-    
-    Inherits all fields and methods from BaseResult. This class is specifically
-    for linear DFM results estimated using the EM algorithm.
-    
-    Attributes
-    ----------
-    converged : bool
-        Whether EM algorithm converged.
-    num_iter : int
-        Number of EM iterations performed.
-    training_max_iter : int, optional
-        Maximum EM iterations used (from model.max_iter or config.max_iter)
-    training_threshold : float, optional
-        Convergence threshold used (from model.threshold or config.threshold)
-    training_regularization_scale : float, optional
-        Regularization scale used (from config.regularization if provided)
-    
-    The :class:`~dfm_python.DFM` estimator exposes it as ``result_``. Its
+    """DFM (EM) estimation results, exposed by the :class:`~dfm_python.DFM` estimator as ``result_``.
+
+    ``converged`` and ``num_iter`` refer to the EM iterations. The
     series-indexed matrices (``C``, ``R``, ``x_sm``) are in the estimator's
     internal order ``internal_feature_names_`` (``[clock | slower]``), not
-    the user's column order. The ``training_*`` fields are never set.
-
-    Examples
-    --------
-    >>> from dfm_python import DFM
-    >>> model = DFM(n_factors=1, tol=1e-4).fit(data)  # doctest: +SKIP
-    >>> res = model.result_  # doctest: +SKIP
-    >>> common_factor = res.Z[:, 0]  # smoothed state, T x m  # doctest: +SKIP
-    >>> loadings = res.C[0, :]  # loadings of model.internal_feature_names_[0]  # doctest: +SKIP
-    >>> reconstructed = res.Z @ res.C.T  # equals res.x_sm  # doctest: +SKIP
+    the user's column order; ``res.Z @ res.C.T`` equals ``res.x_sm``. The
+    ``training_*`` fields are never set.
     """
-    # All fields inherited from BaseResult
-    # converged and num_iter have specific meaning for EM algorithm
-    
-    # Training hyperparameters (from config, no separate fit_params needed)
     training_max_iter: Optional[int] = None
     training_threshold: Optional[float] = None
     training_regularization_scale: Optional[float] = None
 
-    # Linear state-space outputs (DFM-specific)
     C: Optional[np.ndarray] = None
     R: Optional[np.ndarray] = None
     A: Optional[np.ndarray] = None
     Q: Optional[np.ndarray] = None
     Z_0: Optional[np.ndarray] = None
     V_0: Optional[np.ndarray] = None
-    
+
     def summary(self) -> str:
-        """Return a formatted summary of the DFM results."""
-        summary_text = super().summary()
-        lines = summary_text.split("\n")
-        
-        # Insert training hyperparameters before the final separator
+        """Base summary plus the ``training_*`` hyperparameters that are set."""
+        lines = super().summary().split("\n")
+
+        # Insert before the final separator
         insert_idx = len(lines) - 1
         training_info = []
         if self.training_max_iter is not None:
@@ -295,66 +189,40 @@ class DFMResult(BaseResult):
             training_info.append(f"  Convergence threshold: {self.training_threshold:.6f}")
         if self.training_regularization_scale is not None:
             training_info.append(f"  Regularization scale: {self.training_regularization_scale:.6f}")
-        
+
         if training_info:
             lines.insert(insert_idx, "")
             lines.insert(insert_idx, "Training Hyperparameters:")
             for info in training_info:
                 lines.insert(insert_idx + 1, info)
-        
+
         return "\n".join(lines)
 
 
 @dataclass
 class DDFMResult(BaseResult):
-    """DDFM estimation results structure (``DDFM.result_``).
-    
-    Inherits all fields and methods from BaseResult. ``DDFM.fit`` sets the
-    BaseResult fields from the engine's state space: ``Z`` (T x r, factors
-    averaged over the MC samples), ``x_sm`` (T x N, the reconstruction
-    ``Z @ C.T`` in model space), ``A`` (the AR(1) transition F), ``C`` (the
-    loadings H, N x r, series by factors, the DFM orientation), ``Q``, ``R``,
+    """DDFM estimation results (``DDFM.result_``).
+
+    ``DDFM.fit`` sets the BaseResult fields from the engine's state space:
+    ``Z`` (T x r, factors averaged over the MC samples), ``x_sm`` (T x N, the
+    reconstruction ``Z @ C.T`` in model space), ``A`` (the AR(1) transition
+    F), ``C`` (the loadings H, N x r, the DFM orientation), ``Q``, ``R``,
     ``Z_0``, ``V_0``, ``r``, ``p``, ``target_scaler`` (the estimator's
-    ``scaler_``), ``converged``, ``num_iter`` and ``loglik`` (-inf; DDFM
-    does not compute a log-likelihood).
-    
-    Attributes
-    ----------
-    converged : bool
-        Whether the MCMC denoising loop stopped on ``tol`` before ``max_iter``.
-    num_iter : int
-        Number of MCMC iterations performed.
-    training_loss, encoder_layers, use_idiosyncratic, fit_params : optional
-        Declared but never set by ``DDFM.fit``; always None. Read the
-        hyperparameters from the estimator (``model.get_params()``) and the
-        state space from ``A``, ``C``, ``Q``, ``R``, ``Z_0``, ``V_0``.
-    training_max_iter, training_tolerance, training_n_mc_samples, training_window_size : optional
-        Declared but never set by ``DDFM.fit``; always None (a known engine
-        bug). The same holds for ``training_learning_rate``,
-        ``training_optimizer``, ``training_decay_learning_rate``,
-        ``training_encoder_size``, ``training_decoder_size``,
-        ``training_target_series``, ``training_use_bias``,
-        ``training_batch_norm`` and ``training_activation``.
-    
-    Examples
-    --------
-    >>> from dfm_python import DDFM, PanelData
-    >>> model = DDFM(n_factors=2, encoder_layers=(64, 32), scaler="standard").fit(data)  # doctest: +SKIP
-    >>> res = model.result_  # doctest: +SKIP
-    >>> common_factor = res.Z[:, 0]  # first factor, length T  # doctest: +SKIP
-    >>> loadings = res.C[0, :]  # loadings of the first series on the r factors  # doctest: +SKIP
-    >>> transition_matrix = res.A  # doctest: +SKIP
+    ``scaler_``), ``converged`` (the MCMC denoising loop stopped on ``tol``
+    before ``max_iter``), ``num_iter`` (MCMC iterations) and ``loglik``
+    (-inf; DDFM computes no log-likelihood).
+
+    ``training_loss``, ``encoder_layers``, ``use_idiosyncratic``,
+    ``fit_params`` and the ``training_*`` fields are declared but never set
+    by ``DDFM.fit`` (always None); read the hyperparameters from
+    ``model.get_params()`` and the state space from ``A``, ``C``, ``Q``,
+    ``R``, ``Z_0``, ``V_0``.
     """
-    # All fields inherited from BaseResult
-    # Additional DDFM-specific fields
-    training_loss: Optional[float] = None  # Final training loss
-    encoder_layers: Optional[List[int]] = None  # Encoder architecture
-    use_idiosyncratic: Optional[bool] = None  # Whether idio components were used
-    
-    # State-space parameters (fitted during training)
+    training_loss: Optional[float] = None
+    encoder_layers: Optional[List[int]] = None
+    use_idiosyncratic: Optional[bool] = None
     fit_params: Optional[DDFMModelState] = None
-    
-    # Training hyperparameters
+
     training_max_iter: Optional[int] = None
     training_tolerance: Optional[float] = None
     training_n_mc_samples: Optional[int] = None
@@ -368,16 +236,14 @@ class DDFMResult(BaseResult):
     training_use_bias: Optional[bool] = None
     training_batch_norm: Optional[bool] = None
     training_activation: Optional[str] = None
-    
+
     def summary(self) -> str:
-        """Return a formatted summary of the DDFM results."""
-        summary_text = super().summary()
-        lines = summary_text.split("\n")
-        
-        # Insert DDFM-specific information before the final separator
+        """Base summary plus the network training fields that are set."""
+        lines = super().summary().split("\n")
+
+        # Insert before the final separator
         insert_idx = len(lines) - 1
         ddfm_info = []
-        
         if self.training_loss is not None:
             ddfm_info.append(f"  Final training loss: {self.training_loss:.4f}")
         if self.encoder_layers is not None:
@@ -400,74 +266,43 @@ class DDFMResult(BaseResult):
             ddfm_info.append(f"  Optimizer: {self.training_optimizer}")
         if self.training_decay_learning_rate is not None:
             ddfm_info.append(f"  Learning rate decay: {self.training_decay_learning_rate}")
-        
+
         if ddfm_info:
             lines.insert(insert_idx, "")
             lines.insert(insert_idx, "Neural Network Training:")
             for info in ddfm_info:
                 lines.insert(insert_idx + 1, info)
-        
+
         return "\n".join(lines)
 
 
 @dataclass
 class iVDFMResult(BaseResult):
-    """iVDFM results (nonlinear, deep model).
-    
-    iVDFM is *not* a linear state-space model with identifiable loadings C/R/Q in
-    the classical sense. This result structure intentionally avoids forcing iVDFM
-    into BaseResult's linear-Kalman shape.
-    
-    The primary artifacts are:
-    - learned innovations and factors (as produced by the variational model)
-    - decoder reconstructions
-    - training diagnostics
-    - minimal checkpoint information for weights-only saving/loading
+    """iVDFM results: learned innovations and factors, decoder reconstructions, diagnostics and a weights-only checkpoint.
+
+    iVDFM is not a linear state-space model, so the ``C``/``R``/``Q`` fields
+    of BaseResult stay unset.
     """
-    # Core learned representations
     innovations: Optional[np.ndarray] = None          # (T, r) or (batch, T, r)
     reconstructions: Optional[np.ndarray] = None      # decoded factors, (T, N) or (batch, T, N)
-    full_state: Optional[np.ndarray] = None           # Augmented state for companion form (T x r*p) for p>1, (T x r) for p=1
+    full_state: Optional[np.ndarray] = None           # companion-form state: (T x r*p) for p>1, (T x r) for p=1
 
-    # Regime and mixing (when num_regimes > 1 or mixing=True)
-    num_regimes: Optional[int] = None                # K; 1 = baseline (no regime structure)
-    regime_temperature: Optional[float] = None        # Softmax τ for π (τ < 1 = sharper commitment)
-    regime_weights: Optional[np.ndarray] = None      # (T, K) or (num_windows, K) π_t from regime_net; for Z = [factors, regime] in stability
-    mixing: Optional[bool] = None                    # Whether post-factor mixing f -> M f was used
-    mixing_matrix: Optional[np.ndarray] = None       # (r, r) learned M when mixing=True (for inspection)
+    # Regimes and mixing (when num_regimes > 1 or mixing=True)
+    num_regimes: Optional[int] = None                # K; 1 = baseline
+    regime_temperature: Optional[float] = None        # softmax temperature of pi
+    regime_weights: Optional[np.ndarray] = None      # (T, K) or (num_windows, K) pi_t from regime_net
+    mixing: Optional[bool] = None                    # whether post-factor mixing f -> M f was used
+    mixing_matrix: Optional[np.ndarray] = None       # (r, r) learned M when mixing=True
 
-    # Training diagnostics
     training_elbo: Optional[float] = None
     training_loss: Optional[float] = None
     num_epochs: Optional[int] = None
 
-    # Minimal configuration snapshot (plain python)
-    config: Optional[Dict[str, Any]] = None
-
-    # Weights-only checkpoint payload (torch tensors)
-    model_state_dict: Optional[Dict[str, Any]] = None
-
-    # Backward/ergonomic aliases (keep codebase consistent with "factors")
-    @property
-    def factors(self) -> Optional[np.ndarray]:
-        return self.Z
-
-    @property
-    def reconstructed(self) -> Optional[np.ndarray]:
-        """Alias for reconstruction/smoothed series."""
-        return self.x_sm
-
-    @property
-    def x_hat(self) -> Optional[np.ndarray]:
-        """Alias for reconstruction/smoothed series."""
-        return self.x_sm
+    config: Optional[Dict[str, Any]] = None  # plain-python configuration snapshot
+    model_state_dict: Optional[Dict[str, Any]] = None  # weights-only checkpoint (torch tensors)
 
     def summary(self) -> str:
-        lines = []
-        lines.append("=" * 80)
-        lines.append("iVDFM Result Summary")
-        lines.append("=" * 80)
-        lines.append("")
+        lines = ["=" * 80, "iVDFM Result Summary", "=" * 80, ""]
         if self.factors is not None:
             lines.append(f"Factors shape: {getattr(self.factors, 'shape', None)}")
         if self.innovations is not None:
@@ -497,16 +332,14 @@ class iVDFMResult(BaseResult):
         lines.append("=" * 80)
         return "\n".join(lines)
 
-# FitParams moved to config.schema.params as DFMParams
-
 
 @dataclass
 class AFMResult(BaseResult):
-    """Attention Factor Model results (statistical-arbitrage residual trading).
+    """AFM results (statistical-arbitrage residual trading).
 
-    AFM is not a linear state-space model; its primary artifacts are the traded
-    residual portfolios, the after-cost book returns, and the objective values.
-    ``Z``/``x_sm`` alias the residuals so the common accessors still work.
+    AFM is not a linear state-space model; its artifacts are the traded
+    residual portfolios, the after-cost book returns and the objective values.
+    ``Z`` and ``x_sm`` alias the residuals so the common accessors work.
     """
     residual_portfolios: Optional[np.ndarray] = None   # (B, T, N) traded residuals
     book_returns: Optional[np.ndarray] = None          # (B, n_eval) after-cost returns
@@ -516,18 +349,6 @@ class AFMResult(BaseResult):
     trading: Optional[str] = None                      # 'longconv' | 'ou'
     num_factors: Optional[int] = None
     weights: Optional[np.ndarray] = None               # (B, n_eval, N) asset weights (set by AFM.backtest)
-
-    @property
-    def factors(self) -> Optional[np.ndarray]:
-        return self.Z
-
-    @property
-    def reconstructed(self) -> Optional[np.ndarray]:
-        return self.x_sm
-
-    @property
-    def x_hat(self) -> Optional[np.ndarray]:
-        return self.x_sm
 
     def summary(self) -> str:
         lines = ["=" * 80, "AFM Result Summary", "=" * 80, ""]
@@ -542,4 +363,3 @@ class AFMResult(BaseResult):
             lines.append(f"Book returns shape: {getattr(self.book_returns, 'shape', None)}")
         lines += ["", "=" * 80]
         return "\n".join(lines)
-
