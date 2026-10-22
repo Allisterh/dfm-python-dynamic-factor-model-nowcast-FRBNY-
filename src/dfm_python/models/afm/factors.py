@@ -25,16 +25,14 @@ import torch.nn as nn
 
 
 def ridge_loadings(omega_f: torch.Tensor, ridge: float) -> torch.Tensor:
-    """Closed-form loadings from factor weights (paper Eq. for beta).
-
-    ``beta^T = omega_F^T (omega_F omega_F^T + ridge I_K)^{-1}``.
+    """Closed-form loadings ``beta^T = omega_F^T (omega_F omega_F^T + ridge I_K)^{-1}``.
 
     Parameters
     ----------
     omega_f : torch.Tensor
         Factor-portfolio weights, shape ``(..., K, N)``.
     ridge : float
-        Ridge penalty for stability.
+        Ridge penalty.
 
     Returns
     -------
@@ -155,10 +153,9 @@ def rolling_pca_weights(returns: torch.Tensor, n_factors: int, pca_window: int,
                         reestim: int, ridge: float):
     """Per-date PCA factor weights, re-estimated on a rolling trailing window.
 
-    Faithful to the paper's benchmark, which re-estimates PCA on a trailing
-    window rather than once over the whole sample. Weights are recomputed every
-    ``reestim`` steps on the trailing ``pca_window`` and held constant between
-    re-estimations (so static PCA does not see the future and can track drift).
+    As in the paper's benchmark, weights are recomputed every ``reestim``
+    steps on the trailing ``pca_window`` and held constant in between, so the
+    PCA never sees the future and can track drift.
 
     Parameters
     ----------

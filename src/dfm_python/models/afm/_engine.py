@@ -1,41 +1,32 @@
 """Attention Factor Model (AFM) for statistical arbitrage.
 
-Faithful implementation of Epstein, Wang, Choi and Pelger (2025), "Attention
-Factors for Statistical Arbitrage" (arXiv:2510.11616). The model jointly learns
-a conditional factor model whose residuals are traded portfolios and a
+Implements Epstein, Wang, Choi and Pelger (2025), "Attention Factors for
+Statistical Arbitrage" (arXiv:2510.11616). The model jointly learns a
+conditional factor model whose residuals are traded portfolios and a
 residual-history trading policy, under an after-cost Sharpe objective with an
 explained-variance regularizer:
 
     max_{omega_F, omega_port}  Sharpe(R_net) + lambda_var * EV,   s.t. ||omega||_1 = 1.
 
-Three model classes from the paper are covered by two switches:
+Two switches cover the paper's three model classes:
   * ``factor_model='attention', trading='longconv'`` -> Attention Factors;
   * ``factor_model='pca',       trading='longconv'`` -> PCA + LongConv benchmark;
   * ``factor_model='pca',       trading='ou'``       -> PCA + Avellaneda--Lee.
 
-This is a from-the-paper implementation (no reference code exists) intended to be
-correct and runnable on modest data; it is not a reproduction of the paper's
-empirical CRSP study, which requires licensed point-in-time data.
+This is a from-the-paper implementation (no reference code exists) meant to be
+correct and runnable on modest data, not a reproduction of the paper's CRSP
+study, which needs licensed point-in-time data.
 
 ``AFMEngine`` is the private engine behind the public estimator
-:class:`dfm_python.models.afm.estimator.AFM`, which builds its inputs from
-``PanelData`` and passes every hyperparameter explicitly. The engine's code is
-the pre-redesign ``AFM`` class unchanged, apart from the ``device`` keyword,
-:meth:`AFMEngine._from_saved` and these removals:
-
-- It no longer inherits the old abstract base ``dfm_python.models.base.BaseFactorModel``
-  (deleted); :func:`_init_engine_state` sets the attributes that base's ``__init__``
-  set, and :meth:`AFMEngine._ensure_result` is the base's method copied unchanged.
-- The ``torch.save`` ``save``/``load`` pair and the inherited ``reset`` and
-  ``_restore_checkpoint_metadata`` are gone; the estimator saves and loads through
-  :meth:`AFMEngine._from_saved`.
+:class:`dfm_python.models.afm.estimator.AFM`, which builds its dataset from
+``PanelData`` and passes every hyperparameter explicitly. The estimator saves
+and loads it through :meth:`AFMEngine._from_saved`.
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
 
@@ -50,14 +41,17 @@ from .baselines import avellaneda_lee_weights
 
 _EPS = 1e-8
 
+#: The hyperparameters ``__init__`` stores, which ``_from_saved`` restores.
+_HYPERPARAMS = ("factor_model", "trading", "n_factors", "embed_dim", "hist_len",
+                "n_kernels", "ridge", "squash_lambda", "pca_window", "reestim",
+                "lambda_var", "turnover_cost", "short_cost", "risk_free",
+                "learning_rate", "max_epochs", "patience", "seed")
+
 
 def _init_engine_state(engine: Any) -> None:
-    """Set the attributes the old ``models.base.BaseFactorModel.__init__`` set."""
-    engine._config = None
     engine._result = None
     engine.training_state = None
     engine._dataset = None
-    engine.data_processed = None
 
 
 class AFMEngine(nn.Module):
@@ -66,10 +60,9 @@ class AFMEngine(nn.Module):
     Parameters
     ----------
     dataset : AFMDataset, optional
-        Data source exposing ``returns`` (T, N) and, for attention,
-        ``characteristics`` (T, N, M).
-    config : AFMConfig, optional
-        Configuration; individual keyword arguments override its fields.
+        Exposes ``returns`` (T, N) and, for attention, ``characteristics``
+        (T, N, M); None builds nothing until ``n_factors`` (and ``n_char``
+        for attention) are known.
     n_char, n_factors, embed_dim, hist_len, n_kernels, ridge : int/float
         Architecture. ``hist_len`` is the residual history length ``s``.
     factor_model : {'attention', 'pca'}
@@ -77,58 +70,44 @@ class AFMEngine(nn.Module):
     lambda_var, turnover_cost, short_cost, risk_free : float
         Objective and cost parameters (defaults are the paper's 5bps/1bp).
     learning_rate, max_epochs, patience, seed
-        Training controls.
+        Training controls. ``seed`` seeds the global torch RNG before the
+        network is built.
     device : torch.device or str, optional
-        Device for the network and tensors. None (default) uses CUDA if
-        available, else CPU.
+        None uses CUDA if available, else CPU.
     """
 
-    def __init__(self, dataset: Optional[Any] = None, config: Optional[Any] = None,
-                 *, n_char: Optional[int] = None, n_factors: Optional[int] = None,
-                 embed_dim: Optional[int] = None, hist_len: Optional[int] = None,
-                 n_kernels: Optional[int] = None, ridge: Optional[float] = None,
-                 squash_lambda: Optional[float] = None, pca_window: Optional[int] = None,
-                 reestim: Optional[int] = None,
-                 factor_model: Optional[str] = None, trading: Optional[str] = None,
-                 lambda_var: Optional[float] = None, turnover_cost: Optional[float] = None,
-                 short_cost: Optional[float] = None, risk_free: Optional[float] = None,
-                 learning_rate: Optional[float] = None, max_epochs: Optional[int] = None,
+    def __init__(self, dataset: Optional[Any] = None, *,
+                 n_char: Optional[int] = None, n_factors: Optional[int] = None,
+                 embed_dim: int = 32, hist_len: int = 20, n_kernels: int = 32,
+                 ridge: float = 1e-2, squash_lambda: float = 1e-3,
+                 pca_window: int = 252, reestim: int = 21,
+                 factor_model: str = "attention", trading: str = "longconv",
+                 lambda_var: float = 0.1, turnover_cost: float = 5e-4,
+                 short_cost: float = 1e-4, risk_free: float = 0.0,
+                 learning_rate: float = 1e-3, max_epochs: int = 50,
                  patience: Optional[int] = None, seed: Optional[int] = None,
-                 device: Optional[torch.device] = None,
-                 **kwargs: Any) -> None:
+                 device: Optional[torch.device] = None) -> None:
         _init_engine_state(self)
         nn.Module.__init__(self)
 
-        # Precedence: explicit kwarg > config field > hardcoded default.
-        self._config = config
-
-        def pick(explicit, name, default):
-            if explicit is not None:
-                return explicit
-            if config is not None:
-                v = getattr(config, name, None)
-                if v is not None:
-                    return v
-            return default
-
-        self.factor_model = pick(factor_model, "factor_model", "attention")
-        self.trading = pick(trading, "trading", "longconv")
-        self.n_factors = pick(n_factors, "num_factors", None)
-        self.embed_dim = pick(embed_dim, "embed_dim", 32)
-        self.hist_len = pick(hist_len, "hist_len", 20)
-        self.n_kernels = pick(n_kernels, "n_kernels", 32)
-        self.ridge = pick(ridge, "ridge", 1e-2)
-        self.squash_lambda = pick(squash_lambda, "squash_lambda", 1e-3)
-        self.pca_window = pick(pca_window, "pca_window", 252)
-        self.reestim = pick(reestim, "reestim", 21)
-        self.lambda_var = pick(lambda_var, "lambda_var", 0.1)
-        self.turnover_cost = pick(turnover_cost, "turnover_cost", 5e-4)
-        self.short_cost = pick(short_cost, "short_cost", 1e-4)
-        self.risk_free = pick(risk_free, "risk_free", 0.0)
-        self.learning_rate = pick(learning_rate, "learning_rate", 1e-3)
-        self.max_epochs = pick(max_epochs, "max_epochs", 50)
-        self.patience = pick(patience, "patience", None)
-        self.seed = pick(seed, "seed", None)
+        self.factor_model = factor_model
+        self.trading = trading
+        self.n_factors = n_factors
+        self.embed_dim = embed_dim
+        self.hist_len = hist_len
+        self.n_kernels = n_kernels
+        self.ridge = ridge
+        self.squash_lambda = squash_lambda
+        self.pca_window = pca_window
+        self.reestim = reestim
+        self.lambda_var = lambda_var
+        self.turnover_cost = turnover_cost
+        self.short_cost = short_cost
+        self.risk_free = risk_free
+        self.learning_rate = learning_rate
+        self.max_epochs = max_epochs
+        self.patience = patience
+        self.seed = seed
 
         if self.factor_model not in ("attention", "pca"):
             raise ConfigurationError(
@@ -166,28 +145,17 @@ class AFMEngine(nn.Module):
                     device: Any) -> AFMEngine:
         """Rebuild an engine without ``__init__``: no dataset, no seeding.
 
-        ``params`` holds the hyperparameters that ``__init__`` assigns
-        (``factor_model``, ``trading``, ``n_factors``, ``embed_dim``,
-        ``hist_len``, ``n_kernels``, ``ridge``, ``squash_lambda``,
-        ``pca_window``, ``reestim``, ``lambda_var``, ``turnover_cost``,
-        ``short_cost``, ``risk_free``, ``learning_rate``, ``max_epochs``,
-        ``patience`` and ``seed``). The components are built on ``device``
-        inside ``torch.random.fork_rng``, so their initial draws do not consume
-        the caller's CPU RNG; load the saved weights over them.
+        ``params`` holds the ``_HYPERPARAMS``. The components are built on
+        ``device`` inside ``torch.random.fork_rng``, so their initial draws do
+        not consume the caller's CPU RNG; load the saved weights over them.
         """
         with torch.random.fork_rng(devices=[]):
             self = cls.__new__(cls)
             _init_engine_state(self)
             nn.Module.__init__(self)
-            self._config = None
-            for name in ("factor_model", "trading", "n_factors", "embed_dim",
-                         "hist_len", "n_kernels", "ridge", "squash_lambda",
-                         "pca_window", "reestim", "lambda_var", "turnover_cost",
-                         "short_cost", "risk_free", "learning_rate", "max_epochs",
-                         "patience", "seed"):
+            for name in _HYPERPARAMS:
                 setattr(self, name, params[name])
             self.device = torch.device(device)
-            self._dataset = None
             self.n_char = n_char
             self._built = False
             self.loss_now = None
@@ -198,7 +166,6 @@ class AFMEngine(nn.Module):
             self._build_components()
         return self
 
-    # ------------------------------------------------------------------ setup
     def _infer_dims(self, dataset: Any, n_char: Optional[int]) -> None:
         self.n_char = n_char if n_char is not None else getattr(dataset, "n_char", None)
         if self.n_factors is None:
@@ -222,26 +189,14 @@ class AFMEngine(nn.Module):
         self.to(self.device)
         self._built = True
 
-    def set_dataset(self, dataset: Any) -> AFMEngine:
-        """Attach a dataset and (re)build components (iVDFM pattern)."""
-        self._dataset = dataset
-        self._infer_dims(dataset, getattr(self, "n_char", None))
-        self._build_components()
-        return self
-
-    # --------------------------------------------------------------- forward
     def _factor_weights(self, returns: torch.Tensor,
                         characteristics: Optional[torch.Tensor]):
-        """Per-date factor weights/loadings for a batch window.
-
-        Returns ``omega_f`` (B, W, K, N) and ``beta_t`` (B, W, N, K). For PCA a
-        single covariance is estimated per window and broadcast across dates.
-        """
+        """Per-date ``omega_f`` (B, W, K, N) and ``beta_t`` (B, W, N, K)."""
         if self.factor_model == "attention":
             if characteristics is None:
                 raise DataValidationError("attention factors require characteristics")
             return self.factor_block(characteristics)
-        # PCA: re-estimated on a rolling trailing window (not one static covariance).
+        # The paper's benchmark re-estimates PCA on a rolling trailing window.
         return rolling_pca_weights(returns, self.n_factors, self.pca_window,
                                    self.reestim, self.ridge)
 
@@ -311,14 +266,13 @@ class AFMEngine(nn.Module):
         return {"loss": loss, "sharpe": sharpe, "ev": ev, "residuals": eps,
                 "book_returns": book_returns, "weights": weights}
 
-    # -------------------------------------------------------------------- fit
-    def fit(self, X: Optional[Any] = None) -> AFMModelState:
-        """Train by maximizing the after-cost Sharpe + explained-variance objective."""
+    def fit(self) -> AFMModelState:
+        """Train full-batch by maximizing Sharpe + lambda_var * EV on the attached dataset."""
         if self._dataset is None:
-            raise ConfigurationError("no dataset attached; pass one to __init__ or set_dataset")
+            raise ConfigurationError("no dataset attached; pass one to __init__ or update")
         if not self._built:
             self._build_components()
-        returns, characteristics = self._batch_from_dataset()
+        returns, characteristics = self._as_batch(self._dataset)
         params = [p for p in self.parameters() if p.requires_grad]
         from ...numeric.builder import build_afm_optimizer
         optimizer = build_afm_optimizer(params, self.learning_rate) if params else None
@@ -356,21 +310,10 @@ class AFMEngine(nn.Module):
         self._result = None
         return self.training_state
 
-    def _batch_from_dataset(self):
-        ds = self._dataset
-        returns, characteristics = ds.get_tensors(self.device)
-        if returns.dim() == 2:                                     # (T, N) -> (1, T, N)
-            returns = returns.unsqueeze(0)
-        if characteristics is not None and characteristics.dim() == 3:
-            characteristics = characteristics.unsqueeze(0)
-        return returns, characteristics
+    def predict(self, *, data: Optional[Any] = None) -> dict:
+        """Residuals, weights and book returns (numpy) on ``data`` or the attached dataset.
 
-    # ---------------------------------------------------------------- predict
-    def predict(self, horizon: Optional[int] = None, *, data: Optional[Any] = None):
-        """Return residuals, portfolio weights, and book returns for the data.
-
-        AFM is not a horizon forecaster; ``predict`` reports the current
-        positioning (the trading output), which is what the model produces.
+        AFM is not a horizon forecaster: the trading output is its prediction.
         """
         if self.training_state is None:
             raise ModelNotTrainedError("Model has not been trained yet")
@@ -385,6 +328,7 @@ class AFMEngine(nn.Module):
                 "book_returns": out["book_returns"].cpu().numpy()}
 
     def _as_batch(self, ds: Any):
+        """The dataset's full panel as a batch of one: (1, T, N) and (1, T, N, M) or None."""
         returns, characteristics = ds.get_tensors(self.device)
         if returns.dim() == 2:
             returns = returns.unsqueeze(0)
@@ -392,16 +336,13 @@ class AFMEngine(nn.Module):
             characteristics = characteristics.unsqueeze(0)
         return returns, characteristics
 
-    # ----------------------------------------------------------------- update
-    def update(self, data: Any, *args: Any, retrain: bool = False, **kwargs: Any) -> None:
-        """Attach new data; optionally retrain from it."""
-        if data is not None:
-            self._dataset = data
-            self._infer_dims(data, getattr(self, "n_char", None))
+    def update(self, data: Any, *, retrain: bool = False) -> None:
+        """Attach ``data``; with ``retrain`` continue training on it from the current weights."""
+        self._dataset = data
+        self._infer_dims(data, getattr(self, "n_char", None))
         if retrain:
             self.fit()
 
-    # ------------------------------------------------------------- get_result
     def get_result(self) -> AFMResult:
         if self.training_state is None:
             raise ModelNotTrainedError("Model has not been trained yet")
@@ -416,15 +357,3 @@ class AFMEngine(nn.Module):
             factor_model=self.factor_model, trading=self.trading,
             num_factors=self.n_factors)
         return self._result
-
-    def _ensure_result(self) -> AFMResult:
-        """Ensure result exists, computing it if necessary."""
-        if self._result is None:
-            if self.training_state is None:
-                raise ModelNotTrainedError("Model has not been trained yet")
-            self._result = self.get_result()
-        return self._result
-
-    @property
-    def result(self) -> AFMResult:
-        return self._ensure_result()
