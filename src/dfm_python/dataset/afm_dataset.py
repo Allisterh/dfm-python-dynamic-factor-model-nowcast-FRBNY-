@@ -1,9 +1,11 @@
 """Dataset for the Attention Factor Model.
 
 AFM consumes a cross-sectional panel: at each date the asset returns ``R_t``
-(N,) and, for the attention factors, the firm characteristics ``X_{t-1}``
-(N, M). Row ``t`` pairs the returns at ``t`` with the characteristics known at
-``t``; the model takes the lagged slice itself.
+(N,) and, for the attention factors, the firm characteristics (N, M) the
+factor model conditions on at ``t``. Row ``t`` pairs the returns at ``t`` with
+the characteristics of the same row; the dataset does not lag them, so pass
+the characteristics known before ``R_t`` realizes (typically ``X_{t-1}``).
+The trading step applies the weights of date ``t-1`` to the returns of ``t``.
 """
 
 from __future__ import annotations

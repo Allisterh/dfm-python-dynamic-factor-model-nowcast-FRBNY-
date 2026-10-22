@@ -544,6 +544,35 @@ class TestFidelity:
         assert of.shape == (1, 400, 2, 8) and bt.shape == (1, 400, 8, 2)
         assert not torch.allclose(of[:, 50], of[:, 350])       # re-estimated, not static
 
+    def test_rolling_pca_has_no_look_ahead(self):
+        from dfm_python.models.afm.factors import rolling_pca_weights
+        R = torch.randn(1, 80, 6)
+        kw = dict(n_factors=2, pca_window=40, reestim=10, ridge=1e-2)
+        of, bt = rolling_pca_weights(R, **kw)
+        # Before the first estimate (30 dates) there are no factor weights.
+        assert torch.all(of[:, :29] == 0) and torch.all(bt[:, :29] == 0)
+        assert torch.any(of[:, 29] != 0)
+        # Changing the future leaves earlier weights untouched.
+        R2 = R.clone()
+        R2[:, 50:] = torch.randn(1, 30, 6)
+        of2, _ = rolling_pca_weights(R2, **kw)
+        assert torch.equal(of2[:, :49], of[:, :49])
+        assert not torch.equal(of2[:, 59], of[:, 59])
+
+    def test_pca_model_ignores_characteristics_after_fit(self):
+        model = _model(factor_model="pca", trading="ou").fit(_panel(chars=False))
+        returns, chars = _make_data(seed=1)
+        with_chars = PanelData.from_arrays(returns, series_exog=chars, names=list(model.feature_names_in_))
+        assert model.allocate(data=with_chars).shape == (50, 6)
+
+    def test_refit_resets_converged(self):
+        model = _model(factor_model="pca", trading="longconv", learning_rate=1e-12, patience=1,
+                       max_epochs=4).fit(_panel(chars=False))
+        assert model.converged_ and model.n_iter_ == 2
+        model.network_.patience = None
+        model.update(_panel(chars=False, seed=2), refit=True)
+        assert not model.converged_ and model.n_iter_ == 4
+
     def test_pca_uses_rolling_not_static(self):
         # A model with factor_model='pca' should re-estimate over time.
         returns, _ = _make_data(T=120, N=6)

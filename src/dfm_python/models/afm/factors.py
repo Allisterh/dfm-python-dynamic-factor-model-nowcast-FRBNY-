@@ -155,7 +155,9 @@ def rolling_pca_weights(returns: torch.Tensor, n_factors: int, pca_window: int,
 
     As in the paper's benchmark, weights are recomputed every ``reestim``
     steps on the trailing ``pca_window`` and held constant in between, so the
-    PCA never sees the future and can track drift.
+    PCA never sees the future and can track drift. The first estimate uses
+    the first ``min(pca_window, max(2 * n_factors + 1, 30))`` dates; earlier
+    dates get zero weights, so their residuals are the raw returns.
 
     Parameters
     ----------
@@ -173,17 +175,10 @@ def rolling_pca_weights(returns: torch.Tensor, n_factors: int, pca_window: int,
     K = n_factors
     pca = PCAFactors(K, ridge)
     min_len = min(pca_window, max(2 * K + 1, 30))
-    est_dates = [w for w in range(W) if w % reestim == 0 and w + 1 >= min_len]
-    if not est_dates:
-        est_dates = [W - 1]
-    ests = {}
-    for w in est_dates:
-        lo = max(0, w + 1 - pca_window)
-        ests[w] = pca(returns[:, lo:w + 1])                        # (B,K,N),(B,N,K)
     of = returns.new_zeros(B, W, K, N)
     bt = returns.new_zeros(B, W, N, K)
-    for w in range(W):
-        prior = [e for e in est_dates if e <= w]
-        key = prior[-1] if prior else est_dates[0]
-        of[:, w], bt[:, w] = ests[key]
+    for w in range(min_len - 1, W, reestim):
+        lo = max(0, w + 1 - pca_window)
+        est = pca(returns[:, lo:w + 1])                            # (B,K,N),(B,N,K)
+        of[:, w:w + reestim], bt[:, w:w + reestim] = est[0].unsqueeze(1), est[1].unsqueeze(1)
     return of, bt

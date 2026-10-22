@@ -93,7 +93,9 @@ class AFM(BaseFactorModel):
     squash_lambda : float, default 1e-3
         LongConv Squash regularizer strength.
     pca_window : int, default 252
-        Trailing window of the PCA benchmark.
+        Trailing window of the PCA benchmark. The first estimate uses the
+        first ``min(pca_window, max(2 * n_factors + 1, 30))`` dates; earlier
+        dates get zero factor weights (residuals equal the returns).
     reestim : int, default 21
         PCA re-estimation stride.
     lambda_var : float, default 0.1
@@ -280,7 +282,7 @@ class AFM(BaseFactorModel):
             )
 
     def _panel(self, data: Any, method: str) -> PanelData:
-        """Validate ``data`` for a fitted model: same assets and characteristics as in training."""
+        """Validate ``data`` for a fitted model: same assets and, for attention factors, same characteristics."""
         panel = self._validate_data(data)
         expected = list(self.feature_names_in_)
         if list(panel.series_names) != expected:
@@ -289,7 +291,8 @@ class AFM(BaseFactorModel):
                 "Pass the same assets in the same order."
             )
         trained = list(self.series_exog_names_in_)
-        if panel.series_exog_names and list(panel.series_exog_names) != trained:
+        if (self.network_.factor_model == "attention" and panel.series_exog_names
+                and list(panel.series_exog_names) != trained):
             raise DataValidationError(
                 f"AFM.{method}: data has series_exog features {list(panel.series_exog_names)}, but the model was "
                 f"fitted on {trained}. Pass the same characteristics in the same order."

@@ -4,6 +4,19 @@
 
 ### Bug fixes
 
+- AFM `factor_model="pca"`: dates before the first rolling-PCA estimate took
+  the weights of that estimate, which is computed from returns up to the
+  first estimation date (a look-ahead over the first
+  `min(pca_window, max(2 * n_factors + 1, 30))` dates). Those dates now
+  have zero factor weights, so their residuals are the raw returns, and the
+  first estimate is made as soon as enough dates are available instead of at
+  the next multiple of `reestim`. The `afm_pca_*` golden cases were
+  recaptured; attention factors are unaffected.
+- AFM `update(data, refit=True)` kept `converged_=True` from an earlier fit
+  even when the refit ran to `max_epochs`.
+- AFM `allocate`, `backtest` and `update` rejected data whose `series_exog`
+  differs from the fitted one for `factor_model="pca"`, which does not read
+  the characteristics. The check now applies to attention factors only.
 - DFM `ar_clip` clipped every entry of the transition matrix, including the
   identity entries of the companion and chain shift rows (1.0 became
   `ar_clip["max"]`). Only the estimated VAR and AR(1) coefficients are

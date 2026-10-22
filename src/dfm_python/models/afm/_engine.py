@@ -280,6 +280,7 @@ class AFMEngine(nn.Module):
         best = float("inf")
         no_improve = 0
         last = None
+        self._converged = False
         for epoch in range(int(self.max_epochs)):
             out = self.forward(returns, characteristics)
             loss = out["loss"]
