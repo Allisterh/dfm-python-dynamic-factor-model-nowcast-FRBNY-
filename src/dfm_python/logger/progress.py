@@ -1,4 +1,4 @@
-"""Fit-scoped progress output.
+"""Fit-scoped progress output and the engines' progress reporting.
 
 ``fit_verbosity(verbose)`` maps a model's ``verbose`` hyperparameter to log
 output that exists only while ``fit`` runs:
@@ -18,13 +18,10 @@ printed twice); only the level is lowered for the duration of the block.
 engine's loggers are raised to WARNING (or another level) for the duration of
 the block.
 
-The engines' progress reporting lives here too (it was in the removed
-``train_logger`` and ``ivdfm_logger`` modules; messages and levels are
-unchanged), logged to the ``'dfm_python.logger.progress'`` logger:
-
-- :func:`log_em_iteration` and :func:`log_convergence`, called by the DFM EM
-  loop (``functional.em``);
-- :class:`iVDFMTrainLogger`, the iVDFM engine's training reporter.
+The engines log their progress to the ``'dfm_python.logger.progress'``
+logger through :func:`log_em_iteration` and :func:`log_convergence` (the DFM
+EM loop in ``functional.em``) and :class:`iVDFMTrainLogger` (the iVDFM
+engine).
 """
 
 import logging
@@ -148,38 +145,21 @@ def quiet_engine_loggers(verbose: int, names: Iterable[str], level: int = loggin
             logger.setLevel(level)
 
 
-# ---------------------------------------------------------------------------
-# Engine progress reporting
-# ---------------------------------------------------------------------------
-
-
 def log_em_iteration(
     iteration: int,
     loglik: Optional[float] = None,
     delta: Optional[float] = None,
     **kwargs
 ) -> None:
-    """Log EM algorithm iteration (convenience function for DFM).
-    
-    Parameters
-    ----------
-    iteration : int
-        Current iteration number
-    loglik : float, optional
-        Log-likelihood value
-    delta : float, optional
-        Convergence delta
-    **kwargs
-        Additional metrics to log
-    """
+    """Log one EM iteration at INFO: iteration, log-likelihood, delta and any extra metrics."""
     if loglik is not None:
         msg = f"EM iteration {iteration:4d} | Log-likelihood: {loglik:12.6f}"
     else:
         msg = f"EM iteration {iteration:4d}"
-    
+
     if delta is not None:
         msg += f" | Delta: {delta:10.6e}"
-    
+
     for key, value in kwargs.items():
         if isinstance(value, (int, float)):
             msg += f" | {key}: {value:.6f}"
@@ -187,7 +167,7 @@ def log_em_iteration(
             msg += f" | {key}: shape {value.shape}"
         else:
             msg += f" | {key}: {value}"
-    
+
     _logger.info(msg)
 
 
@@ -200,41 +180,27 @@ def log_convergence(
     reason: Optional[str] = None,
     model_type: str = "dfm"
 ) -> None:
-    """Log convergence status (convenience function).
-    
-    Parameters
-    ----------
-    converged : bool
-        Whether training converged
-    num_iter : int, optional
-        Number of EM iterations completed (for DFM)
-    num_epochs : int, optional
-        Number of epochs completed (for DDFM)
-    final_loglik : float, optional
-        Final log-likelihood value (for DFM)
-    final_loss : float, optional
-        Final training loss (for DDFM)
-    reason : str, optional
-        Reason for stopping
-    model_type : str, default "dfm"
-        Type of model: "dfm" or "ddfm"
+    """Log the stopping status: INFO when converged, WARNING otherwise, then reason and final values.
+
+    ``model_type`` ``"dfm"`` reports EM iterations (``num_iter``); any other
+    value reports epochs (``num_epochs``).
     """
     model_type = model_type.lower()
-    
+
     if model_type == "dfm":
         if converged:
             _logger.info(f"✓ EM algorithm converged after {num_iter} iterations")
         else:
             _logger.warning(f"⚠ EM algorithm did not converge after {num_iter} iterations")
-    else:  # ddfm
+    else:
         if converged:
             _logger.info(f"✓ Training converged after {num_epochs} epochs")
         else:
             _logger.warning(f"⚠ Training did not converge after {num_epochs} epochs")
-    
+
     if reason:
         _logger.info(f"  Reason: {reason}")
-    
+
     if final_loglik is not None:
         _logger.info(f"  Final log-likelihood: {final_loglik:.6f}")
     if final_loss is not None:
@@ -242,22 +208,16 @@ def log_convergence(
 
 
 class iVDFMTrainLogger:
-    """Training logger for iVDFM models (variational inference).
+    """Training reporter of the iVDFM engine: ``start``, ``log_epoch``, ``log_convergence``, ``end``.
 
-    The old ``BaseTrainLogger`` merged with its iVDFM subclass: ``start``,
-    ``log_convergence`` and ``end`` are the base's methods and ``log_epoch``
-    is the iVDFM one. The base's EM ``log_iteration`` and DDFM ``log_epoch``
-    had no caller and were dropped.
+    Parameters
+    ----------
+    verbose : bool, default True
+        Log the configuration, the data and every epoch; otherwise only the
+        first epoch and every tenth.
     """
-    
+
     def __init__(self, verbose: bool = True):
-        """Initialize iVDFM training logger.
-        
-        Parameters
-        ----------
-        verbose : bool, default True
-            Whether to log detailed information
-        """
         self.model_name = "iVDFM"
         self.verbose = verbose
         self.start_time: Optional[datetime] = None
@@ -266,55 +226,41 @@ class iVDFMTrainLogger:
         self.epochs: int = 0
         self.converged: bool = False
         self.metrics_history: List[Dict[str, Any]] = []
-        
+
     def start(
-        self, 
+        self,
         config: Optional[Dict[str, Any]] = None,
         data_info: Optional[Dict[str, Any]] = None
     ) -> None:
-        """Log training start.
-        
-        Parameters
-        ----------
-        config : dict, optional
-            Training configuration to log (e.g., max_iter, threshold, epochs, learning_rate)
-        data_info : dict, optional
-            Data information to log (e.g., shape, num_series, num_timepoints)
-        """
+        """Reset the counters and log the training start with ``config`` and ``data_info`` (when verbose)."""
         self.start_time = datetime.now()
         self.iterations = 0
         self.epochs = 0
         self.converged = False
         self.metrics_history = []
-        
+
         _logger.info(f"{'='*70}")
         _logger.info(f"Starting {self.model_name} training")
         _logger.info(f"{'='*70}")
-        
+
         if config and self.verbose:
             _logger.info("Training configuration:")
-            for key, value in config.items():
-                if isinstance(value, (int, float)):
-                    _logger.info(f"  {key}: {value}")
-                elif isinstance(value, (list, tuple)):
-                    _logger.info(f"  {key}: {value}")
-                elif isinstance(value, np.ndarray):
-                    _logger.info(f"  {key}: shape {value.shape}")
-                else:
-                    _logger.info(f"  {key}: {value}")
-        
+            self._log_items(config)
+
         if data_info and self.verbose:
             _logger.info("Data information:")
-            for key, value in data_info.items():
-                if isinstance(value, (int, float)):
-                    _logger.info(f"  {key}: {value}")
-                elif isinstance(value, np.ndarray):
-                    _logger.info(f"  {key}: shape {value.shape}")
-                else:
-                    _logger.info(f"  {key}: {value}")
-        
+            self._log_items(data_info)
+
         _logger.info("")
-    
+
+    @staticmethod
+    def _log_items(items: Dict[str, Any]) -> None:
+        for key, value in items.items():
+            if isinstance(value, np.ndarray):
+                _logger.info(f"  {key}: shape {value.shape}")
+            else:
+                _logger.info(f"  {key}: {value}")
+
     def log_epoch(
         self,
         epoch: int,
@@ -324,26 +270,9 @@ class iVDFMTrainLogger:
         learning_rate: float = None,
         **kwargs
     ) -> None:
-        """Log training epoch information for iVDFM.
-        
-        Parameters
-        ----------
-        epoch : int
-            Current epoch number
-        elbo : float, optional
-            ELBO value (negative, to minimize)
-        recon_loss : float, optional
-            Reconstruction loss component
-        kl_loss : float, optional
-            KL divergence component
-        learning_rate : float, optional
-            Current learning rate
-        **kwargs
-            Additional metrics to log
-        """
+        """Record the epoch's metrics and log them (every epoch when verbose, else epochs 1, 10, 20, ...)."""
         self.epochs = epoch
-        
-        # Store metrics in history
+
         metrics = {
             "epoch": epoch,
             "elbo": elbo,
@@ -353,7 +282,7 @@ class iVDFMTrainLogger:
         }
         metrics.update(kwargs)
         self.metrics_history.append(metrics)
-        
+
         if self.verbose:
             msg = f"Epoch {epoch:4d}"
             if elbo is not None:
@@ -364,22 +293,20 @@ class iVDFMTrainLogger:
                 msg += f" | KL: {kl_loss:12.6f}"
             if learning_rate is not None:
                 msg += f" | LR: {learning_rate:.6e}"
-            
+
             for key, value in kwargs.items():
                 if isinstance(value, (int, float)):
                     msg += f" | {key}: {value:.6f}"
                 else:
                     msg += f" | {key}: {value}"
-            
+
             _logger.info(msg)
-        else:
-            # Less verbose: log every 10 epochs
-            if epoch % 10 == 0 or epoch == 1:
-                msg = f"Epoch {epoch:4d}"
-                if elbo is not None:
-                    msg += f" | ELBO: {elbo:12.6f}"
-                _logger.info(msg)
-    
+        elif epoch % 10 == 0 or epoch == 1:
+            msg = f"Epoch {epoch:4d}"
+            if elbo is not None:
+                msg += f" | ELBO: {elbo:12.6f}"
+            _logger.info(msg)
+
     def log_convergence(
         self,
         converged: bool,
@@ -389,29 +316,13 @@ class iVDFMTrainLogger:
         final_loss: Optional[float] = None,
         reason: Optional[str] = None
     ) -> None:
-        """Log convergence status.
-        
-        Parameters
-        ----------
-        converged : bool
-            Whether training converged
-        num_iter : int, optional
-            Number of EM iterations completed (for DFM)
-        num_epochs : int, optional
-            Number of epochs completed (for DDFM)
-        final_loglik : float, optional
-            Final log-likelihood value (for DFM)
-        final_loss : float, optional
-            Final training loss (for DDFM)
-        reason : str, optional
-            Reason for stopping (e.g., "converged", "max_iterations", "max_epochs", "early_stopping")
-        """
+        """Log the stopping status (INFO when converged, WARNING otherwise) with reason and final values."""
         self.converged = converged
         if num_iter is not None:
             self.iterations = num_iter
         if num_epochs is not None:
             self.epochs = num_epochs
-        
+
         _logger.info("")
         if num_iter is not None:
             if converged:
@@ -423,27 +334,22 @@ class iVDFMTrainLogger:
                 _logger.info(f"✓ Training converged after {num_epochs} epochs")
             else:
                 _logger.warning(f"⚠ Training did not converge after {num_epochs} epochs")
-        
+
         if reason:
             _logger.info(f"  Reason: {reason}")
-        
+
         if final_loglik is not None:
             _logger.info(f"  Final log-likelihood: {final_loglik:.6f}")
         if final_loss is not None:
             _logger.info(f"  Final training loss: {final_loss:.6f}")
-    
+
     def end(self, success: bool = True, **kwargs) -> None:
-        """Log training end.
-        
-        Parameters
-        ----------
-        success : bool, default True
-            Whether training completed successfully
-        **kwargs
-            Additional information to log (e.g., metrics, warnings, model info)
+        """Log the duration, counters, the first/last ``loglik`` and ``train_loss`` of the history, and ``kwargs``.
+
+        Logs nothing when ``start`` was not called.
         """
         self.end_time = datetime.now()
-        
+
         if self.start_time:
             duration = (self.end_time - self.start_time).total_seconds()
             _logger.info("")
@@ -452,34 +358,31 @@ class iVDFMTrainLogger:
                 _logger.info("Training completed successfully")
             else:
                 _logger.error("Training failed")
-            
+
             _logger.info(f"  Duration: {duration:.2f} seconds ({duration/60:.2f} minutes)")
-            
+
             if self.iterations > 0:
                 _logger.info(f"  EM Iterations: {self.iterations}")
             if self.epochs > 0:
                 _logger.info(f"  Epochs: {self.epochs}")
-            
+
             _logger.info(f"  Converged: {self.converged}")
-            
-            # Log summary metrics from history
+
             if self.metrics_history:
                 logliks = [m.get("loglik") for m in self.metrics_history if m.get("loglik") is not None]
                 if logliks:
                     _logger.info(f"  Initial log-likelihood: {logliks[0]:.6f}")
                     _logger.info(f"  Final log-likelihood: {logliks[-1]:.6f}")
                     if len(logliks) > 1:
-                        improvement = logliks[-1] - logliks[0]
-                        _logger.info(f"  Improvement: {improvement:.6f}")
-                
+                        _logger.info(f"  Improvement: {logliks[-1] - logliks[0]:.6f}")
+
                 losses = [m.get("train_loss") for m in self.metrics_history if m.get("train_loss") is not None]
                 if losses:
                     _logger.info(f"  Initial train loss: {losses[0]:.6f}")
                     _logger.info(f"  Final train loss: {losses[-1]:.6f}")
                     if len(losses) > 1:
-                        improvement = losses[0] - losses[-1]  # Loss decreases
-                        _logger.info(f"  Improvement: {improvement:.6f}")
-            
+                        _logger.info(f"  Improvement: {losses[0] - losses[-1]:.6f}")
+
             for key, value in kwargs.items():
                 if isinstance(value, (int, float)):
                     _logger.info(f"  {key}: {value:.6f}")
@@ -487,6 +390,6 @@ class iVDFMTrainLogger:
                     _logger.info(f"  {key}: shape {value.shape}")
                 else:
                     _logger.info(f"  {key}: {value}")
-            
+
             _logger.info(f"{'='*70}")
             _logger.info("")

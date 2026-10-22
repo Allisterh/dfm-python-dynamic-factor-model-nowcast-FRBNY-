@@ -1,13 +1,13 @@
-"""Logging utilities for dfm-python.
+"""Logging utilities.
 
 The package is silent by default: the ``'dfm_python'`` logger has only a
-``NullHandler``. Two modules:
+``NullHandler``.
 
-- ``logger``: basic configuration (``get_logger``, ``setup_logging``,
-  ``configure_logging``) and the opt-in verbosity (``set_verbosity``,
-  ``get_verbosity`` and the ``DFM_PYTHON_VERBOSITY`` environment variable).
-- ``progress``: the fit-scoped progress contexts (``fit_verbosity``,
-  ``quiet_engine_loggers``) and the engines' progress reporting
+- ``logger``: ``get_logger``, ``setup_logging``, ``configure_logging`` and the
+  opt-in verbosity (``set_verbosity``, ``get_verbosity`` and the
+  ``DFM_PYTHON_VERBOSITY`` environment variable).
+- ``progress``: the fit-scoped contexts ``fit_verbosity`` and
+  ``quiet_engine_loggers``, and the engines' progress reporting
   (``log_em_iteration``, ``log_convergence``, ``iVDFMTrainLogger``).
 """
 
