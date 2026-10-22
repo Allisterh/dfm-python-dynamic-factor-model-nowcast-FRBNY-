@@ -1,25 +1,15 @@
 """``iVDFM``: the identifiable variational dynamic factor model estimator (sklearn conventions, PanelData input).
 
-The estimator is a thin layer over the private engine
-:class:`~dfm_python.models.ivdfm._engine.iVDFMEngine`. ``fit`` builds the
+A thin layer over the private engine
+:class:`~dfm_python.models.ivdfm._engine.iVDFMEngine`: ``fit`` builds the
 engine's sliding-window dataset from :class:`~dfm_python.PanelData` (targets
 from ``y``, the context u_t from ``exog`` plus generated time features),
 constructs the engine with every hyperparameter passed explicitly (the engine
-seeds, then builds its networks) and trains it. The engine's numbers are
-unchanged: same data and same hyperparameters give the same factors,
-innovations and forecasts.
-
-``predict(h)`` returns forecasts in data units (the engine's model-space
-forecast inverse-transformed with ``scaler_``), and ``predict_factors(h)`` the
-forecast factors. ``update(data)`` encodes new data with the fixed networks
-and appends the factors (the engine's ``update``); ``predict(h, data=...)``
-does the same on a copy, so the model is unchanged.
-
-``save(path)`` writes the pickle-free directory of the save layout
-(``state.npz``/``state.json`` with the engine's factor state and the fit's
-``factors_``, ``result.npz``/``result.json`` with ``result_`` and
-``weights.pt`` with the network weights); ``iVDFM.load(path, device=None)``
-rebuilds the engine from them without data or seeding.
+seeds, then builds its networks) and trains it. ``predict(h)`` inverse-transforms
+the engine's model-space forecast with ``scaler_``; ``update(data)`` encodes
+new data with the fixed networks and appends the factors; ``predict(h, data=...)``
+does the same on a copy. ``save``/``load`` use the pickle-free directory layout
+(``state.npz``/``state.json``, ``result.npz``/``result.json``, ``weights.pt``).
 """
 
 from __future__ import annotations
@@ -280,16 +270,6 @@ class iVDFM(BaseFactorModel):
         Time index of the data the forecasts start from (the training data,
         or the data of the last ``update``); ``predict(h)`` returns the ``h``
         stamps after its last entry.
-
-    Examples
-    --------
-    >>> from dfm_python import iVDFM, PanelData
-    >>> data = PanelData(y=targets_df, exog=context_df)  # doctest: +SKIP
-    >>> model = iVDFM(n_factors=5, factor_order=3, window=200, max_epochs=10, scaler="standard").fit(data)  # doctest: +SKIP
-    >>> model.predict(6, futr_exog=future_context_df)  # doctest: +SKIP
-    >>> model.update(new_data).predict(6, futr_exog=future_context_df)  # doctest: +SKIP
-    >>> model.save("runs/ivdfm")  # doctest: +SKIP
-    >>> iVDFM.load("runs/ivdfm").predict(6, futr_exog=future_context_df)  # doctest: +SKIP
     """
 
     _tags = {
@@ -410,11 +390,7 @@ class iVDFM(BaseFactorModel):
     # -- validation ----------------------------------------------------------
 
     def _validate_params(self) -> None:
-        """Raise ``ConfigurationError`` naming the first invalid hyperparameter.
-
-        The rules are those of the old ``iVDFMConfig`` validation, under the
-        canonical names, plus type checks.
-        """
+        """Raise ``ConfigurationError`` naming the first invalid hyperparameter."""
         name = type(self).__name__
 
         def fail(message: str) -> None:
@@ -443,16 +419,12 @@ class iVDFM(BaseFactorModel):
             fail(f"optimizer must be one of {sorted(VALID_OPTIMIZERS)}, got {self.optimizer!r}.")
         if self.scheduler_type not in _SCHEDULERS:
             fail(f"scheduler_type must be one of {_SCHEDULERS}, got {self.scheduler_type!r}.")
-        positive = ("slope", "decoder_var", "regime_temperature", "learning_rate")
-        for param in positive:
+        if not _is_real(self.slope) or self.slope < 0:
+            fail(f"slope must be a finite number >= 0, got {self.slope!r}.")
+        for param in ("decoder_var", "regime_temperature", "learning_rate"):
             value = getattr(self, param)
-            if param == "slope":
-                ok = _is_real(value) and value >= 0
-            else:
-                ok = _is_real(value) and value > 0
-            if not ok:
-                bound = ">= 0" if param == "slope" else "> 0"
-                fail(f"{param} must be a finite number {bound}, got {value!r}.")
+            if not _is_real(value) or value <= 0:
+                fail(f"{param} must be a finite number > 0, got {value!r}.")
         for param in ("beta_kl", "optimizer_weight_decay", "optimizer_momentum", "tol", "scheduler_min_lr"):
             value = getattr(self, param)
             if not _is_real(value) or value < 0:
@@ -534,13 +506,10 @@ class iVDFM(BaseFactorModel):
 
         The time column holds the ``DatetimeIndex`` (a ``PeriodIndex`` through
         ``to_timestamp()``); a ``RangeIndex`` gives no time column, so the time
-        features use the position. The dataset interpolates missing values,
-        scales the targets and cuts the windows exactly as before.
-
-        With ``fitted=True`` (``update`` and ``predict(data=...)``) the dataset
-        uses the fitted ``window_``, ``stride_`` and ``time_context_`` (the
-        dataset clips the window to the length of ``panel``) and scales the
-        targets with ``scaler_`` without refitting it.
+        features use the position. With ``fitted=True`` (``update`` and
+        ``predict(data=...)``) the dataset uses the fitted ``window_``,
+        ``stride_`` and ``time_context_`` and scales the targets with
+        ``scaler_`` without refitting it.
         """
         frame = panel.y.reset_index(drop=True)
         if panel.exog is not None:
@@ -757,8 +726,7 @@ class iVDFM(BaseFactorModel):
         """Run the engine's ``update`` on ``panel``: encode it with the fixed networks and append the factors.
 
         The dataset is built like the training dataset, with the fitted window,
-        stride and time context and the fitted ``scaler_``. The engine is called
-        with its default ``append=True`` and ``store_full_history=True``.
+        stride and time context and the fitted ``scaler_``.
         """
         dataset = self._adapter(panel, self.device_, fitted=True)
         with fit_verbosity(self.verbose), quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS), \
@@ -986,28 +954,20 @@ class iVDFM(BaseFactorModel):
     def _save_state(self, path: Path) -> None:
         """Write the iVDFM part of the saved run (spec section 7).
 
-        - ``state.npz``: the engine's current ``factors``, ``innovations`` and
-          ``regime_weights`` (when it has them; after ``update`` they include
-          the appended factors), and ``fit/factors``, ``fit/window`` and
-          ``fit/position`` (``factors_``: values, window labels and row
-          positions in ``index_``), plus the ``scaler/`` entries;
-        - ``state.json``: the training diagnostics (``num_iter``,
-          ``loss_now``, ``elbo``, ``converged``), the engine's ``data_dim``,
-          ``context_dim``, ``time_context`` and ``window``, the estimator's
-          ``window_``, ``stride_``, ``time_context_`` and ``context_dim_``, and
-          ``conditioning_index``;
-        - ``result.npz`` / ``result.json``: ``result_`` without
-          ``model_state_dict`` and ``config``, which are rebuilt on load from
-          the weights and from the engine config (``config.json`` holds the
-          hyperparameters; JSON would also reorder the config's keys);
-        - ``weights.pt``: ``network_.state_dict()``.
+        ``state.npz``: the engine's current ``factors``, ``innovations`` and
+        ``regime_weights`` (when it has them), ``fit/factors``, ``fit/window``
+        and ``fit/position`` (``factors_`` as values, window labels and row
+        positions in ``index_``) and the ``scaler/`` entries. ``state.json``:
+        the training diagnostics, the engine dims, the fitted window attributes
+        and ``conditioning_index``. ``result.npz``/``result.json``: ``result_``
+        without ``model_state_dict`` and ``config``, rebuilt on load from
+        ``weights.pt`` and the engine config.
         """
         engine = self.network_
         frame = self.factors_
         arrays = {"factors": engine.factors, "innovations": engine.innovations}
-        regime_weights = getattr(engine, "regime_weights", None)
-        if regime_weights is not None:
-            arrays["regime_weights"] = regime_weights
+        if engine.regime_weights is not None:
+            arrays["regime_weights"] = engine.regime_weights
         arrays["fit/factors"] = frame.to_numpy()
         arrays["fit/window"] = frame.index.get_level_values(0).to_numpy(dtype=np.int64)
         arrays["fit/position"] = self.index_.get_indexer(frame.index.get_level_values(1)).astype(np.int64)

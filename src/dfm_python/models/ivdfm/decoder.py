@@ -12,9 +12,6 @@ import torch.nn as nn
 
 from ..base import BaseDecoder
 from ...layer.mlp import MLP
-from ...logger import get_logger
-
-_logger = get_logger(__name__)
 
 
 class iVDFMDecoder(BaseDecoder):
@@ -42,11 +39,7 @@ class iVDFMDecoder(BaseDecoder):
         self.latent_dim = latent_dim
         self.data_dim = data_dim
 
-        if decoder_type in ("linear", "residual"):
-            self.linear = nn.Linear(latent_dim, data_dim)
-        else:
-            self.linear = None
-
+        self.linear = nn.Linear(latent_dim, data_dim) if decoder_type in ("linear", "residual") else None
         if decoder_type in ("residual", "mlp"):
             self.mlp = MLP(
                 input_dim=latent_dim,
@@ -78,6 +71,7 @@ class iVDFMDecoder(BaseDecoder):
         return self.mlp(f)
 
     def forward_with_variance(self, f: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        """The decoded mean and the (scalar) decoder variance broadcast to its shape."""
         mean = self.forward(f)
         var = self.decoder_variance
         if var.dim() < mean.dim():
