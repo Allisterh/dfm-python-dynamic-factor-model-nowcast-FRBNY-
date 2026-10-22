@@ -726,8 +726,7 @@ class iVDFM(BaseFactorModel):
         """Run the engine's ``update`` on ``panel``: encode it with the fixed networks and append the factors.
 
         The dataset is built like the training dataset, with the fitted window,
-        stride and time context and the fitted ``scaler_``. The engine is called
-        with its default ``append=True`` and ``store_full_history=True``.
+        stride and time context and the fitted ``scaler_``.
         """
         dataset = self._adapter(panel, self.device_, fitted=True)
         with fit_verbosity(self.verbose), quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS), \
