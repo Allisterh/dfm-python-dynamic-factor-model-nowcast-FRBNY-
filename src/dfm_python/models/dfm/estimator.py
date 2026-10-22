@@ -1,37 +1,22 @@
 """``DFM``: the linear dynamic factor model estimator (sklearn conventions, PanelData input).
 
-The estimator is a thin layer over the private engine
-:class:`~dfm_python.models.dfm._engine.DFMEngine`, which runs today's
-initialization, EM (``functional/em.py``) and Kalman filter and smoother
-(``ssm/kalman.py``) unchanged. ``fit`` builds the engine's inputs from
-:class:`~dfm_python.PanelData`:
+A thin layer over the private engine
+:class:`~dfm_python.models.dfm._engine.DFMEngine`. ``fit`` builds the
+engine's inputs from :class:`~dfm_python.PanelData`: the per-series
+frequencies ``freq_`` (unlisted series use the clock), the internal column
+order (the stable partition ``[clock | slower]`` of the user's series that
+:class:`~dfm_python.dataset.dfm_dataset.DFMDataset` requires) and the engine
+config with every hyperparameter explicit. Same data and hyperparameters give
+the engine's numbers. The series-indexed matrices of ``result_`` (``C``,
+``R``, ``x_sm``) are in the internal order ``internal_feature_names_``;
+forecasts are returned in data units and the user's column order.
 
-- the per-series frequencies ``freq_`` (``PanelData.freq``; unlisted series
-  use the clock);
-- the internal column order: a stable partition ``[clock | slower]`` of the
-  user's series (the relative order is kept within each group), the order the
-  engine requires and :class:`~dfm_python.dataset.dfm_dataset.DFMDataset`
-  builds. Input already in that order gives the identity permutation;
-- the engine's config (the private ``_DFMEngineConfig``), with every
-  hyperparameter passed explicitly, and its dataset on that order.
-
-Same data and same hyperparameters give the same numbers as the engine called
-directly. ``predict(h)`` returns the series forecast in data units, in the
-user's column order, and ``predict_factors(h)`` the forecast of the whole
-state vector. The engine's matrices in ``result_`` (``C``, ``R``, ``x_sm``) are
-in the internal order, ``internal_feature_names_``.
-
-``update(data)`` continues the Kalman filter over new rows (strictly after
-the conditioning data; tag ``predict_data="new_rows"``) with fixed
-parameters, and ``update(data, refit=True)`` runs a single EM iteration on
-all rows; ``predict(h, data=new_rows)`` runs the same filter continuation on a
-copy of the engine, so the model is unchanged.
-
-``save(path)`` writes the pickle-free directory of the save layout
-(``state.npz``/``state.json`` with the state-space matrices, the
-mixed-frequency structure, the scaled data and the smoothed state;
-``result.npz``/``result.json`` with ``result_``); ``DFM.load(path)`` rebuilds
-the engine from them without data through ``DFMEngine._from_saved``.
+``update(data)`` continues the Kalman filter over new rows with fixed
+parameters, ``update(data, refit=True)`` runs one EM iteration on all rows,
+and ``predict(h, data=new_rows)`` filters on a copy of the engine, leaving the
+model unchanged. ``save(path)`` writes the pickle-free directory
+(``state.npz``/``state.json``, ``result.npz``/``result.json``) from which
+``DFM.load`` rebuilds the engine without data (``DFMEngine._from_saved``).
 """
 
 from __future__ import annotations
@@ -313,8 +298,6 @@ class DFM(BaseFactorModel):
         }
         return [base, {**base, "blocks": blocks}]
 
-    # -- validation ----------------------------------------------------------
-
     def _fail(self, message: str) -> None:
         raise ConfigurationError(f"{type(self).__name__}: {message}")
 
@@ -447,8 +430,6 @@ class DFM(BaseFactorModel):
         if not (hasattr(scaler, "fit_transform") and hasattr(scaler, "inverse_transform")):
             self._fail(f"scaler must have fit_transform and inverse_transform, got {type(scaler).__name__}.")
 
-    # -- layout --------------------------------------------------------------
-
     def _series_frequencies(self, panel: PanelData) -> dict:
         """``freq_``: each series' frequency (``PanelData.freq``, else the clock), in the user's order.
 
@@ -525,8 +506,6 @@ class DFM(BaseFactorModel):
                         f"{names}."
                     )
 
-    # -- adapter and engine --------------------------------------------------
-
     def _engine_config_dict(self, freq: dict, internal: list) -> dict:
         """The engine's config as the dict ``_DFMEngineConfig.from_dict`` reads, every value explicit."""
         if self.blocks is None:
@@ -597,8 +576,6 @@ class DFM(BaseFactorModel):
                 stacklevel=5,  # _fresh_scaler < _fit < BaseFactorModel.fit < DFM.fit < caller
             )
         return clone(scaler)
-
-    # -- fit -----------------------------------------------------------------
 
     def fit(self, data: Any, *, checkpoint_callback: Any = None) -> DFM:
         """Estimate the model on ``data`` by EM and return ``self``.
@@ -703,8 +680,6 @@ class DFM(BaseFactorModel):
         values = np.asarray(Z, dtype=np.float64)
         return pd.DataFrame(values, index=index, columns=cls._state_columns(values.shape[1]))
 
-    # -- new rows ------------------------------------------------------------
-
     def _new_rows(self, data: Any, method: str) -> tuple[np.ndarray, pd.Index]:
         """Validate new rows for a fitted model; return them in the internal order and the extended index.
 
@@ -795,10 +770,8 @@ class DFM(BaseFactorModel):
         X_new, extended = self._new_rows(data, "update")
         engine = self.engine_
         with fit_verbosity(self.verbose), quiet_engine_loggers(self.verbose, _ENGINE_LOGGERS, logging.ERROR):
-            if not refit:
-                engine.update(X_new)
-            else:
-                engine.update(X_new, retrain=True)
+            engine.update(X_new, retrain=refit)
+            if refit:
                 result = engine.get_result()
         self.conditioning_index_ = extended
         if refit:
@@ -808,8 +781,6 @@ class DFM(BaseFactorModel):
             self.loglik_ = float(result.loglik)
             self.factors_ = self._state_frame(self.result_.Z, extended)
         return self
-
-    # -- forecasting ---------------------------------------------------------
 
     def _run_forecast(self, method: str, h: Any, data: Any) -> tuple[np.ndarray, np.ndarray, int, pd.Index]:
         self._check_is_fitted(method)
@@ -887,8 +858,6 @@ class DFM(BaseFactorModel):
         """
         _, Z, h, origin = self._run_forecast("predict_factors", h, data)
         return self._frame(Z, h, self._state_columns(np.asarray(Z).shape[1]), "factors", origin)
-
-    # -- save / load ---------------------------------------------------------
 
     def _saved_data_spec(self) -> dict:
         """``data_spec.json``: the base spec plus ``internal_feature_names_`` and ``freq_``."""
