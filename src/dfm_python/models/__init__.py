@@ -15,8 +15,4 @@ from .ivdfm.estimator import iVDFM
 from .afm.estimator import AFM
 from ..config import BaseResult, DFMResult, DDFMResult
 
-__all__ = [
-    'DFM', 'DDFM', 'iVDFM', 'AFM',
-    # Results
-    'BaseResult', 'DFMResult', 'DDFMResult',
-]
+__all__ = ['DFM', 'DDFM', 'iVDFM', 'AFM', 'BaseResult', 'DFMResult', 'DDFMResult']

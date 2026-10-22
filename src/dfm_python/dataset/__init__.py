@@ -1,21 +1,10 @@
-"""Data container and time utilities.
+"""``PanelData``, the data container every estimator's ``fit`` takes, and ``TimeIndex``.
 
-This package exports:
-- ``PanelData``: the one data container every estimator's ``fit`` takes.
-- ``TimeIndex``: time-index utilities.
-
-The per-model datasets are the estimators' private adapters
-(``dataset.dfm_dataset``, ``dataset.ddfm_dataset``, ``dataset.ivdfm_dataset``,
-``dataset.afm_dataset``) and are not exported; ``fit`` builds them from
-``PanelData`` and the hyperparameters.
+The per-model datasets (``dfm_dataset``, ``ddfm_dataset``, ``ivdfm_dataset``,
+``afm_dataset``) are the estimators' private adapters and are not exported.
 """
 
 from .panel import PanelData
 from .time import TimeIndex
 
-__all__ = [
-    # Data container
-    'PanelData',
-    # Time utilities
-    'TimeIndex',
-]
+__all__ = ['PanelData', 'TimeIndex']
