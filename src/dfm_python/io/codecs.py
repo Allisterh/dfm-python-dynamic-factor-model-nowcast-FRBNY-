@@ -49,9 +49,7 @@ SAFE_ESTIMATOR_PACKAGE = "sklearn.preprocessing"
 _ESTIMATOR_KEYS = frozenset({"class", "params"})
 
 
-# ---------------------------------------------------------------------------
 # JSON
-# ---------------------------------------------------------------------------
 
 
 def class_path(cls: type) -> str:
@@ -222,9 +220,7 @@ def read_json(path: PathLike, *, allow_import: bool = False) -> Any:
         return from_jsonable(json.load(fh), allow_import=allow_import)
 
 
-# ---------------------------------------------------------------------------
 # npz
-# ---------------------------------------------------------------------------
 
 
 def write_npz(path: PathLike, arrays: Mapping[str, Any]) -> None:
@@ -263,9 +259,7 @@ def read_npz(path: PathLike) -> dict:
         return {key: archive[key] for key in archive.files}
 
 
-# ---------------------------------------------------------------------------
 # torch weights
-# ---------------------------------------------------------------------------
 
 
 def write_weights(path: PathLike, state_dict: Mapping[str, Any]) -> None:

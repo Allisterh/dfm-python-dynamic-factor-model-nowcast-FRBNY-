@@ -1,7 +1,7 @@
 """``BaseFactorModel``: the public estimator base class.
 
-Every migrated model subclasses :class:`BaseFactorModel`, which builds on
-:class:`sklearn.base.BaseEstimator`:
+The four models (``DFM``, ``DDFM``, ``iVDFM``, ``AFM``) subclass
+:class:`BaseFactorModel`, which builds on :class:`sklearn.base.BaseEstimator`:
 
 - ``__init__`` takes keyword-only hyperparameters and only stores them, so
   ``get_params``, ``set_params``, ``clone`` and ``repr`` work unchanged.
@@ -16,17 +16,13 @@ Every migrated model subclasses :class:`BaseFactorModel`, which builds on
   ``TypeError`` or ``UnsupportedInputError`` when the tags exclude them.
 - ``get_config()`` / ``from_config()`` convert to and from the model's
   :class:`~dfm_python.config.EstimatorConfig` mirror.
-- ``save(path)`` writes the pickle-free directory of spec section 7 through
+- ``save(path)`` writes the pickle-free save directory through
   :func:`~dfm_python.io.atomic_save_dir` (temporary sibling, reload to verify,
   rename); ``Model.load(path)`` reads it back without a dataset. The base class
   writes ``config.json`` and ``data_spec.json`` and restores the data
   attributes and ``scaler_``; each model writes and reads the rest in its
   ``_save_state`` / ``_load_state`` hooks with the ``_write_*`` / ``_read_*``
   helpers below.
-
-All four models (``DFM``, ``DDFM``, ``iVDFM``, ``AFM``) inherit it; their
-private engines inherit no common base (the old abstract engine base in
-``dfm_python.models.base`` was removed).
 """
 
 from __future__ import annotations
@@ -43,8 +39,16 @@ from sklearn.base import BaseEstimator
 
 from .config.estimator import EstimatorConfig, _unknown_keys_message
 from .dataset.panel import PanelData
-from .io.codecs import is_encoded_estimator, read_json, read_npz, read_weights, to_jsonable, write_json, write_npz
-from .io.codecs import write_weights
+from .io.codecs import (
+    is_encoded_estimator,
+    read_json,
+    read_npz,
+    read_weights,
+    to_jsonable,
+    write_json,
+    write_npz,
+    write_weights,
+)
 from .io.directory import atomic_save_dir
 from .io.layout import (
     CONFIG_FILE,
@@ -122,8 +126,6 @@ class BaseFactorModel(BaseEstimator):
     _tags: ClassVar[dict] = dict(DEFAULT_TAGS)
     _config_class: ClassVar[Optional[type]] = None
 
-    # -- tags -------------------------------------------------------------
-
     @_class_or_instance_method
     def get_tags(cls, self: Optional[BaseFactorModel] = None) -> dict:
         """Return the tags, merging ``_tags`` along the MRO (base classes first).
@@ -162,8 +164,6 @@ class BaseFactorModel(BaseEstimator):
     def _instance_tags(self) -> dict:
         """Tag overrides that depend on this instance's hyperparameters (default: none)."""
         return {}
-
-    # -- parameters and config ---------------------------------------------
 
     def set_params(self, **params: Any) -> BaseFactorModel:
         """Set hyperparameters; an unknown name raises ``ConfigurationError`` naming the closest one."""
@@ -205,8 +205,6 @@ class BaseFactorModel(BaseEstimator):
         """Parameter sets for :func:`dfm_python.testing.check_estimator` (small and fast on CPU)."""
         return [{}]
 
-    # -- fitted state ------------------------------------------------------
-
     def __getattr__(self, name: str) -> Any:
         # Only called when normal lookup fails. A missing public fitted attribute
         # of an unfitted model raises NotFittedError, which is an AttributeError,
@@ -234,8 +232,6 @@ class BaseFactorModel(BaseEstimator):
     def _clear_fitted(self) -> None:
         for name in [k for k in vars(self) if _is_fitted_name(k)]:
             delattr(self, name)
-
-    # -- data --------------------------------------------------------------
 
     def _validate_data(self, data: Any) -> PanelData:
         """Coerce ``data`` to ``PanelData`` and reject what the tags exclude.
@@ -390,8 +386,6 @@ class BaseFactorModel(BaseEstimator):
             )
         return self._extend_index(last, index, name)
 
-    # -- fit ---------------------------------------------------------------
-
     def fit(self, data: Any, **fit_kwargs: Any) -> BaseFactorModel:
         """Fit on ``data`` (``PanelData``, a DataFrame or a 2-D array) and return ``self``.
 
@@ -414,8 +408,6 @@ class BaseFactorModel(BaseEstimator):
     def _fit(self, data: PanelData, **fit_kwargs: Any) -> None:
         """Train on validated data and set the fitted attributes (``result_`` and the rest)."""
         raise NotImplementedError(f"{type(self).__name__} does not implement _fit().")
-
-    # -- methods gated by tags ---------------------------------------------
 
     def predict(self, h: int, data: Any = None, **predict_kwargs: Any) -> pd.DataFrame:
         """Forecast ``h`` steps as a time-indexed DataFrame (``task == "forecast"``)."""
@@ -451,8 +443,6 @@ class BaseFactorModel(BaseEstimator):
                 "allocate(); use predict(h)."
             )
         raise NotImplementedError(f"{type(self).__name__} does not implement allocate().")
-
-    # -- save / load -------------------------------------------------------
 
     def save(self, path: Any, *, overwrite: bool = False) -> None:
         """Save the fitted model as a pickle-free directory (spec section 7).
@@ -632,8 +622,6 @@ class BaseFactorModel(BaseEstimator):
             self.series_exog_names_in_ = np.asarray(list(spec["series_exog_names_in_"]), dtype=object)
         self.index_ = index_from_spec(spec["index_"])
 
-    # -- state hooks (implemented by each model) ---------------------------
-
     def _save_state(self, path: Path) -> None:
         """Write ``state.npz``, ``state.json``, ``result.npz``, ``result.json`` (and ``weights.pt``) into ``path``.
 
@@ -649,8 +637,6 @@ class BaseFactorModel(BaseEstimator):
         and :meth:`_load_device`.
         """
         raise NotImplementedError(f"{cls.__name__} does not implement _load_state(), so it cannot be loaded.")
-
-    # -- helpers for the hooks ---------------------------------------------
 
     def _write_state(self, path: Path, arrays: Optional[Mapping] = None, meta: Optional[Mapping] = None) -> None:
         """Write ``state.npz`` (``arrays`` plus ``scaler/<attr>``) and ``state.json`` (``meta``).
@@ -674,27 +660,17 @@ class BaseFactorModel(BaseEstimator):
         arrays = {k: v for k, v in read_npz(Path(path) / STATE_NPZ).items() if not k.startswith(SCALER_PREFIX)}
         return arrays, read_json(Path(path) / STATE_JSON)
 
-    @staticmethod
-    def _result_to_files(result: Any, *, exclude: Iterable[str] = ()) -> tuple[dict, dict]:
-        """Split a dataclass result into ``(arrays, meta)`` (see :func:`dfm_python.io.result_to_files`)."""
-        return result_to_files(result, exclude=exclude)
-
-    @staticmethod
-    def _result_from_files(result_cls: type, arrays: Mapping, meta: Mapping, **extra: Any) -> Any:
-        """Rebuild a dataclass result (see :func:`dfm_python.io.result_from_files`)."""
-        return result_from_files(result_cls, arrays, meta, **extra)
-
     def _write_result(self, path: Path, result: Any = None, *, exclude: Iterable[str] = ()) -> None:
         """Write ``result_`` (or ``result``) to ``result.npz`` and ``result.json``; ``exclude`` skips fields."""
-        arrays, meta = self._result_to_files(self.result_ if result is None else result, exclude=exclude)
+        arrays, meta = result_to_files(self.result_ if result is None else result, exclude=exclude)
         write_npz(Path(path) / RESULT_NPZ, arrays)
         write_json(Path(path) / RESULT_JSON, meta)
 
-    @classmethod
-    def _read_result(cls, path: Path, result_cls: type, **extra: Any) -> Any:
+    @staticmethod
+    def _read_result(path: Path, result_cls: type, **extra: Any) -> Any:
         """Read ``result.npz`` and ``result.json`` back into ``result_cls``; ``extra`` gives excluded fields."""
         path = Path(path)
-        return cls._result_from_files(result_cls, read_npz(path / RESULT_NPZ), read_json(path / RESULT_JSON), **extra)
+        return result_from_files(result_cls, read_npz(path / RESULT_NPZ), read_json(path / RESULT_JSON), **extra)
 
     def _write_weights(self, path: Path, module: Any = None) -> None:
         """Write ``weights.pt``: the ``state_dict()`` of ``module`` (default ``network_``)."""
