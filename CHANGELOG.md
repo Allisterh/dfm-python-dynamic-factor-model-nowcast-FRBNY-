@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.8.3
+
+Performance and forecasting-correctness release. No API changes.
+
+### DFM speed
+
+- The Kalman filter and smoother loops now run the BLAS on one thread
+  (`threadpoolctl.threadpool_limits`, a new explicit dependency that
+  scikit-learn already pulled in). The per-row matrices are small, and a
+  multithreaded BLAS spent its time synchronizing on them: on a 4-core
+  machine one EM iteration on a 1000 x 100 panel (state dimension 106) took
+  220 s with the default threads and 7.8 s with `OPENBLAS_NUM_THREADS=1`.
+  After the change it takes about 4.3 s per E-step with the default thread
+  settings; small panels are unaffected. Results are bitwise unchanged.
+- The AR(1) part of the M-step read the diagonals of three `(T, k, k)`
+  smoothed-covariance slices after copying them; it now reads the diagonals
+  directly (`estimate_ar1_from_diagonals`), which removes about 2 s per
+  iteration at that size. Results are bitwise unchanged.
+
+### Bug fixes
+
+- iVDFM `predict(h)` after `fit` or `update(data)` started the closed-loop
+  forecast from the average over all training windows of each window's last
+  factor state, which mixes different dates, and the rows after the last
+  full window were never encoded, although the forecast was labelled with the
+  dates after the data's end. The engine now encodes the conditioning series
+  as one sequence after training (`factor_path`, saved in `state.npz`) and
+  starts the forecast from its last row; `result_.Z`, `result_.x_sm` and
+  `result_.full_state` report that path. `factors_` (the window factors) is
+  unchanged. Runs saved by earlier releases load and fall back to the old
+  start state. The `ivdfm_*` golden cases were recaptured.
+
 ## 0.8.2
 
 Bug-fix release. No API changes; the fits of several models change

@@ -11,7 +11,7 @@ abstract: >-
 authors:
   - given-names: Minkey
     family-names: Chang
-version: 0.8.2
+version: 0.8.3
 date-released: "2026-10-23"
 license: MIT
 repository-code: "https://github.com/minkeymouse/dfm-python"
