@@ -19,7 +19,9 @@
   unaffected.
 - DDFM under pandas copy-on-write (the pandas 3 default): the pre-training
   tensors were built from read-only `.values` arrays, which made torch warn
-  that the array is not writable. The arrays are copied first.
+  that the array is not writable. `to_tensor` now hands torch a writable
+  C-contiguous array whatever the pandas mode, so a fit gives the same
+  numbers with copy-on-write on or off.
 - `DFMResult.training_*` (max_iter, threshold, regularization scale) and
   `DDFMResult.training_*`, `training_loss` and `encoder_layers` are now set
   by `fit`, so `result_.summary()` prints the training settings. The

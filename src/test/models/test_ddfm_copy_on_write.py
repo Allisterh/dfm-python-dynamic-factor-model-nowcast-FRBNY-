@@ -155,3 +155,18 @@ def test_copy_on_write_does_not_change_the_fit(exog):
         cow = DDFM(**TINY, scaler="standard").fit(panel)
     assert plain.predict(3).to_numpy().tobytes() == cow.predict(3).to_numpy().tobytes()
     assert plain.factors_.to_numpy().tobytes() == cow.factors_.to_numpy().tobytes()
+
+
+def test_to_tensor_layout_does_not_depend_on_copy_on_write():
+    # A copied frame's ``.values`` is a Fortran-ordered view, read-only under copy-on-write.
+    # to_tensor must give the same (C-contiguous) tensor layout in both modes, otherwise the
+    # CPU kernels see differently strided inputs and the fits differ bitwise.
+    from dfm_python.config.types import to_tensor
+
+    frame = pd.DataFrame(np.random.default_rng(0).standard_normal((48, 4))).copy()
+    strides = []
+    for cow in (False, True):
+        with pd.option_context("mode.copy_on_write", cow):
+            view = frame.values
+            strides.append(to_tensor(view, dtype=torch.float32).stride())
+    assert strides[0] == strides[1] == (4, 1)

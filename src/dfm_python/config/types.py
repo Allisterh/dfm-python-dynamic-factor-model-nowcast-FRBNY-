@@ -128,8 +128,14 @@ def to_tensor(arr: ArrayLike, device: Optional[Device] = None, dtype: Optional['
             result = result.to(dtype)
         return result
     elif is_numpy_array(arr):
-        if not arr.flags.writeable:
-            arr = arr.copy()  # from_numpy warns on a read-only array (pandas copy-on-write ``.values``)
+        # Hand torch a writable C-contiguous array: from_numpy warns on a
+        # read-only array (pandas copy-on-write ``.values``) and keeps the
+        # strides of a Fortran-ordered frame view, so the same data would reach
+        # the kernels with a different layout depending on the pandas mode.
+        if not arr.flags.c_contiguous:
+            arr = np.ascontiguousarray(arr)
+        elif not arr.flags.writeable:
+            arr = arr.copy()
         tensor = torch.from_numpy(arr)
         if device is not None:
             tensor = tensor.to(device)
