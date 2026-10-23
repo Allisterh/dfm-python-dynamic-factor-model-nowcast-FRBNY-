@@ -4,6 +4,22 @@
 
 ### Bug fixes
 
+- iVDFM with `factor_order > 1` and one regime: the companion state-space
+  model cached a detached impulse response on the first training batch and
+  reused it for the rest of training, so `B` and the AR coefficients
+  received no gradient after the first batch and the factors were convolved
+  with stale parameters. The cache is now used in eval mode only.
+- iVDFM AR initialization from OLS on PCA factors: for `factor_order=1` the
+  OLS coefficient was written into a parameter the model passes through a
+  sigmoid (so the effective coefficient was `sigmoid(a)`, between 0.27 and
+  0.73); it is now stored as a logit. `estimate_arp_ols` returns the
+  residual standard deviation instead of the variance, which is what the
+  innovation scale `B` holds. The three `ivdfm_*` golden cases were
+  recaptured.
+- iVDFM `tol`: the convergence check compared the last five batches of the
+  current epoch with the five before them, so it never fired with fewer than
+  six batches per epoch (always the case for a panel that fits in one
+  batch). It now runs over the batch ELBOs of all epochs, as documented.
 - AFM `factor_model="pca"`: dates before the first rolling-PCA estimate took
   the weights of that estimate, which is computed from returns up to the
   first estimation date (a look-ahead over the first

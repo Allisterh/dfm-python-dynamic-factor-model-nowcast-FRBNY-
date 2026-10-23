@@ -263,8 +263,51 @@ class TestARInitializationPadding:
         ar_ols, B_ols = estimate_arp_ols(factors=factors, order=1, regularization=DEFAULT_REGULARIZATION,
                                          dtype=DEFAULT_DTYPE)
         A, B = engine.ssm.A.detach().numpy(), engine.ssm.B.detach().numpy()
-        np.testing.assert_array_equal(A, ar_ols[:, 0].astype(A.dtype))
+        # The SSM applies a sigmoid to A, so the OLS coefficient is stored as a logit.
+        a = np.clip(ar_ols[:, 0].astype(np.float64), 0.01, 0.99)
+        np.testing.assert_allclose(A, np.log(a / (1 - a)), rtol=1e-6, atol=1e-6)
+        np.testing.assert_allclose(torch.sigmoid(engine.ssm.A).detach().numpy(), a, rtol=1e-5, atol=1e-6)
         np.testing.assert_array_equal(B, B_ols.astype(B.dtype))
+
+    def test_arp_ols_innovation_scale_is_a_standard_deviation(self):
+        from dfm_python.numeric.estimator import estimate_arp_ols
+
+        rng = np.random.default_rng(0)
+        e = rng.standard_normal(4000) * 0.5
+        f = np.zeros(4000)
+        for t in range(1, 4000):
+            f[t] = 0.6 * f[t - 1] + e[t]
+        ar, B = estimate_arp_ols(factors=f[:, None], order=1, regularization=0.0, dtype=np.float64)
+        assert abs(ar[0, 0] - 0.6) < 0.05
+        assert abs(B[0] - 0.5) < 0.05           # std of the innovations, not their variance
+
+    def test_impulse_response_is_not_cached_while_training(self):
+        from dfm_python.ssm.companion import iVDFMCompanionSSM
+
+        ssm = iVDFMCompanionSSM(latent_dim=2, factor_order=2, device="cpu")
+        ssm.train()
+        eta = torch.randn(1, 12, 2)
+        for _ in range(2):
+            ssm.zero_grad()
+            ssm.forward(eta).sum().backward()
+            assert ssm.B.grad is not None and ssm.ar_coeffs.grad is not None
+        ssm.eval()
+        H1 = ssm.get_impulse_response(12)
+        with torch.no_grad():
+            ssm.B.add_(1.0)
+        assert torch.equal(ssm.get_impulse_response(12), H1)   # eval mode caches until train()
+        ssm.train()
+        assert not torch.equal(ssm.get_impulse_response(12), H1)
+
+    def test_tolerance_check_spans_epochs(self):
+        dataset = self._dataset(N=3, window=24)
+        engine = iVDFMEngine(dataset=dataset, num_factors=2, factor_order=1, max_epochs=40,
+                             batch_size=64, learning_rate=1e-12, tolerance=1e-3, patience=100,
+                             seed=0, device=torch.device("cpu"))
+        engine.fit()
+        # One batch per epoch and early stopping out of reach: only the tolerance
+        # check can stop training, and the previous per-epoch check never saw six batches.
+        assert engine._converged and engine._num_iter < 40
 
     @staticmethod
     def _factors(dataset, n_components: int, T_init: int):

@@ -355,9 +355,15 @@ class iVDFMEngine(nn.Module):
     def _set_ssm_ar_params(self, ar_coeffs: np.ndarray, B_diag: np.ndarray) -> None:
         """Set the SSM's AR coefficients (r, p) and innovation scales (r).
 
-        With K > 1 regimes, regime 0 of ``A_diag`` (K, p, r) and ``B_diag``
-        (K, r) gets the values and the other regimes a copy plus N(0, 0.02²) noise.
+        For ``factor_order == 1`` the SSM applies a sigmoid to its AR
+        parameter, so the coefficients are stored as logits (clipped to
+        [0.01, 0.99] first). With K > 1 regimes, regime 0 of ``A_diag``
+        (K, p, r) and ``B_diag`` (K, r) gets the values and the other regimes
+        a copy plus N(0, 0.02²) noise.
         """
+        if self.factor_order == 1:
+            a = np.clip(np.asarray(ar_coeffs, dtype=np.float64), 0.01, 0.99)
+            ar_coeffs = np.log(a / (1.0 - a)).astype(np.asarray(ar_coeffs).dtype)
         with torch.no_grad():
             if self.factor_order == 1:
                 A_flat = ar_coeffs[:, 0] if ar_coeffs.ndim > 1 else ar_coeffs
@@ -812,6 +818,7 @@ class iVDFMEngine(nn.Module):
         best_elbo = float('inf')
         epochs_without_improvement = 0
         best_model_state = None
+        batch_elbos: list[float] = []   # every batch of every epoch, for the tolerance check
 
         early_stop_enabled = self.patience is not None and self.patience > 0
         patience_str = f"early stopping patience={self.patience}" if early_stop_enabled else "early stopping disabled"
@@ -876,6 +883,7 @@ class iVDFMEngine(nn.Module):
                 epoch_recon_losses.append(recon_val)
                 epoch_kl_losses.append(kl_val)
                 epoch_elbos.append(elbo_val)
+                batch_elbos.append(elbo_val)
                 t_data_start = time.perf_counter()
 
             self._num_iter = epoch + 1
@@ -945,7 +953,7 @@ class iVDFMEngine(nn.Module):
                         )
                         break
 
-            if epoch > 0 and self._check_convergence(epoch_elbos):
+            if self._check_convergence(batch_elbos):
                 self._converged = True
                 train_logger.log_convergence(
                     converged=True,
@@ -1002,7 +1010,7 @@ class iVDFMEngine(nn.Module):
         return self
 
     def _check_convergence(self, elbo_history: list, window: int = 5) -> bool:
-        """True when the mean of the last ``window`` batch ELBOs moved by less than ``tolerance``."""
+        """True when the mean of the last ``window`` batch ELBOs (across epochs) moved by less than ``tolerance``."""
         if len(elbo_history) < window + 1:
             return False
         recent = elbo_history[-window:]

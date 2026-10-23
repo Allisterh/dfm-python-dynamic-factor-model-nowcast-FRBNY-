@@ -135,9 +135,12 @@ class iVDFMCompanionSSM(BaseSSM):
     def get_impulse_response(self, length: int, use_cache: bool = True) -> torch.Tensor:
         """Impulse response ``H_k = C A^k B`` for ``k < length``, (latent_dim, length).
 
-        With ``use_cache`` a detached copy is cached by ``length`` and returned
-        on later calls, until ``clear_cache`` or ``train()``.
+        In eval mode with ``use_cache`` a detached copy is cached by ``length``
+        and returned on later calls, until ``clear_cache`` or ``train()``. In
+        training mode nothing is cached: the response is recomputed from the
+        current parameters so that gradients reach ``B`` and ``ar_coeffs``.
         """
+        use_cache = use_cache and not self.training
         if use_cache and length in self._impulse_response_cache:
             return self._impulse_response_cache[length]
 

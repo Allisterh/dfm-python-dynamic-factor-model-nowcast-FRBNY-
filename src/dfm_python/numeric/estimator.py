@@ -711,7 +711,8 @@ def estimate_arp_ols(
     ar_coeffs : np.ndarray
         AR coefficients (r x p).
     B_diag : np.ndarray
-        Residual variance of each factor's fit (r,), used as the diagonal of B.
+        Residual standard deviation of each factor's fit (r,), the innovation
+        scale used as the diagonal of B.
     """
     T, r = factors.shape
 
@@ -743,10 +744,10 @@ def estimate_arp_ols(
             ar_coeffs[i, :] = ar_i
 
             residuals = y - X @ ar_i
-            B_diag[i] = np.maximum(
+            B_diag[i] = np.sqrt(np.maximum(
                 compute_var_safe(residuals, ddof=0, min_variance=MIN_DIAGONAL_VARIANCE),
                 MIN_DIAGONAL_VARIANCE
-            )
+            ))
         except Exception as e:
             _logger.warning(f"AR({order}) estimation failed for factor {i}: {e}. Using zeros.")
             ar_coeffs[i, :] = 0.0
