@@ -4,6 +4,13 @@
 
 ### Bug fixes
 
+- `DFMEngine` (the engine behind `DFM`) recognized a pre-fitted scaler only
+  by its `mean_` attribute, so a fitted `RobustScaler`, `MinMaxScaler`,
+  `MaxAbsScaler` or `QuantileTransformer` passed directly to the engine was
+  refitted on the training data. Any fitted sklearn scaler is used as is
+  now. The `DFM` estimator always fits its own scaler and is unaffected.
+- `iVDFMDataset` logs a warning when an array column is all NaN and is
+  filled with 0, as it already did for a DataFrame.
 - DDFM with `exog` covariates: missing targets were never imputed with the
   model's predictions during the MCMC loop (the write went into a copy), so
   the residuals and the denoised targets used the interpolated values only.

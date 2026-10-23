@@ -130,6 +130,7 @@ class iVDFMDataset(Dataset):
                         if valid.any():
                             col[nans] = np.interp(idx[nans], idx[valid], col[valid])
                         else:
+                            _logger.warning(f"Column {j} is all NaN; filling it with 0.0")
                             col[:] = 0.0
 
         T, N_total = data_array.shape

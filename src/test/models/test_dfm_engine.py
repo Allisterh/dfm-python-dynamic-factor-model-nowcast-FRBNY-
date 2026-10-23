@@ -245,3 +245,21 @@ class TestEngineSurface:
 
         assert not hasattr(misc, "compute_default_horizon")
 
+
+
+def test_prefitted_scaler_without_mean_is_used_as_is():
+    # A fitted RobustScaler has no ``mean_``; the engine used to refit it on the training data.
+    from sklearn.preprocessing import RobustScaler
+
+    df = _panel(60, seed=0)
+    cols = [c for c in df.columns if c != "date"]
+    config = _DFMEngineConfig.from_dict({
+        "blocks": {"Block_Global": {"num_factors": 1, "series": cols}},
+        "frequency": {c: "m" for c in cols}, "clock": "m", "max_iter": 3, "threshold": 1e-5,
+    })
+    scaler = RobustScaler().fit(_panel(80, seed=1)[cols].to_numpy() * 10)
+    center, scale = scaler.center_.copy(), scaler.scale_.copy()
+    dataset = DFMDataset(config=config, data=df, time_index="date")
+    DFMEngine(dataset=dataset, config=config, scaler=scaler).fit()
+    np.testing.assert_array_equal(scaler.center_, center)
+    np.testing.assert_array_equal(scaler.scale_, scale)

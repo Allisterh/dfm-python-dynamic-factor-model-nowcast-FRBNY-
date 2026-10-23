@@ -281,3 +281,16 @@ class TestiVDFMDataset:
         
         assert len(dataset) == T - sequence_length + 1
         assert len(dataset) == 6
+
+
+def test_all_nan_array_column_warns_before_zero_fill(caplog):
+    import logging
+
+    from dfm_python.dataset.ivdfm_dataset import iVDFMDataset
+
+    y = np.random.default_rng(0).standard_normal((30, 3))
+    y[:, 1] = np.nan
+    with caplog.at_level(logging.WARNING, logger="dfm_python"):
+        ds = iVDFMDataset(data=y, window=10, stride=5)
+    assert "all NaN" in caplog.text
+    assert not np.isnan(ds.data).any() and not ds.data[:, 1].any()

@@ -316,7 +316,13 @@ class DFMEngine:
         self._training_columns = columns  # update() validates against them
 
         if self.scaler is not None:
-            is_fitted = hasattr(self.scaler, 'mean_') and self.scaler.mean_ is not None
+            from sklearn.exceptions import NotFittedError
+            from sklearn.utils.validation import check_is_fitted
+            try:
+                check_is_fitted(self.scaler)
+                is_fitted = True
+            except NotFittedError:
+                is_fitted = False
             if is_fitted:
                 X_np_std = self.scaler.transform(X_np)
             else:
