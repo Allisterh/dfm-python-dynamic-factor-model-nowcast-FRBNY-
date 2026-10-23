@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.8.2
+
+Bug-fix release. No API changes; the fits of several models change
+numerically where a bug affected them (the recaptured golden cases are
+named in each entry).
 
 ### Bug fixes
 
