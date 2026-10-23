@@ -497,9 +497,11 @@ def test_update_scales_the_new_rows_with_the_training_statistics(fitted):
     assert len(engine.data) == 60 and list(engine.data.columns) == ["x0", "s0", "s1", "s2"]
     np.testing.assert_array_equal(appended[["s0", "s1", "s2"]].to_numpy(), est.scaler_.transform(new.y.to_numpy()))
     np.testing.assert_array_equal(appended[["x0"]].to_numpy(), covariate_scaler.transform(new.exog.to_numpy()))
-    # The encoder sees exactly those rows (no missing values in them).
+    # The encoder sees exactly those rows (no missing values in them). The engine feeds it a
+    # C-contiguous array (to_tensor); a Fortran-ordered frame view can differ by an ulp on some CPUs.
     with torch.no_grad():
-        expected = engine.encoder(torch.as_tensor(appended.to_numpy(), dtype=torch.float32)).numpy()
+        rows = np.ascontiguousarray(appended.to_numpy())
+        expected = engine.encoder(torch.as_tensor(rows, dtype=torch.float32)).numpy()
     np.testing.assert_array_equal(engine.factors[0, 48:], expected)
     np.testing.assert_array_equal(engine.factors[1, 48:], expected)
 
