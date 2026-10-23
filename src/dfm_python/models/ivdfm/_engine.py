@@ -220,6 +220,7 @@ class iVDFMEngine(nn.Module):
         self.factors: Optional[np.ndarray] = None
         self.innovations: Optional[np.ndarray] = None
         self.regime_weights: Optional[np.ndarray] = None
+        self.factor_path: Optional[np.ndarray] = None  # (T, r): the conditioning series encoded as one sequence
 
         self.to(self.device)
 
@@ -269,6 +270,7 @@ class iVDFMEngine(nn.Module):
         self.factors = None
         self.innovations = None
         self.regime_weights = None
+        self.factor_path = None
         self._num_iter = 0
         self.loss_now = None
         self._elbo = None
@@ -1000,6 +1002,7 @@ class iVDFMEngine(nn.Module):
 
             self.factors = np.concatenate(all_factors, axis=0)  # (windows, T, r)
             self.innovations = np.concatenate(all_innovations, axis=0)
+            self.factor_path = self._encode_sequence(dataset)
             if all_regime_weights:
                 rw = np.concatenate(all_regime_weights, axis=0)  # (windows, T, K)
                 self.regime_weights = rw[:, -1, :]  # (windows, K): π at each window end
@@ -1045,10 +1048,27 @@ class iVDFMEngine(nn.Module):
         return to_numpy(y_pred.squeeze(0))  # (horizon, data_dim)
 
     def _factor_path(self) -> np.ndarray:
-        """The factor state (T, r): the window average of ``factors`` when it is (windows, T, r)."""
+        """The factor state (T, r) the forecast starts from.
+
+        ``factor_path`` is the conditioning series (the training data, or the
+        data of the last ``update``) encoded as one sequence, so its last row
+        is the factor state at the last observed time step. A model saved
+        before 0.8.3 has no path; it falls back to the window average of
+        ``factors``, which mixes the window-end states of different dates.
+        """
+        if self.factor_path is not None:
+            return self.factor_path
         if self.factors.ndim == 3:
             return np.mean(self.factors, axis=0)
         return self.factors
+
+    def _encode_sequence(self, dataset: iVDFMDataset) -> np.ndarray:
+        """Factors (T, r) of the whole series of ``dataset``, encoded as one sequence with the fixed networks."""
+        y = torch.as_tensor(np.asarray(dataset.target), dtype=DEFAULT_TORCH_DTYPE, device=self.device).unsqueeze(0)
+        u = torch.as_tensor(np.asarray(dataset.context), dtype=DEFAULT_TORCH_DTYPE, device=self.device).unsqueeze(0)
+        self.eval()
+        with torch.no_grad():
+            return to_numpy(self.forward(y, u)['factors'])[0]
 
     def _future_time_features(self, horizon: int, time_context: int) -> np.ndarray:
         """Time features (horizon, time_context), float32, for the ``horizon`` steps after the factor path.
@@ -1194,6 +1214,12 @@ class iVDFMEngine(nn.Module):
             new_innovations = np.concatenate(all_innovations, axis=0)[:, -1, :]
             new_regime_weights = np.concatenate(all_regime_weights, axis=0)[:, -1, :] if all_regime_weights else None
 
+            new_path = self._encode_sequence(dataset)
+            if append and self.factor_path is not None:
+                self.factor_path = np.concatenate([self.factor_path, new_path], axis=0)
+            else:
+                self.factor_path = new_path
+
             if append and self.factors is not None and self.innovations is not None:
                 factors_existing = self._normalize_factors_shape(self.factors)
                 innovations_existing = self._normalize_factors_shape(self.innovations)
@@ -1225,19 +1251,17 @@ class iVDFMEngine(nn.Module):
             raise ModelNotTrainedError("Factors and innovations not available")
 
         # No u at result time: K > 1 decodes with uniform π.
+        # Z and x_sm are the (T, r) factor path (the series encoded as one
+        # sequence; the window average without a path) and its (T, N) decoding;
+        # ``reconstructions`` decodes every window.
+        z_np = np.asarray(self._factor_path())
         with torch.no_grad():
             z_tensor = torch.from_numpy(self.factors).to(dtype=DEFAULT_TORCH_DTYPE, device=self.device)
             recon = to_numpy(self._decode(z_tensor, u_1T=None))
+            path_tensor = torch.from_numpy(z_np).to(dtype=DEFAULT_TORCH_DTYPE, device=self.device).unsqueeze(0)
+            x_sm = to_numpy(self._decode(path_tensor, u_1T=None))[0]
 
         weights = {k: v.detach().cpu() for k, v in self.state_dict().items()}
-
-        # Z and x_sm are the (T, r) factors and (T, N) reconstructions: window-averaged when 3-D.
-        z_np = self.factors
-        x_sm = recon
-        if z_np.ndim == 3:
-            z_np = np.mean(z_np, axis=0)
-        if x_sm.ndim == 3:
-            x_sm = np.mean(x_sm, axis=0)
 
         mixing_matrix = None
         if self.factor_mixing is not None:

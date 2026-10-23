@@ -142,7 +142,7 @@ the model: it runs on a copy.
 |-------|---------------|----------------|----------------------------|----------------|-------------------------|
 | DFM   | `filter` | the Kalman filter continues over the new rows (prior `(A x_T|T, A P_T|T A' + Q)` from the filter over the conditioning rows) and appends their filtered states; `result_` unchanged | one EM iteration on all rows, not a full refit; refreshes `result_`, `n_iter_`, `converged_`, `loglik_`, `factors_` | `new_rows` | only the rows after the last conditioning date; overlap raises `DataValidationError` |
 | DDFM  | `encoder_forward` | scales the new rows with the fitted scalers (never refitted), interpolates them with the conditioning rows, encodes them with the trained weights and appends their factors | `UnsupportedInputError` | `new_rows` | only the rows after the last conditioning date; overlap raises `DataValidationError` |
-| iVDFM | `encoder_forward` | encoder forward pass with the fixed weights; appends the factors | `UnsupportedInputError` | `window` | any window: every row is encoded and the last state starts the forecast |
+| iVDFM | `encoder_forward` | encodes the rows as one sequence with the fixed weights and appends the result to the factor path the forecast starts from (also appends the window-end factors) | `UnsupportedInputError` | `window` | any window: every row is encoded and the state at its last row starts the forecast |
 | AFM   | `reattach` | attaches the data for later `allocate()` | continues training from the current weights | (none) | `update` and `allocate(data=)` take any panel with the training assets and characteristics |
 
 For DFM, DDFM and iVDFM, `predict(h, data=d)` equals `update(d)` followed by

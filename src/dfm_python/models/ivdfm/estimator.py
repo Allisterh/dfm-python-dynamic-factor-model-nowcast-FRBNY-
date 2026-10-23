@@ -743,9 +743,11 @@ class iVDFM(BaseFactorModel):
     def update(self, data: Any, *, refit: bool = False) -> iVDFM:
         """Condition later forecasts on ``data`` and return ``self``.
 
-        The engine encodes every window of ``data`` with the fixed networks
-        (``no_grad``) and appends the window-end factors to its factor state,
-        so ``predict(h)`` then starts from the last time step of ``data``.
+        The engine encodes ``data`` as one sequence with the fixed networks
+        (``no_grad``) and appends the result to its factor path, so
+        ``predict(h)`` then starts from the factor state at the last time step
+        of ``data``; it also encodes every window of ``data`` and appends the
+        window-end factors to ``factors``.
         Missing values are filled as in ``fit`` and the targets are scaled with
         the fitted ``scaler_`` (not refitted). The network parameters,
         ``result_``, ``factors_`` and the other fit diagnostics are unchanged;
@@ -889,9 +891,11 @@ class iVDFM(BaseFactorModel):
     ) -> pd.DataFrame:
         """Forecast the targets ``h`` steps ahead, in data units.
 
-        The engine's closed-loop forecast starts from the last factor state
-        (of the training data, or of the data of the last ``update``); the
-        decoded observations are inverse-transformed with ``scaler_``.
+        The engine's closed-loop forecast starts from the factor state at the
+        last time step of the conditioning series (the training data, or the
+        data of the last ``update``), which the engine encodes as one sequence
+        after training; the decoded observations are inverse-transformed with
+        ``scaler_``.
 
         Parameters
         ----------
@@ -954,8 +958,8 @@ class iVDFM(BaseFactorModel):
     def _save_state(self, path: Path) -> None:
         """Write the iVDFM part of the saved run (spec section 7).
 
-        ``state.npz``: the engine's current ``factors``, ``innovations`` and
-        ``regime_weights`` (when it has them), ``fit/factors``, ``fit/window``
+        ``state.npz``: the engine's current ``factors``, ``innovations``,
+        ``factor_path`` and ``regime_weights`` (when it has them), ``fit/factors``, ``fit/window``
         and ``fit/position`` (``factors_`` as values, window labels and row
         positions in ``index_``) and the ``scaler/`` entries. ``state.json``:
         the training diagnostics, the engine dims, the fitted window attributes
@@ -968,6 +972,8 @@ class iVDFM(BaseFactorModel):
         arrays = {"factors": engine.factors, "innovations": engine.innovations}
         if engine.regime_weights is not None:
             arrays["regime_weights"] = engine.regime_weights
+        if engine.factor_path is not None:
+            arrays["factor_path"] = engine.factor_path
         arrays["fit/factors"] = frame.to_numpy()
         arrays["fit/window"] = frame.index.get_level_values(0).to_numpy(dtype=np.int64)
         arrays["fit/position"] = self.index_.get_indexer(frame.index.get_level_values(1)).astype(np.int64)
@@ -998,6 +1004,7 @@ class iVDFM(BaseFactorModel):
         engine.factors = arrays["factors"]
         engine.innovations = arrays["innovations"]
         engine.regime_weights = arrays.get("regime_weights")
+        engine.factor_path = arrays.get("factor_path")  # absent in runs saved before 0.8.3
         engine._num_iter = meta["num_iter"]
         # state.json holds the float64 means as JSON numbers; fit leaves numpy float64 values.
         engine.loss_now = None if meta["loss_now"] is None else np.float64(meta["loss_now"])

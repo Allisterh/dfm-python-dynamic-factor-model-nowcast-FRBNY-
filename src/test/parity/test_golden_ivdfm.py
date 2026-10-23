@@ -151,7 +151,8 @@ def _engine_outputs(engine: iVDFMEngine, hyper: dict, x_future: Any) -> dict:
     """The golden outputs of a fitted (or loaded) engine."""
     outputs = _ivdfm_outputs(engine, horizon=IVDFM_EXOG_HORIZON)
     if x_future is not None:
-        context = np.hstack([ivdfm_time_features(IVDFM_EXOG_HORIZON, hyper["time_context"], hyper["window"]), x_future])
+        T_train = engine._factor_path().shape[0]
+        context = np.hstack([ivdfm_time_features(IVDFM_EXOG_HORIZON, hyper["time_context"], T_train), x_future])
         outputs["predict_futr"] = engine.predict(horizon=IVDFM_EXOG_HORIZON, context_data=context)
     return outputs
 

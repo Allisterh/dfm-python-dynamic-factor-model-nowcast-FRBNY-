@@ -109,8 +109,12 @@ class iVDFMModelState:
     converged : bool
     factors, innovations : np.ndarray, optional
         (T x r) or (batch x T x r).
+    factor_path : np.ndarray, optional
+        (T x r): the conditioning series encoded as one sequence; the
+        forecast starts from its last row.
     full_state : np.ndarray, optional
-        Companion-form state: (T x r*p) for p > 1, (T x r) for p = 1.
+        Companion-form state of ``factor_path`` (or of the window average of
+        ``factors`` without a path): (T x r*p) for p > 1, (T x r) for p = 1.
     factor_order : int
         p of the AR(p) factor dynamics.
     A : np.ndarray, optional
@@ -126,6 +130,7 @@ class iVDFMModelState:
     converged: bool = False
     factors: Optional[np.ndarray] = None
     innovations: Optional[np.ndarray] = None
+    factor_path: Optional[np.ndarray] = None
     full_state: Optional[np.ndarray] = None
     factor_order: int = 1
     A: Optional[np.ndarray] = None
@@ -137,6 +142,7 @@ class iVDFMModelState:
         """Snapshot of an iVDFM engine (``ssm`` parameters as numpy, ``full_state`` built from ``factors``)."""
         factors = getattr(model, 'factors', None)
         innovations = getattr(model, 'innovations', None)
+        factor_path = getattr(model, 'factor_path', None)
         num_iter = getattr(model, '_num_iter', 0)
         loss_now = getattr(model, 'loss_now', None)
         elbo = getattr(model, '_elbo', None)
@@ -173,8 +179,8 @@ class iVDFMModelState:
                 f0 = f0.data.cpu().numpy()
 
         full_state = None
-        if factors is not None:
-            factors_np = factors
+        if factor_path is not None or factors is not None:
+            factors_np = factor_path if factor_path is not None else factors
             if isinstance(factors_np, np.ndarray):
                 if factors_np.ndim == 3:
                     factors_np = np.mean(factors_np, axis=0)  # (T, r), averaged over the batch
@@ -201,6 +207,7 @@ class iVDFMModelState:
             converged=converged,
             factors=factors,
             innovations=innovations,
+            factor_path=factor_path,
             full_state=full_state,
             factor_order=factor_order,
             A=A,

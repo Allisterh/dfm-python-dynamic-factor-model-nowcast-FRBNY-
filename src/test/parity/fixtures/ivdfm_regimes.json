@@ -32,7 +32,7 @@
     "python": "3.12",
     "torch": "2.14.1+cu130"
   },
-  "git_commit": "f87b2558eb90e3f989575d44bd387d7316fcf141",
+  "git_commit": "24a1f484aec9751017867f15217248a27d40d350",
   "global_rng_preseed": 20251019,
   "hyperparameters": {
     "activation": "lrelu",

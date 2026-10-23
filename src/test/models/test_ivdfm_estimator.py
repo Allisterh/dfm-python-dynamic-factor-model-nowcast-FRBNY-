@@ -550,6 +550,8 @@ def test_update_appends_factors_and_keeps_the_fit(fitted):
     # The engine's update keeps one factor per window end, after the window-averaged training path.
     n_new = (52 - window) // est.stride_ + 1
     assert engine.factors.shape == (window + n_new, r) and engine.innovations.shape == (window + n_new, r)
+    # The factor path the forecast starts from covers every row of the training data and of ``new``.
+    assert engine.factor_path.shape == (40 + 52, r)
     assert _same_weights(weights, _weights(est))
     assert est.result_ is result and est.factors_.equals(factors) and est.index_.equals(_panel().index)
     assert est.conditioning_index_.equals(new.index)
@@ -827,3 +829,31 @@ def test_engine_config_is_private():
 
 def test_ivdfm_is_registered():
     assert ("iVDFM", iVDFM) in all_estimators()
+
+
+def test_forecast_starts_from_the_last_encoded_time_step():
+    # T=150 and window=48 (stride 24) leave the last 6 rows outside every window; the
+    # forecast must still start from the factor state of the last row, not from the
+    # average of the window-end states.
+    panel = _panel(T=150)
+    est = iVDFM(**{**TINY, "window": 48}).fit(panel)
+    engine = est.network_
+    assert engine.factors.shape == (5, 48, 2)
+    assert engine.factor_path.shape == (150, 2)
+    np.testing.assert_array_equal(engine._factor_path()[-1], engine.factor_path[-1])
+    assert not np.allclose(engine.factor_path[-1], engine.factors[:, -1, :].mean(axis=0))
+    # The path is the whole series encoded as one sequence with the fixed networks.
+    dataset = est._adapter(panel, est.device_, fitted=True)
+    state = torch.get_rng_state()
+    engine.factor_path = None
+    torch.set_rng_state(state)
+    np.testing.assert_array_equal(engine._encode_sequence(dataset).shape, (150, 2))
+    assert est.result_.full_state.shape[0] == 150
+
+
+def test_saved_run_keeps_the_factor_path(tmp_path):
+    est = iVDFM(**{**TINY, "window": 48}).fit(_panel(T=150))
+    est.save(tmp_path / "run")
+    loaded = iVDFM.load(tmp_path / "run", device="cpu")
+    np.testing.assert_array_equal(loaded.network_.factor_path, est.network_.factor_path)
+    pd.testing.assert_frame_equal(loaded.predict(3), est.predict(3))

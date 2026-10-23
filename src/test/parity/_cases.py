@@ -809,6 +809,8 @@ def ivdfm_time_features(horizon: int, time_context: int, T_train: int) -> np.nda
 
     The formula of the engine's ``predict`` when ``context_data`` is None,
     written out here so that a case can build its own ``context_data``.
+    ``T_train`` is the length of the engine's factor path (the conditioning
+    series), ``engine._factor_path().shape[0]``.
     """
     time_indices = np.arange(T_train, T_train + horizon, dtype=np.float32)
     time_indices = time_indices / (T_train - 1) if T_train > 1 else time_indices / T_train
@@ -944,7 +946,9 @@ def _ivdfm_exog_context() -> CaseRun:
         hyper = _ivdfm_hyper(model, dataset)
         model.fit()
         outputs = _ivdfm_outputs(model, horizon=IVDFM_EXOG_HORIZON)
-        context_data = np.hstack([ivdfm_time_features(IVDFM_EXOG_HORIZON, time_context, window), x_future])
+        # The engine normalizes the future time step by the length of its factor path (the series length).
+        T_train = model._factor_path().shape[0]
+        context_data = np.hstack([ivdfm_time_features(IVDFM_EXOG_HORIZON, time_context, T_train), x_future])
         outputs["predict_futr"] = _np(model.predict(horizon=IVDFM_EXOG_HORIZON, context_data=context_data))
     return CaseRun(outputs=outputs, hyperparameters=hyper, data=data)
 
