@@ -558,7 +558,7 @@ def em_step(
             r=state.r,
             p=state.p,
             p_plus_one=state.max_lag_size if state.max_lag_size is not None else (state.p + 1),
-            n_clock_freq=state.n_clock_freq if state.n_clock_freq is not None else (X.shape[1] - state.n_slower_freq),
+            n_clock_freq=state.n_clock_freq if state.n_clock_freq is not None else (X.shape[1] - (state.n_slower_freq or 0)),
             idio_indicator=state.idio_indicator,
             R_mat=state.constraint_matrix,
             q=state.constraint_vector,

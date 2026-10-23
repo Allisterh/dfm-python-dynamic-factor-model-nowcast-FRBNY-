@@ -131,8 +131,8 @@ class DDFMDataset(Dataset):
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
         X_df, y_df = self.split_features_and_targets(data)
-        X = None if X_df is None else torch.from_numpy(X_df.values).to(dtype=DEFAULT_TORCH_DTYPE, device=device)
-        y = torch.from_numpy(y_df.values).to(dtype=DEFAULT_TORCH_DTYPE, device=device)
+        X = None if X_df is None else torch.tensor(X_df.values, dtype=DEFAULT_TORCH_DTYPE, device=device)
+        y = torch.tensor(y_df.values, dtype=DEFAULT_TORCH_DTYPE, device=device)
 
         return AutoencoderDataset(X=X, y_corrupted=y, y_clean=y)
 
@@ -161,10 +161,10 @@ class DDFMDataset(Dataset):
 
         eps_draws = rng.multivariate_normal(mu_eps, np.diag(std_eps), (n_mc_samples, T))
 
-        X_tensor = torch.from_numpy(X_array).to(dtype=DEFAULT_TORCH_DTYPE, device=device) if X_array.size > 0 else None
-        y_tmp_tensor = torch.from_numpy(y_tmp_array).to(dtype=DEFAULT_TORCH_DTYPE, device=device)
-        y_actual_tensor = torch.from_numpy(y_actual).to(dtype=DEFAULT_TORCH_DTYPE, device=device)
-        eps_draws_tensor = torch.from_numpy(eps_draws).to(dtype=DEFAULT_TORCH_DTYPE, device=device)
+        X_tensor = torch.tensor(X_array, dtype=DEFAULT_TORCH_DTYPE, device=device) if X_array.size > 0 else None
+        y_tmp_tensor = torch.tensor(y_tmp_array, dtype=DEFAULT_TORCH_DTYPE, device=device)
+        y_actual_tensor = torch.tensor(y_actual, dtype=DEFAULT_TORCH_DTYPE, device=device)
+        eps_draws_tensor = torch.tensor(eps_draws, dtype=DEFAULT_TORCH_DTYPE, device=device)
 
         return [
             self.create_autoencoder_dataset(X_tensor, y_tmp_tensor, y_actual_tensor, eps_draws_tensor[i])

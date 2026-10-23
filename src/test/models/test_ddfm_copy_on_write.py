@@ -111,16 +111,22 @@ def test_impute_missing_targets_fills_the_missing_targets_in_place():
     np.testing.assert_array_equal(after[~missing], before[~missing])
 
 
-def test_impute_missing_targets_keeps_the_covariate_no_op():
-    # Up to 0.8 the covariate branch was a chained write into a fancy-index copy,
-    # so it never changed data_imputed. That behavior is kept on purpose.
+def test_impute_missing_targets_with_covariates():
+    # Up to 0.8.1 the covariate branch wrote into a fancy-index copy, so the
+    # missing targets were never imputed when covariates were given.
     engine = _imputing_engine(_frame(), covariates=["x0", "x1"])
-    assert engine._dataset.missing_y.any()
+    missing = engine._dataset.missing_y
+    assert missing.any()
     before = engine.data_imputed.to_numpy(copy=True)
     y_pred = np.random.default_rng(3).standard_normal((len(before), len(engine._dataset.target_series)))
     with _copy_on_write():
         DDFMEngine._impute_missing_targets(engine, y_pred)
-    np.testing.assert_array_equal(engine.data_imputed.to_numpy(), before)
+    after = engine.data_imputed.to_numpy()
+    targets = engine._dataset.target_indices
+    np.testing.assert_array_equal(after[:, targets][missing], y_pred[missing])
+    np.testing.assert_array_equal(after[:, targets][~missing], before[:, targets][~missing])
+    covariates = [i for i in range(after.shape[1]) if i not in targets]
+    np.testing.assert_array_equal(after[:, covariates], before[:, covariates])
 
 
 @pytest.mark.parametrize("exog", [False, True], ids=["all_targets", "exog"])

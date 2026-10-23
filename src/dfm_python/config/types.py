@@ -128,6 +128,8 @@ def to_tensor(arr: ArrayLike, device: Optional[Device] = None, dtype: Optional['
             result = result.to(dtype)
         return result
     elif is_numpy_array(arr):
+        if not arr.flags.writeable:
+            arr = arr.copy()  # from_numpy warns on a read-only array (pandas copy-on-write ``.values``)
         tensor = torch.from_numpy(arr)
         if device is not None:
             tensor = tensor.to(device)

@@ -191,10 +191,7 @@ class DFMResult(BaseResult):
             training_info.append(f"  Regularization scale: {self.training_regularization_scale:.6f}")
 
         if training_info:
-            lines.insert(insert_idx, "")
-            lines.insert(insert_idx, "Training Hyperparameters:")
-            for info in training_info:
-                lines.insert(insert_idx + 1, info)
+            lines[insert_idx:insert_idx] = ["Training Hyperparameters:", *training_info, ""]
 
         return "\n".join(lines)
 
@@ -212,11 +209,9 @@ class DDFMResult(BaseResult):
     before ``max_iter``), ``num_iter`` (MCMC iterations) and ``loglik``
     (-inf; DDFM computes no log-likelihood).
 
-    ``training_loss``, ``encoder_layers``, ``use_idiosyncratic``,
-    ``fit_params`` and the ``training_*`` fields are declared but never set
-    by ``DDFM.fit`` (always None); read the hyperparameters from
-    ``model.get_params()`` and the state space from ``A``, ``C``, ``Q``,
-    ``R``, ``Z_0``, ``V_0``.
+    ``training_loss`` is the last MCMC loss, ``encoder_layers`` and the
+    ``training_*`` fields hold the training settings. ``use_idiosyncratic``
+    and ``fit_params`` are never set (always None).
     """
     training_loss: Optional[float] = None
     encoder_layers: Optional[List[int]] = None
@@ -268,10 +263,7 @@ class DDFMResult(BaseResult):
             ddfm_info.append(f"  Learning rate decay: {self.training_decay_learning_rate}")
 
         if ddfm_info:
-            lines.insert(insert_idx, "")
-            lines.insert(insert_idx, "Neural Network Training:")
-            for info in ddfm_info:
-                lines.insert(insert_idx + 1, info)
+            lines[insert_idx:insert_idx] = ["Neural Network Training:", *ddfm_info, ""]
 
         return "\n".join(lines)
 

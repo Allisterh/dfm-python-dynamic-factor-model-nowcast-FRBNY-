@@ -149,6 +149,7 @@ class _DFMEngineConfig(BaseModelConfig):
     block_names: List[str] = field(init=False)  # derived from blocks
     factors_per_block: List[int] = field(init=False)  # derived from blocks
     _cached_blocks: Optional[np.ndarray] = field(default=None, init=False, repr=False)
+    _cached_blocks_key: Optional[tuple] = field(default=None, init=False, repr=False)
 
     threshold: float = DEFAULT_EM_THRESHOLD  # EM convergence threshold
     max_iter: int = DEFAULT_EM_MAX_ITER
@@ -215,12 +216,13 @@ class _DFMEngineConfig(BaseModelConfig):
         )
 
     def get_blocks_array(self, columns: Optional[List[str]] = None) -> np.ndarray:
-        """Block membership (N x B): 1 if the series loads on the block, cached after the first call.
+        """Block membership (N x B): 1 if the series loads on the block, cached per ``columns``.
 
         With ``columns``, a single ``Block_Global`` block with an empty series
         list means "all series".
         """
-        if self._cached_blocks is None:
+        key = None if columns is None else tuple(columns)
+        if self._cached_blocks is None or self._cached_blocks_key != key:
             if self.frequency is None:
                 if columns is None:
                     from ...config.adapter import _raise_config_error
@@ -247,6 +249,7 @@ class _DFMEngineConfig(BaseModelConfig):
                 for series_id in series_ids
             ]
             self._cached_blocks = np.array(blocks_list, dtype=int)
+            self._cached_blocks_key = key
         return self._cached_blocks
 
     @classmethod

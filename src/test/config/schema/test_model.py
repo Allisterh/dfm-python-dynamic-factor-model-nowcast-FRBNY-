@@ -79,3 +79,14 @@ class TestModelSchema:
         assert config.frequency['series2'] == 'w'
         assert config.frequency['series3'] == 'm'
 
+
+
+def test_get_blocks_array_is_cached_per_columns():
+    from dfm_python.config.schema.model import _DFMEngineConfig
+
+    config = _DFMEngineConfig(frequency={"a": "m", "b": "m", "c": "m"}, clock="m",
+                              blocks={"Block_Global": {"num_factors": 1, "series": []}})
+    first = config.get_blocks_array(columns=["a", "b"])
+    second = config.get_blocks_array(columns=["a", "b", "c"])
+    assert first.shape == (2, 1) and second.shape == (3, 1)
+    assert config.get_blocks_array(columns=["a", "b"]).shape == (2, 1)

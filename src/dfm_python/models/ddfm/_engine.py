@@ -239,22 +239,19 @@ class DDFMEngine(nn.Module):
         return getattr(self, 'factors', None) is not None
 
     def _impute_missing_targets(self, y_pred_full: np.ndarray) -> None:
-        """Fill the missing targets of ``data_imputed`` with ``y_pred_full``; a no-op with covariates."""
+        """Fill the missing targets of ``data_imputed`` with ``y_pred_full`` (T x number of targets)."""
         missing_y = self._dataset.missing_y
         if not missing_y.any():
             return
 
-        if self._dataset.all_columns_are_targets:
-            # Fill a copy and write it back through the frame: under pandas
-            # copy-on-write (the default from pandas 3) ``.values`` is read-only.
-            imputed = self.data_imputed.to_numpy(copy=True)
-            imputed[missing_y] = y_pred_full[missing_y]
-            self.data_imputed.iloc[:, :] = imputed
-        # With covariates (y_pred_full holds the target columns only) nothing is
-        # imputed. Up to 0.8 this branch wrote into a fancy-index copy, so the
-        # write never reached ``data_imputed``; the no-op is kept so that DDFM's
-        # numbers do not change. Imputing here changes ``data_imputed``, the
-        # residuals and the denoised targets when covariates are given.
+        # Fill a copy and write it back through the frame: under pandas
+        # copy-on-write (the default from pandas 3) ``.values`` is read-only.
+        imputed = self.data_imputed.to_numpy(copy=True)
+        targets = self._dataset.target_indices
+        block = imputed[:, targets]
+        block[missing_y] = y_pred_full[missing_y]
+        imputed[:, targets] = block
+        self.data_imputed.iloc[:, :] = imputed
 
     def _update_imputed_and_eps(self, y_pred_full: np.ndarray) -> None:
         """Impute the missing targets with ``y_pred_full`` and recompute ``eps`` (targets minus predictions)."""
@@ -353,8 +350,8 @@ class DDFMEngine(nn.Module):
         else:
             y_pre_train = data_pre_train_dropped[self._dataset.target_series].values
 
-        full_input_tensor = torch.from_numpy(full_input_pre_train).to(dtype=DEFAULT_TORCH_DTYPE, device=self.device)
-        y_tensor = torch.from_numpy(y_pre_train).to(dtype=DEFAULT_TORCH_DTYPE, device=self.device)
+        full_input_tensor = torch.tensor(full_input_pre_train, dtype=DEFAULT_TORCH_DTYPE, device=self.device)
+        y_tensor = torch.tensor(y_pre_train, dtype=DEFAULT_TORCH_DTYPE, device=self.device)
         final_epoch_losses = self.autoencoder.pretrain(
             full_input=full_input_tensor,
             y=y_tensor,
@@ -568,7 +565,17 @@ class DDFMEngine(nn.Module):
             target_scaler=self.scaler,
             converged=getattr(self, '_converged', False),
             num_iter=getattr(self, '_num_iter', self.max_iter),
-            loglik=-float('inf')  # DDFM computes no log-likelihood
+            loglik=-float('inf'),  # DDFM computes no log-likelihood
+            training_loss=getattr(self, 'loss_now', None),
+            encoder_layers=list(self.encoder_size[:-1]),  # the hidden widths, as the estimator's encoder_layers
+            training_max_iter=self.max_iter,
+            training_tolerance=self.tolerance,
+            training_n_mc_samples=self.n_mc_samples,
+            training_window_size=self.window_size,
+            training_learning_rate=self.learning_rate,
+            training_optimizer=self.optimizer_type,
+            training_encoder_size=tuple(self.encoder_size),
+            training_decoder_size=None if self.decoder_size is None else tuple(self.decoder_size),
         )
 
     def _scale_new_rows(self, new_rows: pd.DataFrame) -> pd.DataFrame:

@@ -475,7 +475,10 @@ class DFMEngine:
             Z_0=state.Z_0, V_0=state.V_0, r=self.r, p=self.p,
             converged=getattr(self, '_training_converged', False),
             num_iter=getattr(self, '_training_num_iter', 0),
-            loglik=getattr(self, '_training_loglik', 0.0)
+            loglik=getattr(self, '_training_loglik', 0.0),
+            training_max_iter=self._config.max_iter,
+            training_threshold=self._config.threshold,
+            training_regularization_scale=(self._config.regularization or {}).get("scale"),
         )
         self._result = result
         return result

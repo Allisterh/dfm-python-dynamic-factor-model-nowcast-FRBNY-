@@ -815,7 +815,7 @@ def estimate_constrained_ols(
             try:
                 eigenvals_XTX = np.linalg.eigvalsh(XTX)
                 max_eig = np.max(np.abs(eigenvals_XTX))
-                min_eig = np.max(np.abs(eigenvals_XTX[eigenvals_XTX != 0]))
+                min_eig = np.min(np.abs(eigenvals_XTX[eigenvals_XTX != 0]))
                 cond_num = max_eig / max(min_eig, 1e-12)
                 if cond_num > 1e10:
                     adaptive_reg = regularization * (cond_num / 1e10)

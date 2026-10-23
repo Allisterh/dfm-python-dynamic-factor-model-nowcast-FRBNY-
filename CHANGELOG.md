@@ -4,6 +4,30 @@
 
 ### Bug fixes
 
+- DDFM with `exog` covariates: missing targets were never imputed with the
+  model's predictions during the MCMC loop (the write went into a copy), so
+  the residuals and the denoised targets used the interpolated values only.
+  They are imputed now, as without covariates. The `ddfm_macro` golden case
+  was recaptured; panels without covariates or without missing targets are
+  unaffected.
+- DDFM under pandas copy-on-write (the pandas 3 default): the pre-training
+  tensors were built from read-only `.values` arrays, which made torch warn
+  that the array is not writable. The arrays are copied first.
+- `DFMResult.training_*` (max_iter, threshold, regularization scale) and
+  `DDFMResult.training_*`, `training_loss` and `encoder_layers` are now set
+  by `fit`, so `result_.summary()` prints the training settings. The
+  sections list their items in declaration order (they were reversed).
+- `_DFMEngineConfig.get_blocks_array(columns=...)` cached the first call's
+  array and returned it for other `columns`; the cache is keyed on the
+  columns now.
+- `em_step` raised `TypeError` when called directly with `block_structure=None`
+  and a state without `n_slower_freq`.
+- `estimate_constrained_ols` (unconstrained branch) took the largest instead
+  of the smallest nonzero eigenvalue of X'X as `min_eig`, so the adaptive
+  ridge for an ill-conditioned X'X never applied.
+- `dfm_python.ssm` no longer exports `CompanionSSM`, `MACompanionSSM` and
+  `CompanionSSMBase`, which were `None` placeholders for classes that do not
+  exist.
 - iVDFM with `factor_order > 1` and one regime: the companion state-space
   model cached a detached impulse response on the first training batch and
   reused it for the rest of training, so `B` and the AR coefficients
