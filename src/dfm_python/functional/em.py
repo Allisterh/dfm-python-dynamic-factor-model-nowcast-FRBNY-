@@ -49,8 +49,8 @@ from ..config.constants import (
 )
 from ..numeric.stability import rescale_ssm_params_for_C_normalization
 from ..numeric.estimator import (
+    estimate_ar1_from_diagonals,
     estimate_var,
-    estimate_ar1,
     apply_ar_clipping,
 )
 from ..utils.errors import DataValidationError, NumericalError
@@ -287,13 +287,14 @@ def _update_transition_matrix_blocked(
     ii = layout.ar1_states
     ii = ii[ii < m]
     if ii.size > 0:
-        a_diag, q_diag = estimate_ar1(
+        # Only the diagonals of the (T, k, k) covariance slices enter the
+        # update; taking them first avoids three (T, k, k) copies.
+        a_diag, q_diag = estimate_ar1_from_diagonals(
             y=EZ[1:, ii],
             x=EZ[:-1, ii],
-            V_smooth=V_smooth[1:][:, ii][:, :, ii],
-            V_smooth_lag=V_smooth[:-1][:, ii][:, :, ii],
-            VVsmooth=VVsmooth[1:][:, ii][:, :, ii],
-            dtype=np.float64,
+            v_cur=V_smooth[1:, ii, ii],
+            v_lag=V_smooth[:-1, ii, ii],
+            vv=VVsmooth[1:, ii, ii],
         )
         A_new[ii, ii] = a_diag
         Q_new[ii, ii] = q_diag

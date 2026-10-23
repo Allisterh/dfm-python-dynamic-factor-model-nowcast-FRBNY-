@@ -51,6 +51,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 from scipy import linalg
+from threadpoolctl import threadpool_limits
 
 from ..config.types import FloatArray
 from ..logger import get_logger
@@ -218,7 +219,10 @@ class DFMKalmanFilter:
         I_m = np.eye(m)
         a = self.initial_state_mean.copy()
         P = self.initial_state_covariance.copy()
-        with np.errstate(over="ignore", invalid="ignore"):
+        # The per-row matrices are small (m x m); multithreaded BLAS spends
+        # its time synchronizing on them (a 4-core run was 28x slower than
+        # a single-threaded one at m = 106), so the loops run on one thread.
+        with threadpool_limits(limits=1, user_api="blas"), np.errstate(over="ignore", invalid="ignore"):
             for t in range(T):
                 if t > 0:
                     a = A @ a
@@ -329,7 +333,7 @@ class DFMKalmanFilter:
         pair = np.zeros((T, m, m))
         r = np.zeros(m)
         N = np.zeros((m, m))
-        with np.errstate(over="ignore", invalid="ignore"):
+        with threadpool_limits(limits=1, user_api="blas"), np.errstate(over="ignore", invalid="ignore"):
             for t in range(T - 1, -1, -1):
                 N_next = N  # N_t: information from rows t+1 .. T-1
                 step = gains[t]

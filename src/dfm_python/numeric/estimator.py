@@ -552,6 +552,43 @@ def estimate_var(
     return A.astype(dtype), Q.astype(dtype)
 
 
+def _ar1_from_moment_sums(S11: np.ndarray, S00: np.ndarray, S10: np.ndarray, n_rows: int) -> Tuple[np.ndarray, np.ndarray]:
+    """``a = S10 / S00`` and ``q = max((S11 - a S10) / n, 0)`` per state, with the finiteness checks."""
+    if np.any(~np.isfinite(S00)) or np.any(S00 <= 0.0):
+        raise NumericalError(
+            "AR(1) update: the lagged second moment is not positive and finite "
+            f"(min {np.min(S00) if S00.size else float('nan'):.3e})."
+        )
+    A_diag = S10 / S00
+    Q_diag = np.maximum((S11 - A_diag * S10) / n_rows, 0.0)
+    if not (np.all(np.isfinite(A_diag)) and np.all(np.isfinite(Q_diag))):
+        raise NumericalError("AR(1) update is not finite.")
+    return A_diag, Q_diag
+
+
+def estimate_ar1_from_diagonals(
+    y: np.ndarray,
+    x: np.ndarray,
+    v_cur: np.ndarray,
+    v_lag: np.ndarray,
+    vv: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """The smoothed-expectations AR(1) update of :func:`estimate_ar1` from per-row diagonals.
+
+    ``y`` and ``x`` are the smoothed means ``E[z_t]`` and ``E[z_{t-1}]`` (n x k);
+    ``v_cur``, ``v_lag`` and ``vv`` (n x k) hold the diagonals of
+    ``Var[z_t]``, ``Var[z_{t-1}]`` and ``Cov(z_t, z_{t-1})``. Same result as
+    ``estimate_ar1`` on the full (n x k x k) covariances, without building them.
+    """
+    y = np.asarray(y, dtype=np.float64)
+    x = np.asarray(x, dtype=np.float64)
+    # einsum over the rows reproduces ``_diag_sum``'s ``einsum('tii->i')`` bit for bit.
+    S11 = np.sum(y * y, axis=0) + np.einsum('ti->i', np.asarray(v_cur, dtype=np.float64))
+    S00 = np.sum(x * x, axis=0) + np.einsum('ti->i', np.asarray(v_lag, dtype=np.float64))
+    S10 = np.sum(y * x, axis=0) + np.einsum('ti->i', np.asarray(vv, dtype=np.float64))
+    return _ar1_from_moment_sums(S11, S00, S10, y.shape[0])
+
+
 def estimate_ar1(
     y: np.ndarray,
     x: Optional[np.ndarray] = None,
@@ -621,16 +658,7 @@ def estimate_ar1(
             if VV.shape[0] == n_rows + 1:
                 VV = VV[1:]
             S10 = S10 + _diag_sum(VV)
-        if np.any(~np.isfinite(S00)) or np.any(S00 <= 0.0):
-            raise NumericalError(
-                "AR(1) update: the lagged second moment is not positive and finite "
-                f"(min {np.min(S00) if S00.size else float('nan'):.3e})."
-            )
-        A_diag = S10 / S00
-        Q_diag = np.maximum((S11 - A_diag * S10) / n_rows, 0.0)
-        if not (np.all(np.isfinite(A_diag)) and np.all(np.isfinite(Q_diag))):
-            raise NumericalError("AR(1) update is not finite.")
-        return A_diag, Q_diag
+        return _ar1_from_moment_sums(S11, S00, S10, n_rows)
 
     if x is None:
         x = y[:-1]
@@ -989,6 +1017,7 @@ __all__ = [
     'get_transition_params',
     'estimate_var',
     'estimate_ar1',
+    'estimate_ar1_from_diagonals',
     'estimate_constrained_ols',
     'estimate_variance',
     'compute_initial_covariance_from_transition',

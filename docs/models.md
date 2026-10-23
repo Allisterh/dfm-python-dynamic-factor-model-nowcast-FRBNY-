@@ -87,6 +87,12 @@ Notes:
 - `update(data, refit=True)` runs one EM iteration on all rows, starting
   from the current parameters. To re-estimate from scratch, call `fit` on
   the whole panel.
+- Cost: an EM iteration is a Kalman filter and smoother pass, about
+  `O(T m^3)` with `m` the state dimension (factor lags plus one idiosyncratic
+  state per series, so `m` grows with `N`). The passes run the BLAS on one
+  thread (the matrices are small; multithreaded BLAS was 28x slower on a
+  4-core machine). A 1000 x 100 panel takes about 4 s per iteration on one
+  core.
 - No news decomposition of data releases.
 
 Compared with statsmodels' `DynamicFactorMQ` (statsmodels 0.15), which
@@ -205,6 +211,7 @@ model = iVDFM(n_factors=2, factor_order=2, window=48, stride=None,  # stride=Non
 model.fit(data)
 model.result_.training_elbo, model.n_iter_, model.converged_
 model.factors_                              # window factors, (window, time) MultiIndex
+model.result_.Z                             # (T, r): the series encoded as one sequence; predict starts from Z[-1]
 
 future = raw.set_index("date")[["policy_rate"]]                # future values of the exog
 fc = model.predict(6, futr_exog=future.iloc[144:150])          # DataFrame 6 x 3, data units
